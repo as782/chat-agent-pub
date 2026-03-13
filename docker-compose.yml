@@ -1,0 +1,54 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: ${APP_NAME:-chat-agent-backend}
+      APP_ENV: ${APP_ENV:-local}
+      APP_HOST: ${APP_HOST:-0.0.0.0}
+      APP_PORT: ${APP_PORT:-8000}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql+asyncpg://postgres:postgres@postgres:5432/chat_agent}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://ragflow:9380}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-replace-me}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chat_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-chat_agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+
