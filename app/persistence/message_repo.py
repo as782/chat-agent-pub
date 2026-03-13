@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, delete, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.base import get_utc_now
@@ -75,6 +75,14 @@ class MessageRepository:
         )
         result = await self._db_session.execute(statement)
         return result.scalars().first()
+
+    async def count_by_session(self, session_id: str) -> int:
+        """统计指定会话下的消息数量。"""
+
+        statement = select(func.count()).select_from(MessageEntity)
+        statement = statement.where(MessageEntity.session_id == session_id)
+        result = await self._db_session.execute(statement)
+        return int(result.scalar_one())
 
     async def delete_by_session(self, session_id: str) -> int:
         """删除指定会话下的全部消息。"""

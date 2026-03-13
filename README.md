@@ -2,9 +2,8 @@
 
 最小可用的 Agent 问答系统后端项目。
 
-当前仓库已经完成阶段 1 初始化工程，提供 FastAPI 服务骨架、基础工程配置和 `/health`
-健康检查接口。后续阶段会逐步补齐配置管理、持久化、Agent 主链路、知识库接入、工具系统
-和 MCP 骨架。
+当前仓库已经完成阶段 1 初始化工程，并持续按阶段补齐配置管理、持久化、基础 API、Agent
+主链路、知识库接入、工具系统和 MCP 骨架。
 
 ## 当前技术栈
 
@@ -28,7 +27,8 @@
 - 初始化 `.pre-commit-config.yaml`
 - 建立 FastAPI 入口
 - 提供 `/health` 接口
-- 提供基础健康检查测试
+- 建立核心配置、日志、异常体系
+- 建立会话、消息、短期记忆、RAGFlow 映射的持久化层
 
 ## 目录结构说明
 
@@ -38,6 +38,7 @@ app/
 │   └── v1/
 ├── core/
 ├── schemas/
+├── services/
 ├── agent/
 │   └── nodes/
 ├── memory/
@@ -56,10 +57,11 @@ tests/
 
 ### app 目录职责
 
-- `app/main.py`：应用入口，负责创建 FastAPI 应用并注册基础路由。
+- `app/main.py`：应用入口，负责创建 FastAPI 应用并注册系统路由与业务路由。
 - `app/api/v1/`：HTTP 接口层，只做参数解析、调用 service、返回响应。
 - `app/core/`：基础设施层，放配置、日志、通用异常等横切能力。
 - `app/schemas/`：接口请求体、响应体和内部数据传输对象定义。
+- `app/services/`：业务编排层，负责会话、消息、对话等用例流程。
 - `app/agent/`：Agent 编排层，负责状态定义、图编排、节点路由与上下文构建。
 - `app/memory/`：短期记忆与检查点相关能力，不负责业务接口暴露。
 - `app/knowledge/`：知识库接入层，当前阶段只计划对接 RAGFlow，不自建完整 RAG
@@ -85,6 +87,35 @@ uvicorn app.main:app --reload
 
 服务启动后访问 `http://127.0.0.1:8000/health` 即可验证服务存活。
 
+## 首次本地启动基础依赖
+
+如果你的本机还没有可用的 PostgreSQL 和 Redis，最快方式是直接使用当前仓库的
+`docker-compose.yml` 启动基础依赖：
+
+```bash
+copy .env.example .env
+docker compose up -d postgres redis
+docker compose ps
+```
+
+默认映射结果如下：
+
+- PostgreSQL：`localhost:55432`
+- Redis：`localhost:6379`
+
+如果 `55432` 或 `6379` 仍然和你本机已有容器冲突，可以在 `.env` 中调整：
+
+```bash
+POSTGRES_HOST_PORT=65432
+REDIS_HOST_PORT=6389
+```
+
+基础依赖启动后，再执行：
+
+```bash
+uvicorn app.main:app --reload
+```
+
 ## Docker 运行
 
 ```bash
@@ -101,5 +132,5 @@ pytest
 
 ## 阶段说明
 
-当前仓库仅完成初始化骨架。会话管理、消息管理、Agent 主链路、RAGFlow 接入、工具系统和
-MCP 能力会在后续阶段逐步补齐。
+当前仓库已完成工程初始化、基础设施和持久化层。会话 API、消息 API、基础单轮对话 API、
+LangGraph 多轮编排、RAGFlow 接入、工具系统和 MCP 能力会在后续阶段继续补齐。

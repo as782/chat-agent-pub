@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.base import get_utc_now
@@ -69,6 +69,16 @@ class SessionRepository:
 
         result = await self._db_session.execute(statement)
         return list(result.scalars().all())
+
+    async def count(self, *, user_id: str | None = None) -> int:
+        """统计会话数量。"""
+
+        statement = select(func.count()).select_from(SessionEntity)
+        if user_id is not None:
+            statement = statement.where(SessionEntity.user_id == user_id)
+
+        result = await self._db_session.execute(statement)
+        return int(result.scalar_one())
 
     async def update_timestamp(
         self,
