@@ -406,7 +406,7 @@ class LlmClient:
             ensure_ascii=False,
             default=str,
         )
-        LOGGER.info("向 LLM 发起请求：%s", request_payload)
+        LOGGER.info("向 LLM 发起请求：\n %s", request_payload)
 
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""
