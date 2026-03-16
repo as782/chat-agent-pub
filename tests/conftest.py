@@ -12,6 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
+from app.clients.llm_client import LlmChatCompletionResult
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 if str(PROJECT_ROOT) not in sys.path:
@@ -42,14 +44,31 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
 
-    async def fake_generate_answer(self: object, user_message: str) -> str:
-        """为集成测试返回稳定的假模型回答。"""
+    async def fake_create_chat_completion(
+        self: object,
+        messages: list[tuple[str, str]],
+        model_name: str | None = None,
+    ) -> LlmChatCompletionResult:
+        """为集成测试返回稳定的假模型回答与元数据。"""
 
-        return f"测试模型回答：{user_message}"
+        latest_user_message = ""
+        for role, content in reversed(messages):
+            if role == "user":
+                latest_user_message = content
+                break
+
+        return LlmChatCompletionResult(
+            content=f"测试模型回答：{latest_user_message}",
+            model_name=model_name or "test-model",
+            prompt_tokens=12,
+            completion_tokens=8,
+            total_tokens=20,
+            finish_reason="stop",
+        )
 
     monkeypatch.setattr(
-        "app.clients.llm_client.LlmClient.generate_answer",
-        fake_generate_answer,
+        "app.clients.llm_client.LlmClient.create_chat_completion",
+        fake_create_chat_completion,
     )
 
     from app.main import create_app

@@ -4,6 +4,8 @@
 当前阶段不负责多轮记忆、LangGraph 状态图和知识库路由决策。
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +15,19 @@ from app.core.exceptions import ResourceNotFoundException
 from app.persistence.message_repo import MessageRepository
 from app.persistence.session_repo import SessionRepository
 from app.schemas.chat import ChatRequest, ChatResponse
+
+
+@dataclass(slots=True)
+class ChatTurnResult:
+    """单轮对话执行结果。"""
+
+    session_id: str
+    answer: str
+    model_name: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    finish_reason: str
 
 
 class ChatService:
@@ -27,13 +42,39 @@ class ChatService:
     async def send_message(self, chat_request: ChatRequest) -> ChatResponse:
         """处理单轮对话请求并持久化本轮消息。"""
 
-        session_id = chat_request.session_id
+        turn_result = await self.send_prompt_messages(
+            prompt_messages=[
+                ("system", "你是最小可用 Agent 后端中的基础问答模块，需要简洁、准确地回答用户。"),
+                ("user", chat_request.user_message),
+            ],
+            latest_user_message=chat_request.user_message,
+            session_id=chat_request.session_id,
+        )
+
+        return ChatResponse(
+            session_id=turn_result.session_id,
+            answer=turn_result.answer,
+            used_knowledge=False,
+            used_tools=[],
+        )
+
+    async def send_prompt_messages(
+        self,
+        *,
+        prompt_messages: Sequence[tuple[str, str]],
+        latest_user_message: str,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        model_name: str | None = None,
+    ) -> ChatTurnResult:
+        """处理标准提示词消息并持久化当前轮次结果。"""
 
         try:
             if session_id is None:
                 session_entity = await self._session_repository.create(
                     session_id=self._generate_identifier(),
-                    title=chat_request.user_message[:20],
+                    title=latest_user_message[:20],
+                    user_id=user_id,
                 )
                 session_id = session_entity.session_id
             else:
@@ -48,17 +89,20 @@ class ChatService:
                 message_id=self._generate_identifier(),
                 session_id=session_id,
                 role="user",
-                content=chat_request.user_message,
-                message_metadata=chat_request.metadata,
+                content=latest_user_message,
+                message_metadata={},
             )
 
-            answer_text = await self._llm_client.generate_answer(chat_request.user_message)
+            completion_result = await self._llm_client.create_chat_completion(
+                messages=prompt_messages,
+                model_name=model_name,
+            )
 
             await self._message_repository.create(
                 message_id=self._generate_identifier(),
                 session_id=session_id,
                 role="assistant",
-                content=answer_text,
+                content=completion_result.content,
             )
             await self._session_repository.update_timestamp(session_id)
             await self._db_session.commit()
@@ -66,11 +110,14 @@ class ChatService:
             await self._db_session.rollback()
             raise
 
-        return ChatResponse(
+        return ChatTurnResult(
             session_id=session_id,
-            answer=answer_text,
-            used_knowledge=False,
-            used_tools=[],
+            answer=completion_result.content,
+            model_name=completion_result.model_name,
+            prompt_tokens=completion_result.prompt_tokens,
+            completion_tokens=completion_result.completion_tokens,
+            total_tokens=completion_result.total_tokens,
+            finish_reason=completion_result.finish_reason,
         )
 
     @staticmethod

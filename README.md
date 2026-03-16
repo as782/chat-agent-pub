@@ -31,6 +31,7 @@
 - 建立会话、消息、短期记忆、RAGFlow 映射的持久化层
 - 建立基础单轮会话、消息查询和对话 API
 - 接入真实 LLM 单轮对话链路
+- 增加 OpenAI Chat Completions 兼容适配层，便于后续接入 Qwen 等兼容模型
 
 ## 目录结构说明
 
@@ -129,6 +130,40 @@ OPENAI_MODEL=gpt-4.1-mini
 OPENAI_BASE_URL=https://your-provider.example.com/v1
 
 ```
+
+当前后端同时提供两类聊天入口：
+
+- 内部业务接口：`POST /api/v1/chat`
+- OpenAI 兼容接口：`POST /v1/chat/completions`
+
+OpenAI 兼容适配层会尽量保持输入输出结构与 OpenAI Chat Completions 一致，因此后续接入 Qwen 系列或其他 OpenAI 兼容模型时，优先只需要调整兼容网关地址和模型名，而不需要修改上层调用协议。
+
+```bash
+OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+OPENAI_MODEL=qwen-plus
+```
+
+设计上不在业务层硬编码供应商名称，而是透传 `model` 和 `base_url`。这样后续切换到其他 OpenAI 兼容模型时，客户端和上层调用代码可以保持稳定。
+
+OpenAI 兼容调用示例：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-plus",
+    "messages": [
+      {"role": "system", "content": "你是一个简洁助手。"},
+      {"role": "user", "content": "你好"}
+    ]
+  }'
+```
+
+当前兼容层限制：
+
+- 当前仅支持文本消息
+- 当前不支持 `stream=true`
+- 当前只会持久化本次请求中的最后一条用户消息和模型回答
 
 基础依赖和 LLM 配置完成后，再执行：
 

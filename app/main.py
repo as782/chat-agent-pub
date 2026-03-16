@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.openai_compat import router as openai_compat_router
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_exception_handlers(application)
+    application.include_router(openai_compat_router)
     application.include_router(api_router)
     application.add_api_route("/health", health_check, methods=["GET"], tags=["system"])
     LOGGER.info("FastAPI 应用创建完成。")
