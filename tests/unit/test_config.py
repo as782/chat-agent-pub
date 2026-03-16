@@ -18,7 +18,6 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
-    monkeypatch.setenv("OPENAI_TEMPERATURE", "0.4")
 
     settings = get_settings()
 
@@ -28,7 +27,6 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.redis_url.endswith("/1")
     assert settings.openai_base_url == "https://example.com/v1"
     assert settings.openai_model == "test-chat-model"
-    assert settings.openai_temperature == 0.4
     assert settings.is_debug is True
 
 
