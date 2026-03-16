@@ -117,6 +117,7 @@ class ContextBuilder:
         recent_messages: Sequence[LlmInputMessage],
         memory_summary: str | None,
         need_session_memory: bool,
+        knowledge_context: str | None = None,
     ) -> PreparedContext:
         """构建当前轮次的模型输入上下文。
 
@@ -126,10 +127,20 @@ class ContextBuilder:
         """
 
         if not need_session_memory:
+            context_messages = []
+            if knowledge_context:
+                context_messages.append(
+                    LlmInputMessage(
+                        role="system",
+                        content=knowledge_context,
+                    )
+                )
+            context_messages.extend(input_messages)
             return PreparedContext(
-                messages=list(input_messages),
+                messages=context_messages,
                 used_session_memory=False,
                 memory_summary=None,
+                knowledge_context=knowledge_context,
             )
 
         context_messages: list[LlmInputMessage] = []
@@ -138,6 +149,13 @@ class ContextBuilder:
                 LlmInputMessage(
                     role="system",
                     content=f"{MEMORY_SUMMARY_PROMPT_PREFIX}{memory_summary}",
+                )
+            )
+        if knowledge_context:
+            context_messages.append(
+                LlmInputMessage(
+                    role="system",
+                    content=knowledge_context,
                 )
             )
 
@@ -153,6 +171,7 @@ class ContextBuilder:
             messages=context_messages,
             used_session_memory=bool(memory_summary or deduplicated_recent_messages),
             memory_summary=memory_summary,
+            knowledge_context=knowledge_context,
         )
 
     def _drop_overlapped_recent_suffix(

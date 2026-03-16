@@ -59,7 +59,12 @@ class AnswerNode:
             "final_result": final_result,
         }
 
-    async def prepare_context(self, execution_request: ChatExecutionRequest) -> PreparedContext:
+    async def prepare_context(
+        self,
+        execution_request: ChatExecutionRequest,
+        *,
+        knowledge_context: str | None = None,
+    ) -> PreparedContext:
         """为流式和非流式路径统一准备模型上下文。"""
 
         if execution_request.session_id is None:
@@ -80,13 +85,22 @@ class AnswerNode:
             recent_messages=recent_messages,
             memory_summary=memory_summary,
             need_session_memory=execution_request.need_session_memory,
+            knowledge_context=knowledge_context,
         )
 
     async def prepare_context_state(self, state: AgentState) -> dict[str, PreparedContext]:
         """从图状态中准备当前轮次上下文。"""
 
         execution_request = self._build_execution_request_from_state(state)
-        prepared_context = await self.prepare_context(execution_request)
+        knowledge_context = (
+            str(state["knowledge_context"])
+            if isinstance(state.get("knowledge_context"), str)
+            else None
+        )
+        prepared_context = await self.prepare_context(
+            execution_request,
+            knowledge_context=knowledge_context,
+        )
         return {"prepared_context": prepared_context}
 
     async def persist_stream_result(

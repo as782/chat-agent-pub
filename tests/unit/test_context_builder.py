@@ -78,3 +78,20 @@ def test_context_builder_merges_session_history_and_explicit_messages_when_sessi
         "请同时参考系统记录和本次输入。",
         "我刚刚告诉你的名字是什么？",
     ]
+
+
+def test_context_builder_includes_knowledge_context_as_system_message() -> None:
+    """验证知识库上下文会以 system 消息的方式注入模型输入。"""
+
+    builder = ContextBuilder()
+    prepared_context = builder.build_context(
+        input_messages=[LlmInputMessage(role="user", content="知识库: 西湖在哪里？")],
+        recent_messages=[],
+        memory_summary=None,
+        need_session_memory=False,
+        knowledge_context="以下是知识库检索结果：西湖位于杭州。",
+    )
+
+    assert prepared_context.knowledge_context == "以下是知识库检索结果：西湖位于杭州。"
+    assert [message.role for message in prepared_context.messages] == ["system", "user"]
+    assert prepared_context.messages[0].content == "以下是知识库检索结果：西湖位于杭州。"

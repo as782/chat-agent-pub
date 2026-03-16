@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
 from app.agent.nodes.memory_node import MemoryNode
+from app.agent.nodes.ragflow_node import RagflowNode
 from app.agent.nodes.router_node import RouterNode
 from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult, PreparedContext
 from app.clients.llm_client import LlmClient
@@ -36,6 +37,7 @@ class ConversationGraph:
             llm_client=shared_llm_client,
             tool_registry=shared_tool_registry,
         )
+        self._ragflow_node = RagflowNode(db_session)
         self._memory_node = MemoryNode(db_session)
         self._compiled_graph = self._build_graph()
 
@@ -63,11 +65,10 @@ class ConversationGraph:
         """为流式路径准备与主图一致的上下文。"""
 
         initial_state = self._build_initial_state(execution_request)
-        route_state = await self._router_node.run(initial_state)
-        merged_state = {**initial_state, **route_state}
+        merged_state = await self._prepare_route_state(initial_state)
         context_state = await self._answer_node.prepare_context_state(merged_state)
         prepared_context = context_state["prepared_context"]
-        return str(route_state["route"]), prepared_context
+        return str(merged_state["route"]), prepared_context
 
     async def refresh_memory(
         self,
@@ -94,6 +95,7 @@ class ConversationGraph:
 
         graph_builder = StateGraph(AgentState)
         graph_builder.add_node("router_node", self._router_node.run)
+        graph_builder.add_node("ragflow_node", self._ragflow_node.run)
         graph_builder.add_node("answer_node", self._answer_node.run)
         graph_builder.add_node("memory_node", self._memory_node.run)
 
@@ -103,8 +105,10 @@ class ConversationGraph:
             self._resolve_next_node,
             {
                 "answer_node": "answer_node",
+                "ragflow_node": "ragflow_node",
             },
         )
+        graph_builder.add_edge("ragflow_node", "answer_node")
         graph_builder.add_edge("answer_node", "memory_node")
         graph_builder.add_edge("memory_node", END)
         return graph_builder.compile()
@@ -132,6 +136,18 @@ class ConversationGraph:
         """根据路由结果选择下一个节点。"""
 
         route = state.get("route", "answer")
-        if route in {"answer", "tool", "ragflow", "mcp"}:
+        if route == "ragflow":
+            return "ragflow_node"
+        if route in {"answer", "tool", "mcp"}:
             return "answer_node"
         return "answer_node"
+
+    async def _prepare_route_state(self, initial_state: AgentState) -> AgentState:
+        """按真实路由顺序执行前置节点，供流式路径复用。"""
+
+        route_state = await self._router_node.run(initial_state)
+        merged_state: AgentState = {**initial_state, **route_state}
+        if merged_state.get("route") == "ragflow":
+            knowledge_state = await self._ragflow_node.run(merged_state)
+            merged_state = {**merged_state, **knowledge_state}
+        return merged_state

@@ -1,10 +1,14 @@
 """知识库领域数据模型。
 
-负责定义知识库检索请求与返回结构，供后续 RAGFlow 接入层复用。
+负责定义知识库检索、数据集管理和 RAGFlow 透传所需的数据结构。
 当前阶段不负责向量检索实现和文档解析流程。
 """
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.openai_compat import OpenAIChatCompletionRequest
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -35,3 +39,50 @@ class KnowledgeSearchResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     results: list[KnowledgeSearchResult] = Field(default_factory=list, description="检索结果列表。")
+
+
+class KnowledgeDatasetItem(BaseModel):
+    """知识库数据集模型。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_id: str = Field(description="数据集标识。")
+    dataset_name: str = Field(description="数据集名称。")
+    is_enabled: bool = Field(default=True, description="当前是否启用。")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="原始数据集元数据。")
+
+
+class KnowledgeDatasetListResponse(BaseModel):
+    """知识库数据集列表响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[KnowledgeDatasetItem] = Field(default_factory=list, description="数据集列表。")
+    synced_count: int = Field(default=0, ge=0, description="本次同步更新的数据集数量。")
+
+
+class KnowledgeDocumentItem(BaseModel):
+    """知识库文档模型。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str = Field(description="文档标识。")
+    document_name: str = Field(description="文档名称。")
+    status: str = Field(description="文档状态。")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="文档原始元数据。")
+
+
+class KnowledgeDocumentListResponse(BaseModel):
+    """知识库文档列表响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[KnowledgeDocumentItem] = Field(default_factory=list, description="文档列表。")
+
+
+class KnowledgeChatRequest(OpenAIChatCompletionRequest):
+    """知识库聊天透传请求模型。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: str = Field(min_length=1, description="RAGFlow chat assistant 标识。")

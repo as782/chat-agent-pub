@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.clients.llm_client import LlmChatCompletionChunk
 from app.core.exceptions import UpstreamServiceException
+from app.schemas.knowledge import KnowledgeSearchResult
 
 
 def test_chat_api_creates_session_and_returns_answer(app_client: TestClient) -> None:
@@ -169,6 +170,49 @@ def test_chat_api_does_not_use_other_session_memory_without_session_id(
         == "测试模型回答：你刚刚说你叫小王"
     )
     assert second_response.headers["X-Session-ID"] != first_response.headers["X-Session-ID"]
+
+
+def test_chat_api_uses_knowledge_route_when_requested(app_client: TestClient, monkeypatch) -> None:
+    """验证命中知识库路由时会把检索结果注入回答上下文。"""
+
+    async def fake_retrieve_for_agent(
+        self: object,
+        *,
+        query: str,
+        top_k: int = 4,
+    ) -> list[KnowledgeSearchResult]:
+        """返回稳定的知识检索结果。"""
+
+        del self, top_k
+        assert query == "西湖在哪里？"
+        return [
+            KnowledgeSearchResult(
+                document_id="doc-001",
+                chunk_id="chunk-001",
+                score=0.98,
+                content="西湖位于杭州。",
+                source="杭州百科",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.agent.nodes.ragflow_node.KnowledgeService.retrieve_for_agent",
+        fake_retrieve_for_agent,
+    )
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "知识库: 西湖在哪里？"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：根据知识库，西湖位于杭州。"
+    )
 
 
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:

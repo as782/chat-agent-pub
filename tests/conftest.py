@@ -49,6 +49,8 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     monkeypatch.setenv("POSTGRES_DSN", f"sqlite+aiosqlite:///{sqlite_database_path.as_posix()}")
     monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    monkeypatch.setenv("RAGFLOW_API_KEY", "test-ragflow-key")
+    monkeypatch.setenv("RAGFLOW_BASE_URL", "https://ragflow.example.com")
 
     async def fake_create_chat_completion(
         self: object,
@@ -79,6 +81,9 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         history_contains_name = any("我叫小王" in message for message in user_messages[1:])
         explicit_force_no_memory = any(
             "如果不知道就说不知道" in message for message in all_message_contents
+        )
+        has_knowledge_context = any(
+            "以下是知识库检索结果" in message for message in all_message_contents
         )
 
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
@@ -147,6 +152,16 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                     finish_reason="stop",
                 )
 
+        if has_knowledge_context and "西湖" in latest_user_message:
+            return LlmChatCompletionResult(
+                content="测试模型回答：根据知识库，西湖位于杭州。",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
         return LlmChatCompletionResult(
             content=f"测试模型回答：{latest_user_message}",
             model_name=model_name or "test-model",
@@ -204,7 +219,11 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 )
                 return
 
-            if "我刚刚告诉你的名字是什么" in latest_user_message:
+            if any("以下是知识库检索结果" in message for message in all_message_contents) and (
+                "西湖" in latest_user_message
+            ):
+                full_text = "测试模型回答：根据知识库，西湖位于杭州。"
+            elif "我刚刚告诉你的名字是什么" in latest_user_message:
                 if any("我叫小王" in message for message in user_messages[:-1]):
                     full_text = "测试模型回答：你刚刚说你叫小王"
                 elif any("如果不知道就说不知道" in message for message in all_message_contents):

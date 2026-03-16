@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
 from app.clients.llm_client import LlmInputMessage
+from app.schemas.knowledge import KnowledgeSearchResult
 from app.tools.registry import ExecutedToolCall
 
 AgentRoute = Literal["answer", "tool", "ragflow", "mcp"]
@@ -36,6 +37,7 @@ class PreparedContext:
     messages: list[LlmInputMessage]
     used_session_memory: bool
     memory_summary: str | None = None
+    knowledge_context: str | None = None
 
 
 @dataclass(slots=True)
@@ -65,6 +67,8 @@ class AgentState(TypedDict, total=False):
     requested_tool_names: list[str] | None
     tool_choice: str | dict[str, object] | None
     route: AgentRoute
+    knowledge_results: list[KnowledgeSearchResult]
+    knowledge_context: str | None
     prepared_context: PreparedContext
     final_result: ChatTurnResult
     checkpoint_payload: dict[str, object] | None
