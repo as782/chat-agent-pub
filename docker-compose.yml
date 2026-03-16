@@ -15,20 +15,26 @@ services:
     # 暴露应用端口，默认仍使用 8000，可通过环境变量覆盖。
     ports:
       - "${APP_HOST_PORT:-8000}:8000"
-    # 向应用容器注入运行配置，数据库 DSN 保持容器内服务名访问。
+    # 向应用容器注入运行配置。
+    # 这里显式指定 Docker 内部的 PostgreSQL/Redis 地址，避免复用宿主机本地地址。
     environment:
       APP_NAME: ${APP_NAME:-chat-agent-backend}
       APP_ENV: ${APP_ENV:-local}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: ${APP_PORT:-8000}
-      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql+asyncpg://postgres:postgres@postgres:5432/chat_agent}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-chat_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DSN: ${DOCKER_POSTGRES_DSN:-}
+      REDIS_URL: redis://redis:6379/0
       RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://ragflow:9380}
       RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-replace-me}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
-
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.2}
     # 等待 PostgreSQL 与 Redis 可用后再启动应用。
     depends_on:
       postgres:

@@ -29,6 +29,7 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("OPENAI_TEMPERATURE", "0.6")
     monkeypatch.setattr("app.clients.llm_client.ChatOpenAI", FakeChatOpenAI)
 
     llm_client = LlmClient()
@@ -38,6 +39,7 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
     assert FakeChatOpenAI.last_init_kwargs["model"] == "unit-test-model"
     assert FakeChatOpenAI.last_init_kwargs["api_key"] == "unit-test-key"
     assert FakeChatOpenAI.last_init_kwargs["base_url"] == "https://example.com/v1"
+    assert FakeChatOpenAI.last_init_kwargs["temperature"] == 0.6
 
 
 def test_llm_client_raises_configuration_error_when_api_key_missing(
@@ -45,7 +47,7 @@ def test_llm_client_raises_configuration_error_when_api_key_missing(
 ) -> None:
     """验证未配置 API Key 时会抛出明确异常。"""
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
 
     llm_client = LlmClient()
 

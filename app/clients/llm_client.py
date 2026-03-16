@@ -36,7 +36,7 @@ class LlmClient:
         """根据环境配置创建 ChatOpenAI 客户端。"""
 
         api_key = self._settings.openai_api_key
-        if api_key is None:
+        if api_key is None or not api_key.get_secret_value().strip():
             raise ConfigurationException(
                 "未配置 OPENAI_API_KEY，无法调用大模型。",
                 details={"config_key": "OPENAI_API_KEY"},
@@ -45,7 +45,8 @@ class LlmClient:
         return ChatOpenAI(
             model=self._settings.openai_model,
             api_key=api_key.get_secret_value(),
-            base_url=self._settings.openai_base_url or None
+            base_url=self._settings.openai_base_url or None,
+            temperature=self._settings.openai_temperature,
         )
 
     @staticmethod

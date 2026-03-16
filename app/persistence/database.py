@@ -23,7 +23,7 @@ def get_engine() -> AsyncEngine:
     """创建并缓存异步数据库引擎。"""
 
     settings = get_settings()
-    return create_async_engine(settings.postgres_dsn, echo=settings.is_debug)
+    return create_async_engine(settings.database_url, echo=settings.is_debug)
 
 
 @lru_cache(maxsize=1)
