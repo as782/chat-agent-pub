@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.streaming import prime_stream_iterator
 from app.persistence.database import get_db_session
 from app.schemas.openai_compat import OpenAIChatCompletionRequest, OpenAIChatCompletionResponse
 from app.services.chat_service import ChatService
@@ -33,8 +34,9 @@ async def create_chat_completion(
             request,
             session_id=session_id,
         )
+        primed_stream_iterator = await prime_stream_iterator(stream_iterator)
         return StreamingResponse(
-            stream_iterator,
+            primed_stream_iterator,
             media_type="text/event-stream",
             headers={"X-Session-ID": resolved_session_id},
         )

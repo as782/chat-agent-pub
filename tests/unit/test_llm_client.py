@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from openai import PermissionDeniedError
 from pytest import MonkeyPatch
 
-from app.clients.llm_client import LlmClient
+from app.clients.llm_client import LlmChatCompletionChunk, LlmClient
 from app.core.exceptions import ConfigurationException, UpstreamServiceException
 
 
@@ -37,6 +39,20 @@ class FakeChatModel:
         """返回稳定的假模型响应。"""
 
         return AIMessage(content="模拟大模型回答")
+
+    async def astream(self, _: object) -> AsyncIterator[AIMessageChunk]:
+        """返回稳定的假流式响应。"""
+
+        yield AIMessageChunk(content="模拟", response_metadata={"model_name": "unit-test-model"})
+        yield AIMessageChunk(
+            content="流式回答",
+            response_metadata={"model_name": "unit-test-model"},
+        )
+        yield AIMessageChunk(
+            content="",
+            response_metadata={"model_name": "unit-test-model", "finish_reason": "stop"},
+            usage_metadata={"input_tokens": 2, "output_tokens": 4, "total_tokens": 6},
+        )
 
 
 class FakePermissionDeniedModel(FakeChatModel):
@@ -76,6 +92,36 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
     assert FakeChatModel.last_init_kwargs["model_provider"] == "openai"
     assert FakeChatModel.last_init_kwargs["api_key"] == "unit-test-key"
     assert FakeChatModel.last_init_kwargs["base_url"] == "https://example.com/v1"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_streams_chunks(monkeypatch: MonkeyPatch) -> None:
+    """验证 LLM 客户端会直接透传真实流式 chunk。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    streamed_chunks = [
+        chunk
+        async for chunk in llm_client.stream_chat_completion(
+            messages=[],
+            model_name="unit-test-model",
+        )
+    ]
+
+    assert streamed_chunks == [
+        LlmChatCompletionChunk(content_delta="模拟", model_name="unit-test-model"),
+        LlmChatCompletionChunk(content_delta="流式回答", model_name="unit-test-model"),
+        LlmChatCompletionChunk(
+            model_name="unit-test-model",
+            prompt_tokens=2,
+            completion_tokens=4,
+            total_tokens=6,
+            finish_reason="stop",
+        ),
+    ]
 
 
 @pytest.mark.asyncio

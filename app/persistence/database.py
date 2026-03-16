@@ -23,7 +23,8 @@ def get_engine() -> AsyncEngine:
     """创建并缓存异步数据库引擎。"""
 
     settings = get_settings()
-    return create_async_engine(settings.database_url, echo=settings.is_debug)
+    # 数据库 SQL 细节默认不直接输出到控制台，避免本地联调被大量底层日志淹没。
+    return create_async_engine(settings.database_url, echo=False)
 
 
 @lru_cache(maxsize=1)

@@ -1,6 +1,11 @@
 """OpenAI 兼容接口集成测试。"""
 
+from collections.abc import AsyncIterator
+
 from fastapi.testclient import TestClient
+
+from app.clients.llm_client import LlmChatCompletionChunk
+from app.core.exceptions import UpstreamServiceException
 
 
 def test_openai_compat_chat_completions_returns_standard_response(
@@ -89,6 +94,7 @@ def test_openai_compat_chat_completions_streams_response(app_client: TestClient)
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
     assert '"object": "chat.completion.chunk"' in response_body
+    assert response_body.count('"content":') >= 2
     assert "[DONE]" in response_body
 
 
@@ -114,3 +120,48 @@ def test_openai_compat_chat_completions_rejects_unsupported_tool(app_client: Tes
 
     assert response.status_code == 400
     assert response.json()["error_code"] == "unsupported_tool"
+
+
+def test_openai_compat_stream_returns_json_error_when_first_chunk_fails(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证兼容流式接口在首块失败时返回正常 JSON 错误，而不是直接中断连接。"""
+
+    def fake_stream_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+    ) -> AsyncIterator[LlmChatCompletionChunk]:
+        """模拟在第一个流式块之前就发生上游限流错误。"""
+
+        del self, messages, model_name, tools, tool_choice
+
+        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+            raise UpstreamServiceException(
+                "LLM 提供方触发限流，请稍后重试。",
+                error_code="llm_rate_limited",
+                status_code=429,
+            )
+            yield LlmChatCompletionChunk()
+
+        return iterator()
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_chat_completion,
+    )
+
+    response = app_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen-compatible-model",
+            "messages": [{"role": "user", "content": "你好"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error_code"] == "llm_rate_limited"

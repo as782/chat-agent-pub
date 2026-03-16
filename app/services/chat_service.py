@@ -11,8 +11,14 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
+from app.clients.llm_client import (
+    LlmChatCompletionAccumulator,
+    LlmChatCompletionResult,
+    LlmClient,
+    LlmInputMessage,
+)
 from app.core.exceptions import AppException, ResourceNotFoundException
+from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
 from app.persistence.session_repo import SessionRepository
 from app.schemas.openai_compat import OpenAIChatCompletionRequest, OpenAIChatCompletionResponse
@@ -20,6 +26,7 @@ from app.services.openai_compat_service import OpenAICompatService
 from app.tools.registry import ExecutedToolCall, ToolRegistry
 
 MAX_TOOL_CALL_ROUNDS = 3
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -91,16 +98,38 @@ class ChatService:
         chat_request: OpenAIChatCompletionRequest,
         session_id: str | None = None,
     ) -> tuple[str, AsyncIterator[str]]:
-        """处理内部聊天请求，并返回 OpenAI 兼容流式迭代器与会话标识。"""
+        """处理内部聊天请求，并返回真实流式的 OpenAI 兼容 SSE。"""
 
         execution_request = self._build_execution_request(
             chat_request=chat_request,
             session_id=session_id,
         )
-        turn_result = await self._execute_chat_turn(execution_request)
+
+        try:
+            resolved_session_id = await self._ensure_session(
+                session_id=execution_request.session_id,
+                user_message=execution_request.latest_user_message,
+                user_id=execution_request.user_id,
+            )
+            await self._message_repository.create(
+                message_id=self._generate_identifier(),
+                session_id=resolved_session_id,
+                role="user",
+                content=execution_request.latest_user_message,
+                message_metadata=execution_request.message_metadata,
+            )
+            # 先提交用户消息与会话，确保流式响应开始后会话已经具备可追踪性。
+            await self._db_session.commit()
+        except Exception:
+            await self._db_session.rollback()
+            raise
+
         return (
-            turn_result.session_id,
-            self._openai_compat_service.build_stream_chat_completion(turn_result),
+            resolved_session_id,
+            self._stream_single_round(
+                session_id=resolved_session_id,
+                execution_request=execution_request,
+            ),
         )
 
     def _build_execution_request(
@@ -131,6 +160,87 @@ class ChatService:
             tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
             user_id=chat_request.user,
         )
+
+    async def _stream_single_round(
+        self,
+        *,
+        session_id: str,
+        execution_request: ChatExecutionRequest,
+    ) -> AsyncIterator[str]:
+        """以真实流式方式输出单轮模型结果并在结束后持久化。"""
+
+        available_tools = (
+            self._tool_registry.get_tools(execution_request.requested_tool_names)
+            if execution_request.requested_tool_names is not None
+            else None
+        )
+        chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
+            default_model_name=execution_request.model_name or self._llm_client.default_model_name
+        )
+        accumulator = LlmChatCompletionAccumulator(
+            requested_model_name=execution_request.model_name,
+            default_model_name=self._llm_client.default_model_name,
+        )
+        has_emitted_payload = False
+
+        try:
+            async for llm_chunk in self._llm_client.stream_chat_completion(
+                messages=execution_request.input_messages,
+                model_name=execution_request.model_name,
+                tools=available_tools,
+                tool_choice=execution_request.tool_choice,
+            ):
+                accumulator.append_chunk(llm_chunk)
+                for payload in chunk_builder.consume_chunk(llm_chunk):
+                    has_emitted_payload = True
+                    yield payload
+
+            completion_result = accumulator.build_result()
+
+            if completion_result.tool_calls:
+                # 流式协议下保持 OpenAI 语义，只持久化工具调用请求，不在同一条流中继续自动执行工具。
+                await self._persist_assistant_tool_calls(
+                    session_id=session_id,
+                    completion_result=completion_result,
+                )
+            else:
+                await self._message_repository.create(
+                    message_id=self._generate_identifier(),
+                    session_id=session_id,
+                    role="assistant",
+                    content=completion_result.content,
+                    message_metadata={
+                        "finish_reason": completion_result.finish_reason,
+                        "model_name": completion_result.model_name,
+                    },
+                )
+
+            await self._session_repository.update_timestamp(session_id)
+            await self._db_session.commit()
+
+            for payload in chunk_builder.finalize(completion_result.finish_reason):
+                has_emitted_payload = True
+                yield payload
+        except AppException as exception:
+            await self._db_session.rollback()
+            if not has_emitted_payload:
+                raise
+
+            yield self._openai_compat_service.build_stream_error_payload(exception)
+            yield "data: [DONE]\n\n"
+        except Exception as exception:
+            await self._db_session.rollback()
+            if not has_emitted_payload:
+                raise
+
+            LOGGER.exception("内部聊天流式输出过程中发生未处理异常。", exc_info=exception)
+            yield self._openai_compat_service.build_stream_error_payload(
+                AppException(
+                    "流式输出过程中发生内部异常。",
+                    error_code="stream_error",
+                )
+            )
+            yield "data: [DONE]\n\n"
 
     async def _execute_chat_turn(
         self,

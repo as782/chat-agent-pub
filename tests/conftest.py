@@ -6,14 +6,19 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from app.clients.llm_client import LlmChatCompletionResult, LlmToolCall
+from app.clients.llm_client import (
+    LlmChatCompletionChunk,
+    LlmChatCompletionResult,
+    LlmToolCall,
+    LlmToolCallChunk,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -54,6 +59,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     ) -> LlmChatCompletionResult:
         """为集成测试返回稳定的假模型回答与工具调用。"""
 
+        del self, tool_choice
         latest_user_message = ""
         latest_tool_output = ""
 
@@ -65,11 +71,8 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             if role == "user" and not latest_user_message:
                 latest_user_message = content
 
-        if (
-            tools
-            and not latest_tool_output
-            and ("1+1" in latest_user_message or "计算" in latest_user_message)
-        ):
+        need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
+        if tools and not latest_tool_output and need_calculator_tool:
             return LlmChatCompletionResult(
                 content="",
                 model_name=model_name or "test-model",
@@ -86,11 +89,8 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 ],
             )
 
-        if (
-            tools
-            and not latest_tool_output
-            and ("时间" in latest_user_message or "几点" in latest_user_message)
-        ):
+        need_datetime_tool = "时间" in latest_user_message or "几点" in latest_user_message
+        if tools and not latest_tool_output and need_datetime_tool:
             return LlmChatCompletionResult(
                 content="",
                 model_name=model_name or "test-model",
@@ -126,9 +126,73 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             finish_reason="stop",
         )
 
+    def fake_stream_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+    ) -> AsyncIterator[LlmChatCompletionChunk]:
+        """为集成测试返回真实逐块产生的假流式结果。"""
+
+        del self, tool_choice
+        latest_user_message = ""
+
+        for message in reversed(messages):
+            if getattr(message, "role", "") == "user":
+                latest_user_message = getattr(message, "content", "")
+                break
+
+        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+            resolved_model_name = model_name or "test-model"
+            if tools and ("1+1" in latest_user_message or "计算" in latest_user_message):
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    tool_call_chunks=[
+                        LlmToolCallChunk(
+                            index=0,
+                            tool_call_id="call_calculator",
+                            tool_name="calculator",
+                            arguments_chunk='{"expression":"1+1"}',
+                        )
+                    ],
+                )
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="tool_calls",
+                )
+                return
+
+            full_text = f"测试模型回答：{latest_user_message}"
+            split_index = max(1, len(full_text) // 2)
+            yield LlmChatCompletionChunk(
+                content_delta=full_text[:split_index],
+                model_name=resolved_model_name,
+            )
+            yield LlmChatCompletionChunk(
+                content_delta=full_text[split_index:],
+                model_name=resolved_model_name,
+            )
+            yield LlmChatCompletionChunk(
+                model_name=resolved_model_name,
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+        return iterator()
+
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
+    )
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_chat_completion,
     )
 
     from app.main import create_app

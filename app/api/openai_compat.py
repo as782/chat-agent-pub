@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, status
 from fastapi.responses import StreamingResponse
 
+from app.api.streaming import prime_stream_iterator
 from app.schemas.openai_compat import OpenAIChatCompletionRequest, OpenAIChatCompletionResponse
 from app.services.openai_compat_service import OpenAICompatService
 
@@ -27,8 +28,9 @@ async def create_openai_chat_completion(
     compat_service = OpenAICompatService()
     if request.stream:
         stream_iterator = await compat_service.stream_chat_completion(request)
+        primed_stream_iterator = await prime_stream_iterator(stream_iterator)
         return StreamingResponse(
-            stream_iterator,
+            primed_stream_iterator,
             media_type="text/event-stream",
         )
     return await compat_service.create_chat_completion(request)
