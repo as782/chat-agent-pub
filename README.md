@@ -127,7 +127,7 @@ OPENAI_MODEL=gpt-4.1-mini
 
 ```bash
 OPENAI_BASE_URL=https://your-provider.example.com/v1
-OPENAI_TEMPERATURE=0.2
+
 ```
 
 基础依赖和 LLM 配置完成后，再执行：

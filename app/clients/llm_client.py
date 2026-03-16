@@ -45,8 +45,7 @@ class LlmClient:
         return ChatOpenAI(
             model=self._settings.openai_model,
             api_key=api_key.get_secret_value(),
-            base_url=self._settings.openai_base_url or None,
-            temperature=self._settings.openai_temperature,
+            base_url=self._settings.openai_base_url or None
         )
 
     @staticmethod
