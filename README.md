@@ -29,6 +29,8 @@
 - 提供 `/health` 接口
 - 建立核心配置、日志、异常体系
 - 建立会话、消息、短期记忆、RAGFlow 映射的持久化层
+- 建立基础单轮会话、消息查询和对话 API
+- 接入真实 LLM 单轮对话链路
 
 ## 目录结构说明
 
@@ -36,6 +38,7 @@
 app/
 ├── api/
 │   └── v1/
+├── clients/
 ├── core/
 ├── schemas/
 ├── services/
@@ -59,6 +62,7 @@ tests/
 
 - `app/main.py`：应用入口，负责创建 FastAPI 应用并注册系统路由与业务路由。
 - `app/api/v1/`：HTTP 接口层，只做参数解析、调用 service、返回响应。
+- `app/clients/`：第三方客户端层，统一封装外部系统和外部模型调用。
 - `app/core/`：基础设施层，放配置、日志、通用异常等横切能力。
 - `app/schemas/`：接口请求体、响应体和内部数据传输对象定义。
 - `app/services/`：业务编排层，负责会话、消息、对话等用例流程。
@@ -110,7 +114,23 @@ POSTGRES_HOST_PORT=65432
 REDIS_HOST_PORT=6389
 ```
 
-基础依赖启动后，再执行：
+## 配置 LLM
+
+当前单轮对话已经接入真实 LLM。运行前请在 `.env` 中至少配置：
+
+```bash
+OPENAI_API_KEY=your-api-key
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+如果你使用 OpenAI 兼容接口，例如自建网关或其他兼容服务，还可以配置：
+
+```bash
+OPENAI_BASE_URL=https://your-provider.example.com/v1
+OPENAI_TEMPERATURE=0.2
+```
+
+基础依赖和 LLM 配置完成后，再执行：
 
 ```bash
 uvicorn app.main:app --reload
@@ -132,5 +152,5 @@ pytest
 
 ## 阶段说明
 
-当前仓库已完成工程初始化、基础设施和持久化层。会话 API、消息 API、基础单轮对话 API、
+当前仓库已完成工程初始化、基础设施、持久化层、基础 API 和真实 LLM 单轮对话接入。
 LangGraph 多轮编排、RAGFlow 接入、工具系统和 MCP 能力会在后续阶段继续补齐。

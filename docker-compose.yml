@@ -25,7 +25,10 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://ragflow:9380}
       RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-replace-me}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.2}
     # 等待 PostgreSQL 与 Redis 可用后再启动应用。
     depends_on:
       postgres:

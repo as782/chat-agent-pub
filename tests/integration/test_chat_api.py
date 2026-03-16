@@ -16,7 +16,7 @@ def test_chat_api_creates_session_and_returns_answer(app_client: TestClient) -> 
     assert response_payload["session_id"]
     assert response_payload["used_knowledge"] is False
     assert response_payload["used_tools"] == []
-    assert "基础单轮模式" in response_payload["answer"]
+    assert response_payload["answer"] == "测试模型回答：你好，系统"
 
 
 def test_chat_api_returns_404_when_session_not_found(app_client: TestClient) -> None:

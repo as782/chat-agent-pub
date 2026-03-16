@@ -34,11 +34,23 @@ def clear_settings_cache() -> Iterator[None]:
 
 @pytest.fixture
 def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]:
-    """提供使用临时 SQLite 数据库的 FastAPI 测试客户端。"""
+    """提供使用临时 SQLite 数据库和假 LLM 的 FastAPI 测试客户端。"""
 
     sqlite_database_path = tmp_path / "integration-test.db"
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("POSTGRES_DSN", f"sqlite+aiosqlite:///{sqlite_database_path.as_posix()}")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+
+    async def fake_generate_answer(self: object, user_message: str) -> str:
+        """为集成测试返回稳定的假模型回答。"""
+
+        return f"测试模型回答：{user_message}"
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.generate_answer",
+        fake_generate_answer,
+    )
 
     from app.main import create_app
 

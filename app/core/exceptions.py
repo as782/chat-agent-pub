@@ -44,6 +44,18 @@ class ResourceNotFoundException(AppException):
         )
 
 
+class ConfigurationException(AppException):
+    """配置缺失或配置错误异常。"""
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            error_code="configuration_error",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            details=details,
+        )
+
+
 async def app_exception_handler(_: Request, exception: AppException) -> JSONResponse:
     """处理自定义应用异常并返回统一错误响应。"""
 
