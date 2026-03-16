@@ -118,6 +118,7 @@ class ContextBuilder:
         memory_summary: str | None,
         need_session_memory: bool,
         knowledge_context: str | None = None,
+        mcp_context: str | None = None,
     ) -> PreparedContext:
         """构建当前轮次的模型输入上下文。
 
@@ -135,12 +136,20 @@ class ContextBuilder:
                         content=knowledge_context,
                     )
                 )
+            if mcp_context:
+                context_messages.append(
+                    LlmInputMessage(
+                        role="system",
+                        content=mcp_context,
+                    )
+                )
             context_messages.extend(input_messages)
             return PreparedContext(
                 messages=context_messages,
                 used_session_memory=False,
                 memory_summary=None,
                 knowledge_context=knowledge_context,
+                mcp_context=mcp_context,
             )
 
         context_messages: list[LlmInputMessage] = []
@@ -158,6 +167,13 @@ class ContextBuilder:
                     content=knowledge_context,
                 )
             )
+        if mcp_context:
+            context_messages.append(
+                LlmInputMessage(
+                    role="system",
+                    content=mcp_context,
+                )
+            )
 
         # 这里按“系统历史在前、本次显式输入在后”合并上下文，
         # 同时移除历史尾部与本次输入尾部完全重叠的部分，避免重复注入最后一轮用户消息。
@@ -172,6 +188,7 @@ class ContextBuilder:
             used_session_memory=bool(memory_summary or deduplicated_recent_messages),
             memory_summary=memory_summary,
             knowledge_context=knowledge_context,
+            mcp_context=mcp_context,
         )
 
     def _drop_overlapped_recent_suffix(

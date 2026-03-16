@@ -215,6 +215,24 @@ def test_chat_api_uses_knowledge_route_when_requested(app_client: TestClient, mo
     )
 
 
+def test_chat_api_uses_mcp_route_when_requested(app_client: TestClient) -> None:
+    """验证命中 MCP 路由时会把 MCP 上下文注入回答链路。"""
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "mcp: 当前有哪些 MCP 服务？"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：当前已配置 MCP 服务骨架。"
+    )
+
+
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:
     """验证内部聊天接口在 stream=true 时返回 OpenAI 兼容 SSE 数据。"""
 

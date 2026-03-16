@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -51,6 +52,19 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.setenv("RAGFLOW_API_KEY", "test-ragflow-key")
     monkeypatch.setenv("RAGFLOW_BASE_URL", "https://ragflow.example.com")
+    monkeypatch.setenv(
+        "MCP_SERVERS_JSON",
+        json.dumps(
+            [
+                {
+                    "name": "demo-mcp-http",
+                    "transport": "http",
+                    "endpoint": "https://mcp.example.com",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
 
     async def fake_create_chat_completion(
         self: object,
@@ -84,6 +98,9 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         )
         has_knowledge_context = any(
             "以下是知识库检索结果" in message for message in all_message_contents
+        )
+        has_mcp_context = any(
+            "以下是当前系统已配置的 MCP 服务骨架信息" in message for message in all_message_contents
         )
 
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
@@ -161,6 +178,15 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 total_tokens=20,
                 finish_reason="stop",
             )
+        if has_mcp_context and "MCP" in latest_user_message.upper():
+            return LlmChatCompletionResult(
+                content="测试模型回答：当前已配置 MCP 服务骨架。",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
 
         return LlmChatCompletionResult(
             content=f"测试模型回答：{latest_user_message}",
@@ -223,6 +249,11 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 "西湖" in latest_user_message
             ):
                 full_text = "测试模型回答：根据知识库，西湖位于杭州。"
+            elif any(
+                "以下是当前系统已配置的 MCP 服务骨架信息" in message
+                for message in all_message_contents
+            ) and ("MCP" in latest_user_message.upper()):
+                full_text = "测试模型回答：当前已配置 MCP 服务骨架。"
             elif "我刚刚告诉你的名字是什么" in latest_user_message:
                 if any("我叫小王" in message for message in user_messages[:-1]):
                     full_text = "测试模型回答：你刚刚说你叫小王"

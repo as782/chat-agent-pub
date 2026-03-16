@@ -38,6 +38,7 @@ class PreparedContext:
     used_session_memory: bool
     memory_summary: str | None = None
     knowledge_context: str | None = None
+    mcp_context: str | None = None
 
 
 @dataclass(slots=True)
@@ -69,6 +70,7 @@ class AgentState(TypedDict, total=False):
     route: AgentRoute
     knowledge_results: list[KnowledgeSearchResult]
     knowledge_context: str | None
+    mcp_context: str | None
     prepared_context: PreparedContext
     final_result: ChatTurnResult
     checkpoint_payload: dict[str, object] | None
