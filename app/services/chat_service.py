@@ -1,5 +1,5 @@
 """对话服务模块。
-负责基础单轮对话、内置工具执行、消息落库与流式输出编排。
+负责内部聊天接口的会话落库、工具执行与 OpenAI 兼容响应编排。
 当前阶段不负责多轮长期记忆、LangGraph 状态图和知识库路由决策。
 """
 
@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from json import dumps
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,11 +15,25 @@ from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputM
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.persistence.message_repo import MessageRepository
 from app.persistence.session_repo import SessionRepository
-from app.schemas.chat import ChatRequest, ChatResponse, ChatToolCallResponse
+from app.schemas.openai_compat import OpenAIChatCompletionRequest, OpenAIChatCompletionResponse
+from app.services.openai_compat_service import OpenAICompatService
 from app.tools.registry import ExecutedToolCall, ToolRegistry
 
 MAX_TOOL_CALL_ROUNDS = 3
-DEFAULT_SYSTEM_PROMPT = "你是最小可用 Agent 后端中的基础问答模块，需要简洁、准确地回答用户。"
+
+
+@dataclass(slots=True)
+class ChatExecutionRequest:
+    """内部聊天执行请求。"""
+
+    session_id: str | None
+    latest_user_message: str
+    input_messages: list[LlmInputMessage]
+    model_name: str | None
+    requested_tool_names: list[str] | None
+    tool_choice: str | dict[str, object] | None
+    user_id: str | None = None
+    message_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -28,18 +41,17 @@ class ChatTurnResult:
     """单轮对话执行结果。"""
 
     session_id: str
-    answer: str
+    content: str
     model_name: str
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
     finish_reason: str
-    used_tools: list[str] = field(default_factory=list)
     tool_calls: list[ExecutedToolCall] = field(default_factory=list)
 
 
 class ChatService:
-    """基础单轮对话服务。"""
+    """内部聊天服务。"""
 
     def __init__(
         self,
@@ -52,111 +64,109 @@ class ChatService:
         self._message_repository = MessageRepository(db_session)
         self._llm_client = llm_client or LlmClient()
         self._tool_registry = tool_registry or ToolRegistry()
-
-    async def send_message(self, chat_request: ChatRequest) -> ChatResponse:
-        """处理单轮对话请求并持久化本轮消息。"""
-
-        turn_result = await self._execute_chat_turn(chat_request)
-        return self._build_chat_response(turn_result)
-
-    async def stream_message(self, chat_request: ChatRequest) -> AsyncIterator[str]:
-        """以 SSE 形式输出内部聊天接口的流式结果。"""
-
-        turn_result = await self._execute_chat_turn(chat_request)
-
-        yield self._format_sse_payload(
-            {
-                "type": "message_start",
-                "session_id": turn_result.session_id,
-                "model": turn_result.model_name,
-            }
+        self._openai_compat_service = OpenAICompatService(
+            llm_client=self._llm_client,
+            tool_registry=self._tool_registry,
         )
 
-        for tool_call in turn_result.tool_calls:
-            yield self._format_sse_payload(
-                {
-                    "type": "tool_call",
-                    "tool_call_id": tool_call.tool_call_id,
-                    "tool_name": tool_call.tool_name,
-                    "arguments": tool_call.arguments,
-                    "output": tool_call.output,
-                }
-            )
+    async def send_message(
+        self,
+        chat_request: OpenAIChatCompletionRequest,
+        session_id: str | None = None,
+    ) -> tuple[str, OpenAIChatCompletionResponse]:
+        """处理内部聊天请求，并返回 OpenAI 兼容响应与会话标识。"""
 
-        answer_chunks = self._split_text_for_stream(turn_result.answer)
-        if not answer_chunks:
-            answer_chunks = [""]
-
-        for answer_chunk in answer_chunks:
-            yield self._format_sse_payload(
-                {
-                    "type": "answer_delta",
-                    "delta": answer_chunk,
-                }
-            )
-
-        yield self._format_sse_payload(
-            {
-                "type": "message_end",
-                "session_id": turn_result.session_id,
-                "answer": turn_result.answer,
-                "model": turn_result.model_name,
-                "finish_reason": turn_result.finish_reason,
-                "used_tools": turn_result.used_tools,
-                "tool_calls": [
-                    {
-                        "tool_call_id": tool_call.tool_call_id,
-                        "tool_name": tool_call.tool_name,
-                        "arguments": tool_call.arguments,
-                        "output": tool_call.output,
-                    }
-                    for tool_call in turn_result.tool_calls
-                ],
-            }
+        execution_request = self._build_execution_request(
+            chat_request=chat_request,
+            session_id=session_id,
+        )
+        turn_result = await self._execute_chat_turn(execution_request)
+        return (
+            turn_result.session_id,
+            self._openai_compat_service.build_chat_completion_response(turn_result),
         )
 
-    async def _execute_chat_turn(self, chat_request: ChatRequest) -> ChatTurnResult:
-        """执行单轮对话与工具调用流程。"""
+    async def stream_message(
+        self,
+        chat_request: OpenAIChatCompletionRequest,
+        session_id: str | None = None,
+    ) -> tuple[str, AsyncIterator[str]]:
+        """处理内部聊天请求，并返回 OpenAI 兼容流式迭代器与会话标识。"""
 
-        if chat_request.tool_choice and not chat_request.enable_tools:
+        execution_request = self._build_execution_request(
+            chat_request=chat_request,
+            session_id=session_id,
+        )
+        turn_result = await self._execute_chat_turn(execution_request)
+        return (
+            turn_result.session_id,
+            self._openai_compat_service.build_stream_chat_completion(turn_result),
+        )
+
+    def _build_execution_request(
+        self,
+        *,
+        chat_request: OpenAIChatCompletionRequest,
+        session_id: str | None,
+    ) -> ChatExecutionRequest:
+        """将 OpenAI 兼容请求转换为内部执行请求。"""
+
+        requested_tool_names = self._openai_compat_service.extract_requested_tool_names(
+            chat_request
+        )
+        if requested_tool_names is None and chat_request.tool_choice is not None:
             raise AppException(
-                "未启用工具调用时不能指定 tool_choice。",
+                "未传入 tools 时不能指定 tool_choice。",
                 error_code="invalid_request",
             )
 
+        return ChatExecutionRequest(
+            session_id=session_id,
+            latest_user_message=self._openai_compat_service.extract_latest_user_message(
+                chat_request.messages
+            ),
+            input_messages=self._openai_compat_service.build_input_messages(chat_request.messages),
+            model_name=chat_request.model,
+            requested_tool_names=requested_tool_names,
+            tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
+            user_id=chat_request.user,
+        )
+
+    async def _execute_chat_turn(
+        self,
+        execution_request: ChatExecutionRequest,
+    ) -> ChatTurnResult:
+        """执行单轮对话与工具调用流程。"""
+
         try:
             session_id = await self._ensure_session(
-                chat_request.session_id,
-                chat_request.user_message,
+                session_id=execution_request.session_id,
+                user_message=execution_request.latest_user_message,
+                user_id=execution_request.user_id,
             )
             await self._message_repository.create(
                 message_id=self._generate_identifier(),
                 session_id=session_id,
                 role="user",
-                content=chat_request.user_message,
-                message_metadata=chat_request.metadata,
+                content=execution_request.latest_user_message,
+                message_metadata=execution_request.message_metadata,
             )
 
-            conversation_messages = self._build_initial_messages(chat_request.user_message)
+            conversation_messages = list(execution_request.input_messages)
             available_tools = (
-                self._tool_registry.get_tools(chat_request.tool_names or None)
-                if chat_request.enable_tools
+                self._tool_registry.get_tools(execution_request.requested_tool_names)
+                if execution_request.requested_tool_names is not None
                 else None
             )
-            tool_choice = (
-                self._tool_registry.normalize_tool_choice(chat_request.tool_choice)
-                if chat_request.enable_tools
-                else None
-            )
+            tool_choice = execution_request.tool_choice
 
-            used_tools: list[str] = []
             executed_tool_calls: list[ExecutedToolCall] = []
             final_result: LlmChatCompletionResult | None = None
 
             for tool_round in range(MAX_TOOL_CALL_ROUNDS):
                 completion_result = await self._llm_client.create_chat_completion(
                     messages=conversation_messages,
-                    model_name=chat_request.model,
+                    model_name=execution_request.model_name,
                     tools=available_tools,
                     tool_choice=tool_choice,
                 )
@@ -185,7 +195,6 @@ class ChatService:
                         ]
                     )
                     for tool_result in current_tool_results:
-                        used_tools.append(tool_result.tool_name)
                         executed_tool_calls.append(tool_result)
                         await self._message_repository.create(
                             message_id=self._generate_identifier(),
@@ -241,24 +250,29 @@ class ChatService:
 
         return ChatTurnResult(
             session_id=session_id,
-            answer=final_result.content,
+            content=final_result.content,
             model_name=final_result.model_name,
             prompt_tokens=final_result.prompt_tokens,
             completion_tokens=final_result.completion_tokens,
             total_tokens=final_result.total_tokens,
             finish_reason=final_result.finish_reason,
-            used_tools=used_tools,
             tool_calls=executed_tool_calls,
         )
 
-    async def _ensure_session(self, session_id: str | None, user_message: str) -> str:
+    async def _ensure_session(
+        self,
+        *,
+        session_id: str | None,
+        user_message: str,
+        user_id: str | None,
+    ) -> str:
         """确保当前请求绑定到可用会话。"""
 
         if session_id is None:
             session_entity = await self._session_repository.create(
                 session_id=self._generate_identifier(),
                 title=user_message[:20],
-                user_id=None,
+                user_id=user_id,
             )
             return session_entity.session_id
 
@@ -297,52 +311,6 @@ class ChatService:
                 ],
             },
         )
-
-    @staticmethod
-    def _build_initial_messages(user_message: str) -> list[LlmInputMessage]:
-        """构建单轮对话的基础提示词消息。"""
-
-        return [
-            LlmInputMessage(role="system", content=DEFAULT_SYSTEM_PROMPT),
-            LlmInputMessage(role="user", content=user_message),
-        ]
-
-    @staticmethod
-    def _build_chat_response(turn_result: ChatTurnResult) -> ChatResponse:
-        """将内部执行结果转换为 API 响应。"""
-
-        return ChatResponse(
-            session_id=turn_result.session_id,
-            answer=turn_result.answer,
-            model=turn_result.model_name,
-            finish_reason=turn_result.finish_reason,
-            used_knowledge=False,
-            used_tools=turn_result.used_tools,
-            tool_calls=[
-                ChatToolCallResponse(
-                    tool_call_id=tool_call.tool_call_id,
-                    tool_name=tool_call.tool_name,
-                    arguments=tool_call.arguments,
-                    output=tool_call.output,
-                )
-                for tool_call in turn_result.tool_calls
-            ],
-        )
-
-    @staticmethod
-    def _format_sse_payload(payload: dict[str, object]) -> str:
-        """将内部聊天事件转换为 SSE 文本。"""
-
-        return f"data: {dumps(payload, ensure_ascii=False)}\n\n"
-
-    @staticmethod
-    def _split_text_for_stream(content: str, chunk_size: int = 20) -> list[str]:
-        """按固定长度切分文本，用于最小流式输出。"""
-
-        if not content:
-            return []
-
-        return [content[index : index + chunk_size] for index in range(0, len(content), chunk_size)]
 
     @staticmethod
     def _generate_identifier() -> str:

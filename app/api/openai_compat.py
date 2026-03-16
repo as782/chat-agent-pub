@@ -26,8 +26,9 @@ async def create_openai_chat_completion(
 
     compat_service = OpenAICompatService()
     if request.stream:
+        stream_iterator = await compat_service.stream_chat_completion(request)
         return StreamingResponse(
-            compat_service.stream_chat_completion(request),
+            stream_iterator,
             media_type="text/event-stream",
         )
     return await compat_service.create_chat_completion(request)

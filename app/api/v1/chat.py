@@ -7,28 +7,40 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.database import get_db_session
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.openai_compat import OpenAIChatCompletionRequest, OpenAIChatCompletionResponse
 from app.services.chat_service import ChatService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@router.post("", response_model=ChatResponse, status_code=status.HTTP_200_OK)
+@router.post("", response_model=OpenAIChatCompletionResponse, status_code=status.HTTP_200_OK)
 async def create_chat_completion(
-    request: ChatRequest,
+    request: OpenAIChatCompletionRequest,
+    response: Response,
     db_session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> ChatResponse | StreamingResponse:
+    session_id: Annotated[str | None, Header(alias="X-Session-ID")] = None,
+) -> OpenAIChatCompletionResponse | StreamingResponse:
     """处理基础单轮对话请求。"""
 
     chat_service = ChatService(db_session)
     if request.stream:
-        return StreamingResponse(
-            chat_service.stream_message(request),
-            media_type="text/event-stream",
+        resolved_session_id, stream_iterator = await chat_service.stream_message(
+            request,
+            session_id=session_id,
         )
-    return await chat_service.send_message(request)
+        return StreamingResponse(
+            stream_iterator,
+            media_type="text/event-stream",
+            headers={"X-Session-ID": resolved_session_id},
+        )
+    resolved_session_id, chat_response = await chat_service.send_message(
+        request,
+        session_id=session_id,
+    )
+    response.headers["X-Session-ID"] = resolved_session_id
+    return chat_response

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from json import dumps, loads
+from typing import Protocol
 from uuid import uuid4
 
 from app.clients.llm_client import LlmClient, LlmInputMessage, LlmToolCall
@@ -23,6 +24,18 @@ from app.schemas.openai_compat import (
     OpenAIChatMessage,
 )
 from app.tools.registry import ToolRegistry
+
+
+class OpenAICompatibleResult(Protocol):
+    """OpenAI 兼容响应构建所需的结果协议。"""
+
+    content: str
+    model_name: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    finish_reason: str
+    tool_calls: list[object]
 
 
 class OpenAICompatService:
@@ -42,31 +55,8 @@ class OpenAICompatService:
     ) -> OpenAIChatCompletionResponse:
         """处理 OpenAI 兼容聊天请求。"""
 
-        response_id = f"chatcmpl-{uuid4().hex}"
-        created_at = int(datetime.now(UTC).timestamp())
         completion_result = await self._execute_completion(request)
-
-        return OpenAIChatCompletionResponse(
-            id=response_id,
-            created=created_at,
-            model=completion_result.model_name,
-            choices=[
-                OpenAIChatCompletionChoice(
-                    index=0,
-                    message=OpenAIChatCompletionAssistantMessage(
-                        content=completion_result.content or None,
-                        tool_calls=self._build_openai_tool_calls(completion_result.tool_calls)
-                        or None,
-                    ),
-                    finish_reason=completion_result.finish_reason,
-                )
-            ],
-            usage=OpenAIChatCompletionUsage(
-                prompt_tokens=completion_result.prompt_tokens,
-                completion_tokens=completion_result.completion_tokens,
-                total_tokens=completion_result.total_tokens,
-            ),
-        )
+        return self.build_chat_completion_response(completion_result)
 
     async def stream_chat_completion(
         self,
@@ -74,17 +64,77 @@ class OpenAICompatService:
     ) -> AsyncIterator[str]:
         """以 SSE 形式输出 OpenAI 兼容流式结果。"""
 
+        completion_result = await self._execute_completion(request)
+        return self.build_stream_chat_completion(completion_result)
+
+    def build_chat_completion_response(
+        self,
+        completion_result: OpenAICompatibleResult,
+    ) -> OpenAIChatCompletionResponse:
+        """将统一补全结果转换为 OpenAI 兼容响应。"""
+
         response_id = f"chatcmpl-{uuid4().hex}"
         created_at = int(datetime.now(UTC).timestamp())
-        completion_result = await self._execute_completion(request)
 
-        if completion_result.tool_calls:
-            for tool_call_index, tool_call in enumerate(completion_result.tool_calls):
+        return OpenAIChatCompletionResponse(
+            id=response_id,
+            created=created_at,
+            model=str(completion_result.model_name),
+            choices=[
+                OpenAIChatCompletionChoice(
+                    index=0,
+                    message=OpenAIChatCompletionAssistantMessage(
+                        content=completion_result.content or None,
+                        tool_calls=(
+                            self._build_openai_tool_calls(list(completion_result.tool_calls))
+                            or None
+                        ),
+                    ),
+                    finish_reason=str(completion_result.finish_reason),
+                )
+            ],
+            usage=OpenAIChatCompletionUsage(
+                prompt_tokens=int(completion_result.prompt_tokens),
+                completion_tokens=int(completion_result.completion_tokens),
+                total_tokens=int(completion_result.total_tokens),
+            ),
+        )
+
+    def build_stream_chat_completion(
+        self,
+        completion_result: OpenAICompatibleResult,
+    ) -> AsyncIterator[str]:
+        """将统一补全结果转换为 OpenAI 兼容 SSE 流。"""
+
+        response_id = f"chatcmpl-{uuid4().hex}"
+        created_at = int(datetime.now(UTC).timestamp())
+        return self._stream_completion_result(
+            completion_result=completion_result,
+            response_id=response_id,
+            created_at=created_at,
+        )
+
+    async def _stream_completion_result(
+        self,
+        *,
+        completion_result: OpenAICompatibleResult,
+        response_id: str,
+        created_at: int,
+    ) -> AsyncIterator[str]:
+        """输出统一补全结果的 OpenAI 兼容 chunk 事件。"""
+
+        tool_calls = list(completion_result.tool_calls)
+        model_name = str(completion_result.model_name)
+        finish_reason = str(completion_result.finish_reason)
+        content = str(completion_result.content)
+
+        if tool_calls:
+            for tool_call_index, tool_call in enumerate(tool_calls):
                 chunk_payload = {
                     "id": response_id,
                     "object": "chat.completion.chunk",
                     "created": created_at,
-                    "model": completion_result.model_name,
+                    "model": model_name,
                     "choices": [
                         {
                             "index": 0,
@@ -111,7 +161,7 @@ class OpenAICompatService:
                 }
                 yield self._format_sse_payload(chunk_payload)
         else:
-            answer_chunks = self._split_text_for_stream(completion_result.content)
+            answer_chunks = self._split_text_for_stream(content)
             if not answer_chunks:
                 answer_chunks = [""]
 
@@ -120,7 +170,7 @@ class OpenAICompatService:
                     "id": response_id,
                     "object": "chat.completion.chunk",
                     "created": created_at,
-                    "model": completion_result.model_name,
+                    "model": model_name,
                     "choices": [
                         {
                             "index": 0,
@@ -138,12 +188,12 @@ class OpenAICompatService:
             "id": response_id,
             "object": "chat.completion.chunk",
             "created": created_at,
-            "model": completion_result.model_name,
+            "model": model_name,
             "choices": [
                 {
                     "index": 0,
                     "delta": {},
-                    "finish_reason": completion_result.finish_reason,
+                    "finish_reason": finish_reason,
                 }
             ],
         }
@@ -153,8 +203,8 @@ class OpenAICompatService:
     async def _execute_completion(self, request: OpenAIChatCompletionRequest):
         """执行一次 OpenAI 兼容补全调用。"""
 
-        input_messages = self._build_input_messages(request.messages)
-        requested_tool_names = self._extract_requested_tool_names(request)
+        input_messages = self.build_input_messages(request.messages)
+        requested_tool_names = self.extract_requested_tool_names(request)
         if requested_tool_names is None and request.tool_choice is not None:
             raise AppException(
                 "未传入 tools 时不能指定 tool_choice。",
@@ -174,7 +224,7 @@ class OpenAICompatService:
             tool_choice=tool_choice,
         )
 
-    def _build_input_messages(self, messages: list[OpenAIChatMessage]) -> list[LlmInputMessage]:
+    def build_input_messages(self, messages: list[OpenAIChatMessage]) -> list[LlmInputMessage]:
         """将 OpenAI 消息转换为统一输入消息。"""
 
         input_messages: list[LlmInputMessage] = []
@@ -192,7 +242,7 @@ class OpenAICompatService:
 
         return input_messages
 
-    def _extract_requested_tool_names(
+    def extract_requested_tool_names(
         self,
         request: OpenAIChatCompletionRequest,
     ) -> list[str] | None:
@@ -204,6 +254,20 @@ class OpenAICompatService:
         requested_tool_names = [tool_definition.function.name for tool_definition in request.tools]
         self._tool_registry.ensure_supported(requested_tool_names)
         return requested_tool_names
+
+    def extract_latest_user_message(self, messages: list[OpenAIChatMessage]) -> str:
+        """提取最后一条非空 user 消息文本。"""
+
+        for message in reversed(messages):
+            if message.role == "user":
+                normalized_content = self._normalize_message_content(message)
+                if normalized_content:
+                    return normalized_content
+
+        raise AppException(
+            "OpenAI 兼容请求至少需要包含一条非空 user 消息。",
+            error_code="invalid_request",
+        )
 
     def _parse_input_tool_calls(self, message: OpenAIChatMessage) -> list[LlmToolCall]:
         """解析输入 assistant 消息中的工具调用。"""

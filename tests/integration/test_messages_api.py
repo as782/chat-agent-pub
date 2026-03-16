@@ -8,9 +8,12 @@ def test_list_messages_returns_message_history(app_client: TestClient) -> None:
 
     chat_response = app_client.post(
         "/api/v1/chat",
-        json={"user_message": "你好，帮我记录这条消息"},
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "你好，帮我记录这条消息"}],
+        },
     )
-    session_id = chat_response.json()["session_id"]
+    session_id = chat_response.headers["X-Session-ID"]
 
     response = app_client.get(f"/api/v1/messages/{session_id}")
     response_payload = response.json()

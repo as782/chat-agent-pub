@@ -136,6 +136,13 @@ OPENAI_BASE_URL=https://your-provider.example.com/v1
 - 内部业务接口：`POST /api/v1/chat`
 - OpenAI 兼容接口：`POST /v1/chat/completions`
 
+其中 `/api/v1/chat` 当前采用“OpenAI 兼容请求体 + OpenAI 兼容响应体”的方式：
+
+- 请求体使用 OpenAI Chat Completions 兼容结构
+- 响应体返回 OpenAI Chat Completions 兼容结构
+- 会话复用通过请求头 `X-Session-ID` 传入
+- 自动创建或复用后的 `session_id` 通过响应头 `X-Session-ID` 返回
+
 OpenAI 兼容适配层会尽量保持输入输出结构与 OpenAI Chat Completions 一致，因此后续接入 Qwen 系列或其他 OpenAI 兼容模型时，优先只需要调整兼容网关地址和模型名，而不需要修改上层调用协议。
 
 ```bash

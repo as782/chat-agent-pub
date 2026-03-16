@@ -4,57 +4,93 @@ from fastapi.testclient import TestClient
 
 
 def test_chat_api_creates_session_and_returns_answer(app_client: TestClient) -> None:
-    """验证对话接口在未提供会话时会创建会话并返回回答。"""
-
-    response = app_client.post(
-        "/api/v1/chat",
-        json={"user_message": "你好，系统"},
-    )
-    response_payload = response.json()
-
-    assert response.status_code == 200
-    assert response_payload["session_id"]
-    assert response_payload["used_knowledge"] is False
-    assert response_payload["used_tools"] == []
-    assert response_payload["answer"] == "测试模型回答：你好，系统"
-    assert response_payload["finish_reason"] == "stop"
-    assert response_payload["model"] == "test-model"
-
-
-def test_chat_api_executes_builtin_tool_when_enabled(app_client: TestClient) -> None:
-    """验证内部聊天接口会在启用工具时执行内置工具。"""
+    """验证内部聊天接口会返回 OpenAI 兼容响应，并通过响应头暴露会话标识。"""
 
     response = app_client.post(
         "/api/v1/chat",
         json={
-            "user_message": "请帮我计算 1+1",
-            "enable_tools": True,
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "你好，系统"}],
         },
     )
     response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
 
     assert response.status_code == 200
-    assert response_payload["used_tools"] == ["calculator"]
-    assert response_payload["tool_calls"][0]["tool_name"] == "calculator"
-    assert response_payload["tool_calls"][0]["output"] == "2"
-    assert response_payload["answer"] == "测试模型回答：工具结果是 2"
+    assert session_id
+    assert response_payload["id"].startswith("chatcmpl-")
+    assert response_payload["object"] == "chat.completion"
+    assert response_payload["model"] == "test-model"
+    assert response_payload["choices"][0]["message"]["role"] == "assistant"
+    assert response_payload["choices"][0]["message"]["content"] == "测试模型回答：你好，系统"
+    assert response_payload["choices"][0]["finish_reason"] == "stop"
+    assert response_payload["usage"]["total_tokens"] == 20
+
+
+def test_chat_api_executes_builtin_tool_when_enabled(app_client: TestClient) -> None:
+    """验证内部聊天接口会在后台执行工具，但对外仍返回 OpenAI 兼容格式。"""
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "请帮我计算 1+1"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string"}},
+                            "required": ["expression"],
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
+
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert response_payload["choices"][0]["message"]["content"] == "测试模型回答：工具结果是 2"
+    assert response_payload["choices"][0]["finish_reason"] == "stop"
+    assert history_response.status_code == 200
+    assert history_payload["total"] == 4
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][1]["metadata"]["tool_calls"][0]["tool_name"] == "calculator"
+    assert history_payload["items"][2]["content"] == "2"
 
 
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:
-    """验证内部聊天接口在 stream=true 时返回 SSE 数据。"""
+    """验证内部聊天接口在 stream=true 时返回 OpenAI 兼容 SSE 数据。"""
 
     with app_client.stream(
         "POST",
         "/api/v1/chat",
-        json={"user_message": "你好", "stream": True},
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "你好"}],
+            "stream": True,
+        },
     ) as response:
         response_body = response.read().decode("utf-8")
 
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
-    assert '"type": "message_start"' in response_body
-    assert '"type": "answer_delta"' in response_body
-    assert '"type": "message_end"' in response_body
+    assert response.headers["X-Session-ID"]
+    assert '"object": "chat.completion.chunk"' in response_body
+    assert '"role": "assistant"' in response_body
+    assert "[DONE]" in response_body
 
 
 def test_chat_api_returns_404_when_session_not_found(app_client: TestClient) -> None:
@@ -62,7 +98,11 @@ def test_chat_api_returns_404_when_session_not_found(app_client: TestClient) -> 
 
     response = app_client.post(
         "/api/v1/chat",
-        json={"session_id": "not-exists", "user_message": "继续回答"},
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "继续回答"}],
+        },
+        headers={"X-Session-ID": "not-exists"},
     )
 
     assert response.status_code == 404
