@@ -144,6 +144,12 @@ OPENAI_MODEL=qwen-plus
 ```
 
 设计上不在业务层硬编码供应商名称，而是透传 `model` 和 `base_url`。这样后续切换到其他 OpenAI 兼容模型时，客户端和上层调用代码可以保持稳定。
+当前模型初始化和工具绑定优先复用 LangChain 官方能力：
+
+- 使用 `langchain.chat_models.init_chat_model(...)` 初始化 OpenAI / OpenAI-compatible 模型
+- 使用 `bind_tools(...)` 绑定内置工具
+
+对于实现了 OpenAI Chat Completions 协议的模型服务，当前默认走 `model_provider="openai"` + `base_url` 的方式接入。对于带有大量非标准字段的供应商，建议优先使用 LangChain 对应的 provider-specific 集成包。
 
 OpenAI 兼容调用示例：
 
@@ -162,8 +168,8 @@ curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
 当前兼容层限制：
 
 - 当前仅支持文本消息
-- 当前不支持 `stream=true`
-- 当前只会持久化本次请求中的最后一条用户消息和模型回答
+- 当前兼容层本身不负责会话持久化
+- 当前工具能力仅开放内置 `calculator` 和 `current_datetime`
 
 基础依赖和 LLM 配置完成后，再执行：
 

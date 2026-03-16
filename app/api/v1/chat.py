@@ -1,12 +1,14 @@
 """对话接口模块。
-
 负责接收基础单轮对话请求并调用对话服务。
-当前阶段不负责多轮状态图编排、工具调用和知识库路由。
+当前阶段不负责多轮状态图编排和知识库路由。
 """
+
+from __future__ import annotations
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.database import get_db_session
@@ -20,8 +22,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 async def create_chat_completion(
     request: ChatRequest,
     db_session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> ChatResponse:
+) -> ChatResponse | StreamingResponse:
     """处理基础单轮对话请求。"""
 
     chat_service = ChatService(db_session)
+    if request.stream:
+        return StreamingResponse(
+            chat_service.stream_message(request),
+            media_type="text/event-stream",
+        )
     return await chat_service.send_message(request)

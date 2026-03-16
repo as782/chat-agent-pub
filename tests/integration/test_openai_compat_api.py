@@ -35,17 +35,82 @@ def test_openai_compat_chat_completions_returns_standard_response(
     }
 
 
-def test_openai_compat_chat_completions_rejects_stream_mode(app_client: TestClient) -> None:
-    """验证兼容接口当前会拒绝流式输出请求。"""
+def test_openai_compat_chat_completions_returns_tool_calls(app_client: TestClient) -> None:
+    """验证兼容接口在传入 tools 时会返回 OpenAI 兼容 tool_calls。"""
 
     response = app_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen-compatible-model",
+            "messages": [{"role": "user", "content": "请帮我计算 1+1"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "description": "计算数学表达式。",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "expression": {"type": "string"},
+                            },
+                            "required": ["expression"],
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    response_payload = response.json()
+
+    assert response.status_code == 200
+    assert response_payload["choices"][0]["finish_reason"] == "tool_calls"
+    assert response_payload["choices"][0]["message"]["content"] is None
+    assert (
+        response_payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
+        == "calculator"
+    )
+
+
+def test_openai_compat_chat_completions_streams_response(app_client: TestClient) -> None:
+    """验证兼容接口在 stream=true 时返回 OpenAI 兼容 SSE。"""
+
+    with app_client.stream(
+        "POST",
         "/v1/chat/completions",
         json={
             "model": "qwen-compatible-model",
             "messages": [{"role": "user", "content": "你好"}],
             "stream": True,
         },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    assert '"object": "chat.completion.chunk"' in response_body
+    assert "[DONE]" in response_body
+
+
+def test_openai_compat_chat_completions_rejects_unsupported_tool(app_client: TestClient) -> None:
+    """验证兼容接口会拒绝未注册的工具名称。"""
+
+    response = app_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen-compatible-model",
+            "messages": [{"role": "user", "content": "你好"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "unknown_tool",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        },
     )
 
     assert response.status_code == 400
-    assert response.json()["error_code"] == "unsupported_feature"
+    assert response.json()["error_code"] == "unsupported_tool"

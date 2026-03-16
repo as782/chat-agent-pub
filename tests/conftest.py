@@ -1,8 +1,9 @@
 """测试配置文件。
-
 负责补齐测试运行时的项目根目录导入路径，并提供基础测试夹具。
 当前阶段不负责复杂测试环境编排和外部依赖容器管理。
 """
+
+from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
@@ -12,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from app.clients.llm_client import LlmChatCompletionResult
+from app.clients.llm_client import LlmChatCompletionResult, LlmToolCall
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,16 +47,75 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
 
     async def fake_create_chat_completion(
         self: object,
-        messages: list[tuple[str, str]],
+        messages: list[object],
         model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
     ) -> LlmChatCompletionResult:
-        """为集成测试返回稳定的假模型回答与元数据。"""
+        """为集成测试返回稳定的假模型回答与工具调用。"""
 
         latest_user_message = ""
-        for role, content in reversed(messages):
-            if role == "user":
+        latest_tool_output = ""
+
+        for message in reversed(messages):
+            role = getattr(message, "role", "")
+            content = getattr(message, "content", "")
+            if role == "tool" and not latest_tool_output:
+                latest_tool_output = content
+            if role == "user" and not latest_user_message:
                 latest_user_message = content
-                break
+
+        if (
+            tools
+            and not latest_tool_output
+            and ("1+1" in latest_user_message or "计算" in latest_user_message)
+        ):
+            return LlmChatCompletionResult(
+                content="",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    LlmToolCall(
+                        tool_call_id="call_calculator",
+                        tool_name="calculator",
+                        arguments={"expression": "1+1"},
+                    )
+                ],
+            )
+
+        if (
+            tools
+            and not latest_tool_output
+            and ("时间" in latest_user_message or "几点" in latest_user_message)
+        ):
+            return LlmChatCompletionResult(
+                content="",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    LlmToolCall(
+                        tool_call_id="call_datetime",
+                        tool_name="current_datetime",
+                        arguments={"timezone_name": "Asia/Shanghai"},
+                    )
+                ],
+            )
+
+        if latest_tool_output:
+            return LlmChatCompletionResult(
+                content=f"测试模型回答：工具结果是 {latest_tool_output}",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
 
         return LlmChatCompletionResult(
             content=f"测试模型回答：{latest_user_message}",

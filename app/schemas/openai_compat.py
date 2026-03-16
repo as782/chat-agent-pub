@@ -1,10 +1,11 @@
 """OpenAI 兼容接口数据模型。
-
-负责定义 OpenAI Chat Completions 兼容请求和响应结构。
-当前阶段仅覆盖文本对话的最小兼容子集，不负责工具调用和流式事件协议。
+负责定义 OpenAI Chat Completions 兼容请求与响应结构。
+当前阶段只覆盖文本消息、工具调用和流式 chunk，不负责 Responses API 与音频输出。
 """
 
-from typing import Literal
+from __future__ import annotations
+
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +17,44 @@ class OpenAITextContentPart(BaseModel):
 
     type: Literal["text"] = Field(default="text", description="内容分片类型。")
     text: str = Field(description="文本内容。")
+
+
+class OpenAIChatCompletionToolFunction(BaseModel):
+    """OpenAI 兼容函数工具定义。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(description="工具名称。")
+    description: str | None = Field(default=None, description="工具说明。")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="工具参数 JSON Schema。")
+
+
+class OpenAIChatCompletionTool(BaseModel):
+    """OpenAI 兼容工具定义。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: Literal["function"] = Field(default="function", description="工具类型。")
+    function: OpenAIChatCompletionToolFunction = Field(description="函数工具定义。")
+
+
+class OpenAIChatCompletionToolCallFunction(BaseModel):
+    """OpenAI 兼容工具调用中的函数体。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(description="函数名称。")
+    arguments: str = Field(description="JSON 字符串格式的函数参数。")
+
+
+class OpenAIChatCompletionToolCall(BaseModel):
+    """OpenAI 兼容工具调用模型。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(description="工具调用标识。")
+    type: Literal["function"] = Field(default="function", description="工具调用类型。")
+    function: OpenAIChatCompletionToolCallFunction = Field(description="函数调用负载。")
 
 
 class OpenAIChatMessage(BaseModel):
@@ -31,6 +70,11 @@ class OpenAIChatMessage(BaseModel):
         description="消息内容，当前仅处理纯文本。",
     )
     name: str | None = Field(default=None, description="消息发送方名称。")
+    tool_call_id: str | None = Field(default=None, description="tool 消息对应的工具调用标识。")
+    tool_calls: list[OpenAIChatCompletionToolCall] | None = Field(
+        default=None,
+        description="assistant 消息携带的工具调用列表。",
+    )
 
 
 class OpenAIChatCompletionRequest(BaseModel):
@@ -42,6 +86,14 @@ class OpenAIChatCompletionRequest(BaseModel):
     messages: list[OpenAIChatMessage] = Field(min_length=1, description="对话消息列表。")
     stream: bool = Field(default=False, description="是否使用流式输出。")
     user: str | None = Field(default=None, description="调用方用户标识。")
+    tools: list[OpenAIChatCompletionTool] | None = Field(
+        default=None,
+        description="允许模型使用的工具列表。",
+    )
+    tool_choice: str | dict[str, Any] | None = Field(
+        default=None,
+        description="工具选择策略，可为 auto、none、required 或指定函数。",
+    )
 
 
 class OpenAIChatCompletionAssistantMessage(BaseModel):
@@ -50,7 +102,11 @@ class OpenAIChatCompletionAssistantMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     role: Literal["assistant"] = Field(default="assistant", description="助手角色。")
-    content: str = Field(description="助手回答内容。")
+    content: str | None = Field(default=None, description="助手回答内容。")
+    tool_calls: list[OpenAIChatCompletionToolCall] | None = Field(
+        default=None,
+        description="助手返回的工具调用列表。",
+    )
 
 
 class OpenAIChatCompletionChoice(BaseModel):
