@@ -98,7 +98,6 @@ async def test_ragflow_document_client_assembles_list_request(monkeypatch: Monke
         "params": {
             "page": 3,
             "page_size": 15,
-            "keyword": None,
         },
         "json_body": None,
         "expect_envelope": True,

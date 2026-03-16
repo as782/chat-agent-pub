@@ -26,14 +26,17 @@ class RagflowDatasetClient:
     ) -> list[dict[str, Any]]:
         """查询远端数据集列表。"""
 
+        query_params: dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+        }
+        if keyword is not None:
+            query_params["keyword"] = keyword
+
         response_data = await self._ragflow_client.request(
             "GET",
             "/api/v1/datasets",
-            params={
-                "page": page,
-                "page_size": page_size,
-                "keyword": keyword,
-            },
+            params=query_params,
         )
         return self._normalize_list_payload(response_data)
 

@@ -46,14 +46,16 @@ class RagflowClient:
             "Authorization": f"Bearer {api_key.get_secret_value()}",
             "Content-Type": "application/json",
         }
+        normalized_params = self._drop_none_values(params)
+        normalized_json_body = self._drop_none_values(json_body)
 
         try:
             if self._http_client is not None:
                 response = await self._http_client.request(
                     method=method,
                     url=path,
-                    params=params,
-                    json=json_body,
+                    params=normalized_params,
+                    json=normalized_json_body,
                     headers=request_headers,
                 )
             else:
@@ -64,8 +66,8 @@ class RagflowClient:
                     response = await http_client.request(
                         method=method,
                         url=path,
-                        params=params,
-                        json=json_body,
+                        params=normalized_params,
+                        json=normalized_json_body,
                         headers=request_headers,
                     )
             response.raise_for_status()
@@ -95,6 +97,19 @@ class RagflowClient:
         if not expect_envelope:
             return response_payload
         return self._extract_envelope_data(response_payload, path=path)
+
+    @staticmethod
+    def _drop_none_values(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        """移除顶层为 None 的字段，避免把空参数错误传给 RAGFlow。"""
+
+        if payload is None:
+            return None
+        normalized_payload = {
+            str(field_name): field_value
+            for field_name, field_value in payload.items()
+            if field_value is not None
+        }
+        return normalized_payload or None
 
     @staticmethod
     def _extract_envelope_data(response_payload: Any, *, path: str) -> Any:
