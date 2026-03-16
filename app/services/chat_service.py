@@ -1,60 +1,28 @@
 """对话服务模块。
-负责内部聊天接口的会话落库、工具执行与 OpenAI 兼容响应编排。
-当前阶段不负责多轮长期记忆、LangGraph 状态图和知识库路由决策。
+负责内部聊天接口的会话落库、LangGraph 对话编排与 OpenAI 兼容响应构建。
+当前阶段已接入多轮短期记忆，但不负责知识库和 MCP 分支。
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import replace
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.clients.llm_client import (
-    LlmChatCompletionAccumulator,
-    LlmChatCompletionResult,
-    LlmClient,
-    LlmInputMessage,
-)
+from app.agent.graph import ConversationGraph
+from app.agent.state import ChatExecutionRequest, PreparedContext
+from app.clients.llm_client import LlmChatCompletionAccumulator, LlmClient
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
 from app.persistence.session_repo import SessionRepository
 from app.schemas.openai_compat import OpenAIChatCompletionRequest, OpenAIChatCompletionResponse
 from app.services.openai_compat_service import OpenAICompatService
-from app.tools.registry import ExecutedToolCall, ToolRegistry
+from app.tools.registry import ToolRegistry
 
-MAX_TOOL_CALL_ROUNDS = 3
 LOGGER = get_logger(__name__)
-
-
-@dataclass(slots=True)
-class ChatExecutionRequest:
-    """内部聊天执行请求。"""
-
-    session_id: str | None
-    latest_user_message: str
-    input_messages: list[LlmInputMessage]
-    model_name: str | None
-    requested_tool_names: list[str] | None
-    tool_choice: str | dict[str, object] | None
-    user_id: str | None = None
-    message_metadata: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class ChatTurnResult:
-    """单轮对话执行结果。"""
-
-    session_id: str
-    content: str
-    model_name: str
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    finish_reason: str
-    tool_calls: list[ExecutedToolCall] = field(default_factory=list)
 
 
 class ChatService:
@@ -71,6 +39,11 @@ class ChatService:
         self._message_repository = MessageRepository(db_session)
         self._llm_client = llm_client or LlmClient()
         self._tool_registry = tool_registry or ToolRegistry()
+        self._conversation_graph = ConversationGraph(
+            db_session,
+            llm_client=self._llm_client,
+            tool_registry=self._tool_registry,
+        )
         self._openai_compat_service = OpenAICompatService(
             llm_client=self._llm_client,
             tool_registry=self._tool_registry,
@@ -87,9 +60,28 @@ class ChatService:
             chat_request=chat_request,
             session_id=session_id,
         )
-        turn_result = await self._execute_chat_turn(execution_request)
+        checkpoint_payload: dict[str, object] | None = None
+
+        try:
+            resolved_session_id = await self._ensure_session(
+                session_id=execution_request.session_id,
+                user_message=execution_request.latest_user_message,
+                user_id=execution_request.user_id,
+            )
+            execution_request = replace(execution_request, session_id=resolved_session_id)
+            await self._persist_user_message(execution_request)
+            turn_result, checkpoint_payload = await self._conversation_graph.run_turn(
+                execution_request
+            )
+            await self._session_repository.update_timestamp(resolved_session_id)
+            await self._db_session.commit()
+        except Exception:
+            await self._db_session.rollback()
+            raise
+
+        await self._save_checkpoint_safely(checkpoint_payload)
         return (
-            turn_result.session_id,
+            resolved_session_id,
             self._openai_compat_service.build_chat_completion_response(turn_result),
         )
 
@@ -98,7 +90,7 @@ class ChatService:
         chat_request: OpenAIChatCompletionRequest,
         session_id: str | None = None,
     ) -> tuple[str, AsyncIterator[str]]:
-        """处理内部聊天请求，并返回真实流式的 OpenAI 兼容 SSE。"""
+        """处理内部聊天请求，并返回带多轮记忆的流式 OpenAI 兼容 SSE。"""
 
         execution_request = self._build_execution_request(
             chat_request=chat_request,
@@ -111,24 +103,23 @@ class ChatService:
                 user_message=execution_request.latest_user_message,
                 user_id=execution_request.user_id,
             )
-            await self._message_repository.create(
-                message_id=self._generate_identifier(),
-                session_id=resolved_session_id,
-                role="user",
-                content=execution_request.latest_user_message,
-                message_metadata=execution_request.message_metadata,
-            )
-            # 先提交用户消息与会话，确保流式响应开始后会话已经具备可追踪性。
+            execution_request = replace(execution_request, session_id=resolved_session_id)
+            await self._persist_user_message(execution_request)
+            # 先提交用户消息与会话，确保流式响应开始后会话已可追踪。
             await self._db_session.commit()
+            route, prepared_context = await self._conversation_graph.prepare_stream_context(
+                execution_request
+            )
         except Exception:
             await self._db_session.rollback()
             raise
 
         return (
             resolved_session_id,
-            self._stream_single_round(
-                session_id=resolved_session_id,
+            self._stream_graph_turn(
                 execution_request=execution_request,
+                route=route,
+                prepared_context=prepared_context,
             ),
         )
 
@@ -151,6 +142,7 @@ class ChatService:
 
         return ChatExecutionRequest(
             session_id=session_id,
+            need_session_memory=session_id is not None,
             latest_user_message=self._openai_compat_service.extract_latest_user_message(
                 chat_request.messages
             ),
@@ -161,19 +153,15 @@ class ChatService:
             user_id=chat_request.user,
         )
 
-    async def _stream_single_round(
+    async def _stream_graph_turn(
         self,
         *,
-        session_id: str,
         execution_request: ChatExecutionRequest,
+        route: str,
+        prepared_context: PreparedContext,
     ) -> AsyncIterator[str]:
-        """以真实流式方式输出单轮模型结果并在结束后持久化。"""
+        """在流式路径中复用上下文构建和记忆刷新逻辑。"""
 
-        available_tools = (
-            self._tool_registry.get_tools(execution_request.requested_tool_names)
-            if execution_request.requested_tool_names is not None
-            else None
-        )
         chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
             default_model_name=execution_request.model_name or self._llm_client.default_model_name
         )
@@ -181,11 +169,16 @@ class ChatService:
             requested_model_name=execution_request.model_name,
             default_model_name=self._llm_client.default_model_name,
         )
+        available_tools = (
+            self._tool_registry.get_tools(execution_request.requested_tool_names)
+            if execution_request.requested_tool_names is not None
+            else None
+        )
         has_emitted_payload = False
 
         try:
             async for llm_chunk in self._llm_client.stream_chat_completion(
-                messages=execution_request.input_messages,
+                messages=prepared_context.messages,
                 model_name=execution_request.model_name,
                 tools=available_tools,
                 tool_choice=execution_request.tool_choice,
@@ -196,27 +189,18 @@ class ChatService:
                     yield payload
 
             completion_result = accumulator.build_result()
-
-            if completion_result.tool_calls:
-                # 流式协议下保持 OpenAI 语义，只持久化工具调用请求，不在同一条流中继续自动执行工具。
-                await self._persist_assistant_tool_calls(
-                    session_id=session_id,
-                    completion_result=completion_result,
-                )
-            else:
-                await self._message_repository.create(
-                    message_id=self._generate_identifier(),
-                    session_id=session_id,
-                    role="assistant",
-                    content=completion_result.content,
-                    message_metadata={
-                        "finish_reason": completion_result.finish_reason,
-                        "model_name": completion_result.model_name,
-                    },
-                )
-
-            await self._session_repository.update_timestamp(session_id)
+            await self._conversation_graph.get_answer_node().persist_stream_result(
+                session_id=str(execution_request.session_id),
+                completion_result=completion_result,
+                used_session_memory=prepared_context.used_session_memory,
+            )
+            checkpoint_payload = await self._conversation_graph.refresh_memory(
+                session_id=str(execution_request.session_id),
+                route=route,
+            )
+            await self._session_repository.update_timestamp(str(execution_request.session_id))
             await self._db_session.commit()
+            await self._save_checkpoint_safely(checkpoint_payload)
 
             for payload in chunk_builder.finalize(completion_result.finish_reason):
                 has_emitted_payload = True
@@ -241,133 +225,6 @@ class ChatService:
                 )
             )
             yield "data: [DONE]\n\n"
-
-    async def _execute_chat_turn(
-        self,
-        execution_request: ChatExecutionRequest,
-    ) -> ChatTurnResult:
-        """执行单轮对话与工具调用流程。"""
-
-        try:
-            session_id = await self._ensure_session(
-                session_id=execution_request.session_id,
-                user_message=execution_request.latest_user_message,
-                user_id=execution_request.user_id,
-            )
-            await self._message_repository.create(
-                message_id=self._generate_identifier(),
-                session_id=session_id,
-                role="user",
-                content=execution_request.latest_user_message,
-                message_metadata=execution_request.message_metadata,
-            )
-
-            conversation_messages = list(execution_request.input_messages)
-            available_tools = (
-                self._tool_registry.get_tools(execution_request.requested_tool_names)
-                if execution_request.requested_tool_names is not None
-                else None
-            )
-            tool_choice = execution_request.tool_choice
-
-            executed_tool_calls: list[ExecutedToolCall] = []
-            final_result: LlmChatCompletionResult | None = None
-
-            for tool_round in range(MAX_TOOL_CALL_ROUNDS):
-                completion_result = await self._llm_client.create_chat_completion(
-                    messages=conversation_messages,
-                    model_name=execution_request.model_name,
-                    tools=available_tools,
-                    tool_choice=tool_choice,
-                )
-
-                if completion_result.tool_calls:
-                    await self._persist_assistant_tool_calls(
-                        session_id=session_id,
-                        completion_result=completion_result,
-                    )
-                    conversation_messages.append(
-                        LlmInputMessage(
-                            role="assistant",
-                            content=completion_result.content,
-                            tool_calls=completion_result.tool_calls,
-                        )
-                    )
-
-                    current_tool_results = await self._tool_registry.execute_tool_calls(
-                        [
-                            {
-                                "id": tool_call.tool_call_id,
-                                "name": tool_call.tool_name,
-                                "args": tool_call.arguments,
-                            }
-                            for tool_call in completion_result.tool_calls
-                        ]
-                    )
-                    for tool_result in current_tool_results:
-                        executed_tool_calls.append(tool_result)
-                        await self._message_repository.create(
-                            message_id=self._generate_identifier(),
-                            session_id=session_id,
-                            role="tool",
-                            content=tool_result.output,
-                            message_metadata={
-                                "tool_call_id": tool_result.tool_call_id,
-                                "tool_name": tool_result.tool_name,
-                                "arguments": tool_result.arguments,
-                            },
-                        )
-                        conversation_messages.append(
-                            LlmInputMessage(
-                                role="tool",
-                                content=tool_result.output,
-                                tool_call_id=tool_result.tool_call_id,
-                            )
-                        )
-
-                    tool_choice = "auto"
-                    if tool_round + 1 >= MAX_TOOL_CALL_ROUNDS:
-                        raise AppException(
-                            "工具调用轮次超过当前上限。",
-                            error_code="tool_call_limit_exceeded",
-                        )
-                    continue
-
-                final_result = completion_result
-                break
-
-            if final_result is None:
-                raise AppException(
-                    "模型未返回最终回答。",
-                    error_code="invalid_llm_response",
-                )
-
-            await self._message_repository.create(
-                message_id=self._generate_identifier(),
-                session_id=session_id,
-                role="assistant",
-                content=final_result.content,
-                message_metadata={
-                    "finish_reason": final_result.finish_reason,
-                    "model_name": final_result.model_name,
-                },
-            )
-            await self._session_repository.update_timestamp(session_id)
-            await self._db_session.commit()
-        except Exception:
-            await self._db_session.rollback()
-            raise
-
-        return ChatTurnResult(
-            session_id=session_id,
-            content=final_result.content,
-            model_name=final_result.model_name,
-            prompt_tokens=final_result.prompt_tokens,
-            completion_tokens=final_result.completion_tokens,
-            total_tokens=final_result.total_tokens,
-            finish_reason=final_result.finish_reason,
-            tool_calls=executed_tool_calls,
-        )
 
     async def _ensure_session(
         self,
@@ -395,32 +252,27 @@ class ChatService:
 
         return session_id
 
-    async def _persist_assistant_tool_calls(
-        self,
-        *,
-        session_id: str,
-        completion_result: LlmChatCompletionResult,
-    ) -> None:
-        """持久化模型返回的工具调用请求。"""
+    async def _persist_user_message(self, execution_request: ChatExecutionRequest) -> None:
+        """持久化当前轮次的用户输入。"""
 
         await self._message_repository.create(
             message_id=self._generate_identifier(),
-            session_id=session_id,
-            role="assistant",
-            content=completion_result.content,
-            message_metadata={
-                "finish_reason": completion_result.finish_reason,
-                "model_name": completion_result.model_name,
-                "tool_calls": [
-                    {
-                        "tool_call_id": tool_call.tool_call_id,
-                        "tool_name": tool_call.tool_name,
-                        "arguments": tool_call.arguments,
-                    }
-                    for tool_call in completion_result.tool_calls
-                ],
-            },
+            session_id=str(execution_request.session_id),
+            role="user",
+            content=execution_request.latest_user_message,
+            message_metadata=execution_request.message_metadata,
         )
+
+    async def _save_checkpoint_safely(
+        self,
+        checkpoint_payload: dict[str, object] | None,
+    ) -> None:
+        """在事务提交后保存 checkpoint，并屏蔽非关键基础设施故障。"""
+
+        try:
+            await self._conversation_graph.save_checkpoint(checkpoint_payload)
+        except Exception as exception:  # pragma: no cover - 仅兜底外部基础设施故障
+            LOGGER.warning("保存对话 checkpoint 失败，已忽略该异常。", exc_info=exception)
 
     @staticmethod
     def _generate_identifier() -> str:

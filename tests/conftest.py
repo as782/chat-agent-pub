@@ -62,14 +62,24 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         del self, tool_choice
         latest_user_message = ""
         latest_tool_output = ""
+        all_message_contents: list[str] = []
+        user_messages: list[str] = []
 
         for message in reversed(messages):
             role = getattr(message, "role", "")
             content = getattr(message, "content", "")
+            all_message_contents.append(str(content))
             if role == "tool" and not latest_tool_output:
                 latest_tool_output = content
             if role == "user" and not latest_user_message:
                 latest_user_message = content
+            if role == "user":
+                user_messages.append(str(content))
+
+        history_contains_name = any("我叫小王" in message for message in user_messages[1:])
+        explicit_force_no_memory = any(
+            "如果不知道就说不知道" in message for message in all_message_contents
+        )
 
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
         if tools and not latest_tool_output and need_calculator_tool:
@@ -117,6 +127,26 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 finish_reason="stop",
             )
 
+        if "我刚刚告诉你的名字是什么" in latest_user_message:
+            if history_contains_name:
+                return LlmChatCompletionResult(
+                    content="测试模型回答：你刚刚说你叫小王",
+                    model_name=model_name or "test-model",
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="stop",
+                )
+            if explicit_force_no_memory:
+                return LlmChatCompletionResult(
+                    content="测试模型回答：不知道",
+                    model_name=model_name or "test-model",
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="stop",
+                )
+
         return LlmChatCompletionResult(
             content=f"测试模型回答：{latest_user_message}",
             model_name=model_name or "test-model",
@@ -137,11 +167,19 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
 
         del self, tool_choice
         latest_user_message = ""
+        user_messages: list[str] = []
+        all_message_contents: list[str] = []
 
         for message in reversed(messages):
             if getattr(message, "role", "") == "user":
                 latest_user_message = getattr(message, "content", "")
                 break
+        for message in messages:
+            role = getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            all_message_contents.append(content)
+            if role == "user":
+                user_messages.append(content)
 
         async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
             resolved_model_name = model_name or "test-model"
@@ -166,7 +204,15 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 )
                 return
 
-            full_text = f"测试模型回答：{latest_user_message}"
+            if "我刚刚告诉你的名字是什么" in latest_user_message:
+                if any("我叫小王" in message for message in user_messages[:-1]):
+                    full_text = "测试模型回答：你刚刚说你叫小王"
+                elif any("如果不知道就说不知道" in message for message in all_message_contents):
+                    full_text = "测试模型回答：不知道"
+                else:
+                    full_text = f"测试模型回答：{latest_user_message}"
+            else:
+                full_text = f"测试模型回答：{latest_user_message}"
             split_index = max(1, len(full_text) // 2)
             yield LlmChatCompletionChunk(
                 content_delta=full_text[:split_index],

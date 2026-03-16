@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
 import httpx
@@ -10,7 +11,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from openai import PermissionDeniedError
 from pytest import MonkeyPatch
 
-from app.clients.llm_client import LlmChatCompletionChunk, LlmClient
+from app.clients.llm_client import LlmChatCompletionChunk, LlmClient, LlmInputMessage
 from app.core.exceptions import ConfigurationException, UpstreamServiceException
 
 
@@ -122,6 +123,57 @@ async def test_llm_client_streams_chunks(monkeypatch: MonkeyPatch) -> None:
             finish_reason="stop",
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_llm_client_logs_non_stream_request_messages(
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """验证非流式调用前会打印完整的 LLM 输入消息。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+    caplog.set_level(logging.INFO, logger="app.clients.llm_client")
+
+    llm_client = LlmClient()
+    await llm_client.create_chat_completion(
+        messages=[
+            LlmInputMessage(role="system", content="你是测试助手"),
+            LlmInputMessage(role="user", content="请回答杭州在哪里"),
+        ],
+        model_name="unit-test-model",
+    )
+
+    assert "向 LLM 发起请求" in caplog.text
+    assert '"mode": "non_stream"' in caplog.text
+    assert "你是测试助手" in caplog.text
+    assert "请回答杭州在哪里" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_llm_client_logs_stream_request_messages(
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """验证流式调用前也会打印完整的 LLM 输入消息。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+    caplog.set_level(logging.INFO, logger="app.clients.llm_client")
+
+    llm_client = LlmClient()
+    async for _ in llm_client.stream_chat_completion(
+        messages=[LlmInputMessage(role="user", content="请流式回答这个问题")],
+        model_name="unit-test-model",
+    ):
+        pass
+
+    assert "向 LLM 发起请求" in caplog.text
+    assert '"mode": "stream"' in caplog.text
+    assert "请流式回答这个问题" in caplog.text
 
 
 @pytest.mark.asyncio

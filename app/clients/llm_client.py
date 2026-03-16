@@ -35,6 +35,9 @@ from openai import (
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException, ConfigurationException, UpstreamServiceException
+from app.core.logger import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -248,6 +251,13 @@ class LlmClient:
     ) -> LlmChatCompletionResult:
         """使用统一消息结构创建一次聊天补全。"""
 
+        self._log_chat_request(
+            messages=messages,
+            model_name=model_name,
+            tools=tools,
+            tool_choice=tool_choice,
+            is_stream=False,
+        )
         chat_model = self._create_chat_model(model_name=model_name)
         runnable = chat_model.bind_tools(tools, tool_choice=tool_choice) if tools else chat_model
         llm_messages = self._build_langchain_messages(messages)
@@ -282,6 +292,13 @@ class LlmClient:
     ) -> AsyncIterator[LlmChatCompletionChunk]:
         """以真实流式方式输出聊天补全增量。"""
 
+        self._log_chat_request(
+            messages=messages,
+            model_name=model_name,
+            tools=tools,
+            tool_choice=tool_choice,
+            is_stream=True,
+        )
         chat_model = self._create_chat_model(model_name=model_name)
         runnable = chat_model.bind_tools(tools, tool_choice=tool_choice) if tools else chat_model
         llm_messages = self._build_langchain_messages(messages)
@@ -336,6 +353,51 @@ class LlmClient:
             api_key=api_key.get_secret_value(),
             base_url=self._settings.openai_base_url or None,
         )
+
+    def _log_chat_request(
+        self,
+        *,
+        messages: Sequence[LlmInputMessage],
+        model_name: str | None,
+        tools: Sequence[BaseTool] | None,
+        tool_choice: str | dict[str, Any] | None,
+        is_stream: bool,
+    ) -> None:
+        """记录发往大模型的完整输入，便于后续调试上下文构造。"""
+
+        serialized_messages = [
+            {
+                "index": index,
+                "role": message.role,
+                "name": message.name,
+                "content": message.content,
+                "tool_call_id": message.tool_call_id,
+                "tool_calls": [
+                    {
+                        "id": tool_call.tool_call_id,
+                        "name": tool_call.tool_name,
+                        "arguments": tool_call.arguments,
+                    }
+                    for tool_call in message.tool_calls
+                ],
+            }
+            for index, message in enumerate(messages)
+        ]
+        serialized_tool_names = [
+            str(getattr(tool, "name", tool.__class__.__name__)) for tool in (tools or [])
+        ]
+        request_payload = dumps(
+            {
+                "mode": "stream" if is_stream else "non_stream",
+                "model": model_name or self._settings.openai_model,
+                "tool_choice": tool_choice,
+                "tools": serialized_tool_names,
+                "messages": serialized_messages,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        LOGGER.info("向 LLM 发起请求：%s", request_payload)
 
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""

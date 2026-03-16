@@ -76,6 +76,101 @@ def test_chat_api_executes_builtin_tool_when_enabled(app_client: TestClient) -> 
     assert history_payload["items"][2]["content"] == "2"
 
 
+def test_chat_api_supports_multi_turn_memory(app_client: TestClient) -> None:
+    """验证同一会话下会自动注入历史消息，实现最小多轮记忆。"""
+
+    first_response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "我叫小王，请记住这个名字。"}],
+        },
+    )
+    session_id = first_response.headers["X-Session-ID"]
+
+    second_response = app_client.post(
+        "/api/v1/chat",
+        headers={"X-Session-ID": session_id},
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "我刚刚告诉你的名字是什么？"}],
+        },
+    )
+
+    assert second_response.status_code == 200
+    assert (
+        second_response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：你刚刚说你叫小王"
+    )
+
+
+def test_chat_api_combines_session_memory_and_explicit_messages(app_client: TestClient) -> None:
+    """验证带 session_id 时，会结合系统历史和本次显式 messages 回答。"""
+
+    first_response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "我叫小王，请记住这个名字。"}],
+        },
+    )
+    session_id = first_response.headers["X-Session-ID"]
+
+    second_response = app_client.post(
+        "/api/v1/chat",
+        headers={"X-Session-ID": session_id},
+        json={
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "请结合系统记录和本次输入回答。",
+                },
+                {"role": "user", "content": "我刚刚告诉你的名字是什么？"},
+            ],
+        },
+    )
+
+    assert second_response.status_code == 200
+    assert (
+        second_response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：你刚刚说你叫小王"
+    )
+
+
+def test_chat_api_does_not_use_other_session_memory_without_session_id(
+    app_client: TestClient,
+) -> None:
+    """验证不携带 session_id 时，不会读取其他会话已保存的系统记忆。"""
+
+    first_response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "我叫小王，请记住这个名字。"}],
+        },
+    )
+
+    second_response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "我叫小王，请记住这个名字。"},
+                {"role": "assistant", "content": "好的，我记住了。"},
+                {"role": "user", "content": "我刚刚告诉你的名字是什么？"},
+            ],
+        },
+    )
+
+    assert second_response.status_code == 200
+    assert (
+        second_response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：你刚刚说你叫小王"
+    )
+    assert second_response.headers["X-Session-ID"] != first_response.headers["X-Session-ID"]
+
+
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:
     """验证内部聊天接口在 stream=true 时返回 OpenAI 兼容 SSE 数据。"""
 
