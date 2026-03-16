@@ -123,7 +123,7 @@ class ConversationGraph:
         )
         graph_builder.add_edge("tool_node", "memory_node")
         graph_builder.add_edge("ragflow_node", "answer_node")
-        graph_builder.add_edge("mcp_node", "answer_node")
+        graph_builder.add_edge("mcp_node", "tool_node")
         graph_builder.add_edge("answer_node", "memory_node")
         graph_builder.add_edge("memory_node", END)
         return graph_builder.compile()

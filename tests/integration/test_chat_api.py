@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.clients.llm_client import LlmChatCompletionChunk
 from app.core.exceptions import UpstreamServiceException
+from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
 
 
@@ -215,22 +216,86 @@ def test_chat_api_uses_knowledge_route_when_requested(app_client: TestClient, mo
     )
 
 
-def test_chat_api_uses_mcp_route_when_requested(app_client: TestClient) -> None:
-    """验证命中 MCP 路由时会把 MCP 上下文注入回答链路。"""
+def test_chat_api_executes_mcp_tool_when_requested(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证命中 MCP 路由时会拉取 MCP 工具并完成真实工具调用闭环。"""
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的 MCP 运行时工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__weather",
+                server_name="demo-mcp-http",
+                remote_tool_name="weather",
+                description="查询城市天气。",
+                input_schema={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            )
+        ]
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的 MCP 工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "weather"
+        assert arguments == {"city": "杭州"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "杭州晴，26 度"}],
+            structured_content={"city": "杭州", "weather": "晴", "temperature": "26"},
+            is_error=False,
+            output_text="杭州晴，26 度",
+        )
+
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
 
     response = app_client.post(
         "/api/v1/chat",
         json={
             "model": "test-model",
-            "messages": [{"role": "user", "content": "mcp: 当前有哪些 MCP 服务？"}],
+            "messages": [{"role": "user", "content": "mcp: 帮我查杭州天气"}],
         },
     )
+    response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
 
     assert response.status_code == 200
     assert (
-        response.json()["choices"][0]["message"]["content"]
-        == "测试模型回答：当前已配置 MCP 服务骨架。"
+        response_payload["choices"][0]["message"]["content"]
+        == "测试模型回答：工具结果是 杭州晴，26 度"
     )
+    assert history_response.status_code == 200
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__weather"
 
 
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:

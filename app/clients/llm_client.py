@@ -39,6 +39,8 @@ from app.core.logger import get_logger
 
 LOGGER = get_logger(__name__)
 
+LlmBindableTool = BaseTool | dict[str, Any]
+
 
 @dataclass(slots=True)
 class LlmToolCall:
@@ -246,7 +248,7 @@ class LlmClient:
         self,
         messages: Sequence[LlmInputMessage],
         model_name: str | None = None,
-        tools: Sequence[BaseTool] | None = None,
+        tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> LlmChatCompletionResult:
         """使用统一消息结构创建一次聊天补全。"""
@@ -287,7 +289,7 @@ class LlmClient:
         self,
         messages: Sequence[LlmInputMessage],
         model_name: str | None = None,
-        tools: Sequence[BaseTool] | None = None,
+        tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> AsyncIterator[LlmChatCompletionChunk]:
         """以真实流式方式输出聊天补全增量。"""
@@ -359,7 +361,7 @@ class LlmClient:
         *,
         messages: Sequence[LlmInputMessage],
         model_name: str | None,
-        tools: Sequence[BaseTool] | None,
+        tools: Sequence[LlmBindableTool] | None,
         tool_choice: str | dict[str, Any] | None,
         is_stream: bool,
     ) -> None:
@@ -383,9 +385,16 @@ class LlmClient:
             }
             for index, message in enumerate(messages)
         ]
-        serialized_tool_names = [
-            str(getattr(tool, "name", tool.__class__.__name__)) for tool in (tools or [])
-        ]
+        serialized_tool_names = []
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                tool_name = (
+                    function_payload.get("name") if isinstance(function_payload, dict) else None
+                )
+                serialized_tool_names.append(str(tool_name or "anonymous_tool"))
+            else:
+                serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
         request_payload = dumps(
             {
                 "mode": "stream" if is_stream else "non_stream",

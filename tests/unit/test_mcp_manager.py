@@ -8,10 +8,11 @@ import pytest
 from pytest import MonkeyPatch
 
 from app.mcp.manager import McpManager, McpServerDefinition
+from app.mcp.models import McpClientToolCallResult, McpClientToolDefinition
 
 
 def test_mcp_manager_reads_server_definitions_from_environment(monkeypatch: MonkeyPatch) -> None:
-    """验证 MCP 管理器能够从环境变量读取服务器配置。"""
+    """验证 MCP 管理器能够从环境变量读取服务配置。"""
 
     monkeypatch.setenv(
         "MCP_SERVERS_JSON",
@@ -19,8 +20,8 @@ def test_mcp_manager_reads_server_definitions_from_environment(monkeypatch: Monk
             [
                 {
                     "name": "demo-http",
-                    "transport": "http",
-                    "endpoint": "https://mcp.example.com",
+                    "transport": "streamable_http",
+                    "endpoint": "https://mcp.example.com/mcp",
                 }
             ],
             ensure_ascii=False,
@@ -31,28 +32,33 @@ def test_mcp_manager_reads_server_definitions_from_environment(monkeypatch: Monk
     server_list = manager.list_servers()
 
     assert server_list[0].name == "demo-http"
-    assert server_list[0].transport == "http"
-    assert server_list[0].endpoint == "https://mcp.example.com"
+    assert server_list[0].transport == "streamable_http"
+    assert server_list[0].endpoint == "https://mcp.example.com/mcp"
 
 
 @pytest.mark.asyncio
 async def test_mcp_manager_probes_http_server(monkeypatch: MonkeyPatch) -> None:
-    """验证 MCP 管理器会把 HTTP 服务器探测委托给 HTTP 客户端。"""
+    """验证 MCP 管理器会把 HTTP 服务探测委托给 HTTP 客户端。"""
 
-    async def fake_probe(self: object, endpoint: str) -> tuple[bool, str]:
+    async def fake_probe(
+        self: object,
+        endpoint: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[bool, str]:
         """返回稳定的 HTTP 探测结果。"""
 
-        del self
-        assert endpoint == "https://mcp.example.com"
-        return True, "HTTP 服务可达"
+        del self, headers
+        assert endpoint == "https://mcp.example.com/mcp"
+        return True, "HTTP MCP 服务可用，共发现 3 个工具"
 
     monkeypatch.setattr("app.mcp.http_client.McpHttpClient.probe", fake_probe)
     manager = McpManager(
         server_definitions=[
             McpServerDefinition(
                 name="demo-http",
-                transport="http",
-                endpoint="https://mcp.example.com",
+                transport="streamable_http",
+                endpoint="https://mcp.example.com/mcp",
             )
         ]
     )
@@ -60,7 +66,138 @@ async def test_mcp_manager_probes_http_server(monkeypatch: MonkeyPatch) -> None:
     probe_result = await manager.probe_server("demo-http")
 
     assert probe_result.is_available is True
-    assert probe_result.detail == "HTTP 服务可达"
+    assert probe_result.detail == "HTTP MCP 服务可用，共发现 3 个工具"
+
+
+@pytest.mark.asyncio
+async def test_mcp_manager_lists_remote_tools(monkeypatch: MonkeyPatch) -> None:
+    """验证 MCP 管理器能够读取远端工具并构造对外响应。"""
+
+    async def fake_list_tools(
+        self: object,
+        *,
+        endpoint: str,
+        headers: dict[str, str] | None = None,
+    ) -> list[McpClientToolDefinition]:
+        """返回稳定的工具列表。"""
+
+        del self, headers
+        assert endpoint == "https://mcp.example.com/mcp"
+        return [
+            McpClientToolDefinition(
+                name="weather",
+                description="查询天气。",
+                input_schema={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            )
+        ]
+
+    monkeypatch.setattr("app.mcp.http_client.McpHttpClient.list_tools", fake_list_tools)
+    manager = McpManager(
+        server_definitions=[
+            McpServerDefinition(
+                name="demo-http",
+                transport="http",
+                endpoint="https://mcp.example.com/mcp",
+            )
+        ]
+    )
+
+    tool_list = await manager.list_tools("demo-http")
+
+    assert tool_list[0].name == "weather"
+    assert tool_list[0].registered_name == "mcp_demo_http__weather"
+
+
+@pytest.mark.asyncio
+async def test_mcp_manager_calls_remote_tool(monkeypatch: MonkeyPatch) -> None:
+    """验证 MCP 管理器能够调用远端工具并返回标准化结果。"""
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        endpoint: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> McpClientToolCallResult:
+        """返回稳定的工具调用结果。"""
+
+        del self, headers
+        assert endpoint == "https://mcp.example.com/mcp"
+        assert tool_name == "weather"
+        assert arguments == {"city": "杭州"}
+        return McpClientToolCallResult(
+            content=[{"type": "text", "text": "杭州晴，26 度"}],
+            structured_content={"city": "杭州"},
+            is_error=False,
+            output_text="杭州晴，26 度",
+        )
+
+    monkeypatch.setattr("app.mcp.http_client.McpHttpClient.call_tool", fake_call_tool)
+    manager = McpManager(
+        server_definitions=[
+            McpServerDefinition(
+                name="demo-http",
+                transport="http",
+                endpoint="https://mcp.example.com/mcp",
+            )
+        ]
+    )
+
+    tool_result = await manager.call_tool(
+        server_name="demo-http",
+        tool_name="weather",
+        arguments={"city": "杭州"},
+    )
+
+    assert tool_result.tool_name == "weather"
+    assert tool_result.output_text == "杭州晴，26 度"
+
+
+@pytest.mark.asyncio
+async def test_mcp_manager_builds_runtime_tools(monkeypatch: MonkeyPatch) -> None:
+    """验证 MCP 管理器能够生成供 Agent 直接绑定的运行时工具。"""
+
+    async def fake_list_tools(
+        self: object,
+        *,
+        command: str,
+        args: list[str],
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> list[McpClientToolDefinition]:
+        """返回稳定的 stdio 工具列表。"""
+
+        del self, args, cwd, env
+        assert command == "uvx"
+        return [
+            McpClientToolDefinition(
+                name="maps_weather",
+                description="查询天气。",
+                input_schema={"type": "object", "properties": {}},
+            )
+        ]
+
+    monkeypatch.setattr("app.mcp.stdio_client.McpStdioClient.list_tools", fake_list_tools)
+    manager = McpManager(
+        server_definitions=[
+            McpServerDefinition(
+                name="amap",
+                transport="stdio",
+                command="uvx",
+                args=["amap-mcp-server"],
+            )
+        ]
+    )
+
+    runtime_tools = await manager.build_runtime_tools()
+
+    assert runtime_tools[0].registered_name == "mcp_amap__maps_weather"
+    assert runtime_tools[0].remote_tool_name == "maps_weather"
 
 
 def test_mcp_manager_builds_agent_context() -> None:
@@ -71,7 +208,7 @@ def test_mcp_manager_builds_agent_context() -> None:
             McpServerDefinition(
                 name="demo-http",
                 transport="http",
-                endpoint="https://mcp.example.com",
+                endpoint="https://mcp.example.com/mcp",
             ),
             McpServerDefinition(
                 name="demo-stdio",

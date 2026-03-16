@@ -1,19 +1,26 @@
 """工具节点模块。
-
-负责在命中工具路由时执行模型补全、工具调用和二次补全循环。
-当前阶段只支持内置工具，不负责跨进程远程工具编排。
+负责在命中工具或 MCP 路由时执行模型补全、工具调用和二次补全循环。
+当前阶段支持内置工具与 MCP 远端工具混合执行，不负责更复杂的跨服务规划。
 """
 
 from __future__ import annotations
 
+from json import dumps
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
 from app.agent.state import AgentState
-from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
+from app.clients.llm_client import (
+    LlmBindableTool,
+    LlmChatCompletionResult,
+    LlmClient,
+    LlmInputMessage,
+)
 from app.core.exceptions import AppException
+from app.mcp.manager import McpManager
+from app.mcp.models import McpRuntimeTool
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry
 
@@ -30,10 +37,12 @@ class ToolNode:
         answer_node: AnswerNode,
         llm_client: LlmClient | None = None,
         tool_registry: ToolRegistry | None = None,
+        mcp_manager: McpManager | None = None,
     ) -> None:
         self._answer_node = answer_node
         self._llm_client = llm_client or LlmClient()
         self._tool_registry = tool_registry or ToolRegistry()
+        self._mcp_manager = mcp_manager or McpManager()
         self._message_repository = MessageRepository(db_session)
 
     async def run(self, state: AgentState) -> dict[str, object]:
@@ -42,12 +51,19 @@ class ToolNode:
         prepared_context_state = await self._answer_node.prepare_context_state(state)
         prepared_context = prepared_context_state["prepared_context"]
         execution_request = self._answer_node.build_execution_request_from_state(state)
+        runtime_mcp_tools = self._extract_runtime_mcp_tools(state)
+        available_tools = self._build_available_tools(
+            route=str(state.get("route", "answer")),
+            requested_tool_names=execution_request.requested_tool_names,
+            runtime_mcp_tools=runtime_mcp_tools,
+        )
         completion_result, executed_tool_calls = await self._execute_tool_completion_loop(
             messages=prepared_context.messages,
             model_name=execution_request.model_name,
             session_id=str(state["session_id"]),
-            requested_tool_names=execution_request.requested_tool_names,
+            available_tools=available_tools,
             tool_choice=execution_request.tool_choice,
+            runtime_mcp_tools=runtime_mcp_tools,
         )
         final_result = await self._answer_node.persist_completion_result(
             session_id=str(state["session_id"]),
@@ -66,12 +82,12 @@ class ToolNode:
         messages: list[LlmInputMessage],
         model_name: str | None,
         session_id: str,
-        requested_tool_names: list[str] | None,
+        available_tools: list[LlmBindableTool],
         tool_choice: str | dict[str, object] | None,
+        runtime_mcp_tools: list[McpRuntimeTool],
     ) -> tuple[LlmChatCompletionResult, list[ExecutedToolCall]]:
         """执行带工具的模型补全循环。"""
 
-        available_tools = self._tool_registry.get_tools(requested_tool_names)
         conversation_messages = list(messages)
         normalized_tool_choice = tool_choice or "auto"
         executed_tool_calls: list[ExecutedToolCall] = []
@@ -97,15 +113,9 @@ class ToolNode:
                     tool_calls=completion_result.tool_calls,
                 )
             )
-            current_tool_results = await self._tool_registry.execute_tool_calls(
-                [
-                    {
-                        "id": tool_call.tool_call_id,
-                        "name": tool_call.tool_name,
-                        "args": tool_call.arguments,
-                    }
-                    for tool_call in completion_result.tool_calls
-                ]
+            current_tool_results = await self._execute_requested_tools(
+                completion_result=completion_result,
+                runtime_mcp_tools=runtime_mcp_tools,
             )
             for tool_result in current_tool_results:
                 executed_tool_calls.append(tool_result)
@@ -138,3 +148,93 @@ class ToolNode:
             "模型未返回最终回答。",
             error_code="invalid_llm_response",
         )
+
+    def _build_available_tools(
+        self,
+        *,
+        route: str,
+        requested_tool_names: list[str] | None,
+        runtime_mcp_tools: list[McpRuntimeTool],
+    ) -> list[LlmBindableTool]:
+        """根据路由和状态构造当前轮次允许使用的工具集合。"""
+
+        builtin_tools = (
+            []
+            if route == "mcp"
+            else self._tool_registry.get_tools(requested_tool_names)
+            if requested_tool_names is not None
+            else []
+        )
+        mcp_tools = [runtime_tool.to_openai_tool() for runtime_tool in runtime_mcp_tools]
+        available_tools = [*builtin_tools, *mcp_tools]
+        if not available_tools:
+            raise AppException(
+                "当前请求没有可执行的工具。",
+                error_code="no_available_tools",
+            )
+        return available_tools
+
+    async def _execute_requested_tools(
+        self,
+        *,
+        completion_result: LlmChatCompletionResult,
+        runtime_mcp_tools: list[McpRuntimeTool],
+    ) -> list[ExecutedToolCall]:
+        """执行模型本轮返回的全部工具调用。"""
+
+        mcp_tool_map = {
+            runtime_tool.registered_name: runtime_tool for runtime_tool in runtime_mcp_tools
+        }
+        builtin_tool_calls: list[dict[str, object]] = []
+        executed_tool_calls: list[ExecutedToolCall] = []
+
+        for tool_call in completion_result.tool_calls:
+            runtime_mcp_tool = mcp_tool_map.get(tool_call.tool_name)
+            if runtime_mcp_tool is None:
+                builtin_tool_calls.append(
+                    {
+                        "id": tool_call.tool_call_id,
+                        "name": tool_call.tool_name,
+                        "args": tool_call.arguments,
+                    }
+                )
+                continue
+
+            tool_response = await self._mcp_manager.call_tool(
+                server_name=runtime_mcp_tool.server_name,
+                tool_name=runtime_mcp_tool.remote_tool_name,
+                arguments=tool_call.arguments,
+            )
+            normalized_output = tool_response.output_text
+            if not normalized_output and tool_response.structured_content is not None:
+                normalized_output = dumps(tool_response.structured_content, ensure_ascii=False)
+            if not normalized_output:
+                normalized_output = "MCP 工具未返回文本结果。"
+            executed_tool_calls.append(
+                ExecutedToolCall(
+                    tool_call_id=tool_call.tool_call_id,
+                    tool_name=runtime_mcp_tool.registered_name,
+                    arguments=tool_call.arguments,
+                    output=normalized_output,
+                )
+            )
+
+        if builtin_tool_calls:
+            executed_tool_calls.extend(
+                await self._tool_registry.execute_tool_calls(builtin_tool_calls)
+            )
+
+        return executed_tool_calls
+
+    @staticmethod
+    def _extract_runtime_mcp_tools(state: AgentState) -> list[McpRuntimeTool]:
+        """从状态中提取当前轮次的 MCP 运行时工具。"""
+
+        raw_runtime_mcp_tools = state.get("mcp_tools", [])
+        if not isinstance(raw_runtime_mcp_tools, list):
+            return []
+        return [
+            runtime_tool
+            for runtime_tool in raw_runtime_mcp_tools
+            if isinstance(runtime_tool, McpRuntimeTool)
+        ]

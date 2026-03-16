@@ -80,6 +80,18 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         latest_tool_output = ""
         all_message_contents: list[str] = []
         user_messages: list[str] = []
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                if isinstance(function_payload, dict) and isinstance(
+                    function_payload.get("name"),
+                    str,
+                ):
+                    available_tool_names.append(str(function_payload["name"]))
+            else:
+                available_tool_names.append(str(getattr(tool, "name", "")))
 
         for message in reversed(messages):
             role = getattr(message, "role", "")
@@ -100,7 +112,11 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             "以下是知识库检索结果" in message for message in all_message_contents
         )
         has_mcp_context = any(
-            "以下是当前系统已配置的 MCP 服务骨架信息" in message for message in all_message_contents
+            (
+                "以下是当前系统已配置的 MCP 服务骨架信息" in message
+                or "以下是当前系统已接入的 MCP 服务与工具信息" in message
+            )
+            for message in all_message_contents
         )
 
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
@@ -135,6 +151,31 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                         tool_call_id="call_datetime",
                         tool_name="current_datetime",
                         arguments={"timezone_name": "Asia/Shanghai"},
+                    )
+                ],
+            )
+
+        mcp_weather_tool_name = next(
+            (
+                tool_name
+                for tool_name in available_tool_names
+                if tool_name.startswith("mcp_") and "weather" in tool_name
+            ),
+            None,
+        )
+        if mcp_weather_tool_name and not latest_tool_output and "天气" in latest_user_message:
+            return LlmChatCompletionResult(
+                content="",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    LlmToolCall(
+                        tool_call_id="call_mcp_weather",
+                        tool_name=mcp_weather_tool_name,
+                        arguments={"city": "杭州"},
                     )
                 ],
             )
@@ -210,6 +251,18 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         latest_user_message = ""
         user_messages: list[str] = []
         all_message_contents: list[str] = []
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                if isinstance(function_payload, dict) and isinstance(
+                    function_payload.get("name"),
+                    str,
+                ):
+                    available_tool_names.append(str(function_payload["name"]))
+            else:
+                available_tool_names.append(str(getattr(tool, "name", "")))
 
         for message in reversed(messages):
             if getattr(message, "role", "") == "user":
@@ -245,12 +298,44 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 )
                 return
 
+            mcp_weather_tool_name = next(
+                (
+                    tool_name
+                    for tool_name in available_tool_names
+                    if tool_name.startswith("mcp_") and "weather" in tool_name
+                ),
+                None,
+            )
+            if mcp_weather_tool_name and "天气" in latest_user_message:
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    tool_call_chunks=[
+                        LlmToolCallChunk(
+                            index=0,
+                            tool_call_id="call_mcp_weather",
+                            tool_name=mcp_weather_tool_name,
+                            arguments_chunk='{"city":"杭州"}',
+                        )
+                    ],
+                )
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="tool_calls",
+                )
+                return
+
             if any("以下是知识库检索结果" in message for message in all_message_contents) and (
                 "西湖" in latest_user_message
             ):
                 full_text = "测试模型回答：根据知识库，西湖位于杭州。"
             elif any(
-                "以下是当前系统已配置的 MCP 服务骨架信息" in message
+                (
+                    "以下是当前系统已配置的 MCP 服务骨架信息" in message
+                    or "以下是当前系统已接入的 MCP 服务与工具信息" in message
+                )
                 for message in all_message_contents
             ) and ("MCP" in latest_user_message.upper()):
                 full_text = "测试模型回答：当前已配置 MCP 服务骨架。"
