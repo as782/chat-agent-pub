@@ -2,10 +2,18 @@
 
 最小可用的 Agent 问答系统后端项目。
 
-当前仓库已经完成阶段 1 初始化工程，并持续按阶段补齐配置管理、持久化、基础 API、Agent
-主链路、知识库接入、工具系统和 MCP 骨架。
+当前仓库已经完成：
+- FastAPI 服务骨架
+- PostgreSQL 会话与消息持久化
+- Redis/内存短期状态支撑
+- LangChain + LangGraph 多轮对话主链路
+- RAGFlow 接入层
+- 内置工具调用
+- MCP 外部服务接入骨架与最小可用调用
+- OpenAI 兼容输入输出接口
+- pytest / Ruff / pre-commit / Docker / `uv`
 
-## 当前技术栈
+## 技术栈
 
 - Python 3.11
 - FastAPI
@@ -13,192 +21,212 @@
 - LangGraph
 - PostgreSQL
 - Redis
-- pytest
+- pytest / pytest-asyncio
 - Ruff
 - pre-commit
-- Docker / docker-compose
+- Docker / docker compose
+- `uv`
 
-## 已完成内容
+## 当前能力
 
-- 初始化项目目录结构
-- 初始化 `pyproject.toml`
-- 初始化 `.env.example`
-- 初始化 `docker-compose.yml`
-- 初始化 `.pre-commit-config.yaml`
-- 建立 FastAPI 入口
-- 提供 `/health` 接口
-- 建立核心配置、日志、异常体系
-- 建立会话、消息、短期记忆、RAGFlow 映射的持久化层
-- 建立基础单轮会话、消息查询和对话 API
-- 接入真实 LLM 单轮对话链路
-- 增加 OpenAI Chat Completions 兼容适配层，便于后续接入 Qwen 等兼容模型
+- `POST /api/v1/chat`
+  - OpenAI Chat Completions 兼容输入输出
+  - 支持同一会话多轮记忆
+  - 支持知识库路由、工具调用、MCP 工具调用
+- `POST /v1/chat/completions`
+  - OpenAI 兼容接口
+  - 支持非流式与流式
+- `POST /api/v1/sessions`
+  - 创建会话
+- `GET /api/v1/sessions`
+  - 查询会话列表
+- `GET /api/v1/sessions/{session_id}`
+  - 查询单个会话
+- `GET /api/v1/messages/{session_id}`
+  - 查询消息历史
+- `POST /api/v1/knowledge/datasets/sync`
+  - 同步 RAGFlow 数据集
+- `POST /api/v1/knowledge/retrieval`
+  - 执行知识检索
+- `GET /api/v1/mcp/servers`
+  - 查询 MCP 服务配置
+- `POST /api/v1/mcp/servers/{server_name}/probe`
+  - 探测 MCP 服务
+- `GET /api/v1/mcp/servers/{server_name}/tools`
+  - 列出 MCP 工具
 
-## 目录结构说明
+## 目录结构
 
 ```text
 app/
 ├── api/
 │   └── v1/
-├── clients/
-├── core/
-├── schemas/
-├── services/
 ├── agent/
 │   └── nodes/
-├── memory/
+├── clients/
+├── core/
 ├── knowledge/
 │   └── ragflow/
+├── mcp/
+├── memory/
+├── persistence/
+├── schemas/
+├── services/
 ├── tools/
 │   └── builtin/
-├── mcp/
-├── persistence/
 └── main.py
 tests/
 ├── unit/
 ├── integration/
 └── e2e/
+docs/
+└── development.md
 ```
 
-### app 目录职责
+目录职责：
+- `app/api/v1/`：HTTP 路由层，只做参数解析、调用 service、返回响应。
+- `app/services/`：业务编排层。
+- `app/persistence/`：数据访问层，不做业务决策。
+- `app/clients/`、`app/knowledge/ragflow/`、`app/mcp/`：第三方调用封装层。
+- `app/agent/`：LangGraph 状态、图编排、节点和上下文构建。
+- `app/memory/`：短期记忆、摘要、checkpoint。
+- `app/tools/`：内置工具与工具注册中心。
+- `tests/unit`：纯逻辑测试。
+- `tests/integration`：模块协作与 API 测试。
+- `tests/e2e`：端到端链路测试。
 
-- `app/main.py`：应用入口，负责创建 FastAPI 应用并注册系统路由与业务路由。
-- `app/api/v1/`：HTTP 接口层，只做参数解析、调用 service、返回响应。
-- `app/clients/`：第三方客户端层，统一封装外部系统和外部模型调用。
-- `app/core/`：基础设施层，放配置、日志、通用异常等横切能力。
-- `app/schemas/`：接口请求体、响应体和内部数据传输对象定义。
-- `app/services/`：业务编排层，负责会话、消息、对话等用例流程。
-- `app/agent/`：Agent 编排层，负责状态定义、图编排、节点路由与上下文构建。
-- `app/memory/`：短期记忆与检查点相关能力，不负责业务接口暴露。
-- `app/knowledge/`：知识库接入层，当前阶段只计划对接 RAGFlow，不自建完整 RAG
-  流水线。
-- `app/tools/`：工具注册与内置工具定义，例如计算器与时间工具。
-- `app/mcp/`：MCP 接入骨架，负责管理协议客户端与调用入口。
-- `app/persistence/`：数据访问层，只负责数据库读写，不承担业务决策。
+## 快速开始
 
-### tests 目录职责
-
-- `tests/unit/`：单元测试，覆盖纯逻辑和轻量模块。
-- `tests/integration/`：集成测试，覆盖 API、服务编排和模块协作。
-- `tests/e2e/`：端到端测试，覆盖完整业务链路。
-
-## 本地运行
+1. 安装依赖
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[dev]
-uvicorn app.main:app --reload
+uv sync
 ```
 
-服务启动后访问 `http://127.0.0.1:8000/health` 即可验证服务存活。
-
-## 首次本地启动基础依赖
-
-如果你的本机还没有可用的 PostgreSQL 和 Redis，最快方式是直接使用当前仓库的
-`docker-compose.yml` 启动基础依赖：
+2. 复制环境变量模板
 
 ```bash
 copy .env.example .env
-docker compose up -d postgres redis
-docker compose ps
 ```
 
-默认映射结果如下：
+3. 如果本机还没有 PostgreSQL / Redis，先启动基础依赖
 
+```bash
+docker compose up -d postgres redis
+```
+
+默认宿主机端口：
 - PostgreSQL：`localhost:55432`
 - Redis：`localhost:6379`
 
-如果 `55432` 或 `6379` 仍然和你本机已有容器冲突，可以在 `.env` 中调整：
+4. 启动服务
 
 ```bash
-POSTGRES_HOST_PORT=65432
-REDIS_HOST_PORT=6389
+uv run uvicorn app.main:app --reload
 ```
 
-## 配置 LLM
+5. 打开文档
 
-当前单轮对话已经接入真实 LLM。运行前请在 `.env` 中至少配置：
-
-```bash
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=gpt-4.1-mini
+```text
+http://127.0.0.1:8000/docs
 ```
 
-如果你使用 OpenAI 兼容接口，例如自建网关或其他兼容服务，还可以配置：
+## 环境变量
 
-```bash
-OPENAI_BASE_URL=https://your-provider.example.com/v1
+最小本地运行通常至少需要：
 
-```
+```env
+POSTGRES_HOST=localhost
+POSTGRES_PORT=55432
+POSTGRES_DB=chat_agent
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
 
-当前后端同时提供两类聊天入口：
+REDIS_URL=redis://localhost:6379/0
 
-- 内部业务接口：`POST /api/v1/chat`
-- OpenAI 兼容接口：`POST /v1/chat/completions`
-
-其中 `/api/v1/chat` 当前采用“OpenAI 兼容请求体 + OpenAI 兼容响应体”的方式：
-
-- 请求体使用 OpenAI Chat Completions 兼容结构
-- 响应体返回 OpenAI Chat Completions 兼容结构
-- 会话复用通过请求头 `X-Session-ID` 传入
-- 自动创建或复用后的 `session_id` 通过响应头 `X-Session-ID` 返回
-
-OpenAI 兼容适配层会尽量保持输入输出结构与 OpenAI Chat Completions 一致，因此后续接入 Qwen 系列或其他 OpenAI 兼容模型时，优先只需要调整兼容网关地址和模型名，而不需要修改上层调用协议。
-
-```bash
-OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+OPENAI_API_KEY=replace-me
 OPENAI_MODEL=qwen-plus
+OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 ```
 
-设计上不在业务层硬编码供应商名称，而是透传 `model` 和 `base_url`。这样后续切换到其他 OpenAI 兼容模型时，客户端和上层调用代码可以保持稳定。
-当前模型初始化和工具绑定优先复用 LangChain 官方能力：
+如果使用 Qwen3 一类兼容模型，项目会在非流式场景下自动补 `enable_thinking=false`，避免常见兼容网关报错。
 
-- 使用 `langchain.chat_models.init_chat_model(...)` 初始化 OpenAI / OpenAI-compatible 模型
-- 使用 `bind_tools(...)` 绑定内置工具
+## MCP 配置
 
-对于实现了 OpenAI Chat Completions 协议的模型服务，当前默认走 `model_provider="openai"` + `base_url` 的方式接入。对于带有大量非标准字段的供应商，建议优先使用 LangChain 对应的 provider-specific 集成包。
+项目当前支持外部标准 MCP 服务配置，支持：
+- `http`
+- `streamable_http`
+- `sse`
+- `stdio`
 
-OpenAI 兼容调用示例：
+推荐 `.env` 中使用单行 JSON。
+
+高德 `streamable_http` 示例：
+
+```env
+MCP_SERVERS_JSON={"mcpServers":{"amap-maps-streamableHTTP":{"url":"https://mcp.amap.com/mcp?key=replace-me"}}}
+```
+
+SSE 示例：
+
+```env
+MCP_SERVERS_JSON={"mcpServers":{"demo-sse":{"transport":"sse","url":"https://mcp.example.com/sse"}}}
+```
+
+stdio 示例：
+
+```env
+MCP_SERVERS_JSON=[{"name":"amap","transport":"stdio","command":"uvx","args":["amap-mcp-server"],"env":{"AMAP_MAPS_API_KEY":"replace-me"}}]
+```
+
+## 常用命令
+
+启动服务：
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen-plus",
-    "messages": [
-      {"role": "system", "content": "你是一个简洁助手。"},
-      {"role": "user", "content": "你好"}
-    ]
-  }'
+uv run uvicorn app.main:app --reload
 ```
 
-当前兼容层限制：
-
-- 当前仅支持文本消息
-- 当前兼容层本身不负责会话持久化
-- 当前工具能力仅开放内置 `calculator` 和 `current_datetime`
-
-基础依赖和 LLM 配置完成后，再执行：
+运行自检：
 
 ```bash
-uvicorn app.main:app --reload
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
 ```
 
-## Docker 运行
+安装 pre-commit：
 
 ```bash
-docker compose up --build
+uv run pre-commit install
 ```
 
-## 本地自检
+执行 pre-commit：
 
 ```bash
-ruff check .
-ruff format --check .
-pytest
+uv run pre-commit run --all-files
 ```
 
-## 阶段说明
+## 测试分层
 
-当前仓库已完成工程初始化、基础设施、持久化层、基础 API 和真实 LLM 单轮对话接入。
-LangGraph 多轮编排、RAGFlow 接入、工具系统和 MCP 能力会在后续阶段继续补齐。
+- `tests/unit`
+  - router 决策
+  - context builder
+  - tool registry
+  - RAGFlow client 参数组装
+  - repository 纯逻辑
+  - 中文注释规范基线
+- `tests/integration`
+  - chat / sessions / messages / knowledge / mcp API
+  - agent graph 主链路
+- `tests/e2e`
+  - 创建会话
+  - 多轮发送消息
+  - 调用知识库
+  - 查询历史消息
+
+## 开发规范
+
+开发流程、Git 分支规范、Commit 规范、PR 规范、中文注释规范见：
+
+- [docs/development.md](/c:/Users/wengkaibin/DATA/WorkSpace/Test spaces/chat-agent/docs/development.md)
