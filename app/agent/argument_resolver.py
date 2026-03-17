@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 
-from app.agent.state import AgentState, ProblemCategory, ResolvedArguments
+from app.agent.state import AgentState, ExecutorType, ProblemCategory, ResolvedArguments
+from app.clients.llm_client import LlmInputMessage
 
 ROUTE_PAIR_PATTERN = re.compile(
     r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})到(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
@@ -33,6 +34,37 @@ class ArgumentResolver:
         if category == "policy":
             return self._resolve_policy_arguments(latest_user_message, category=category)
         return ResolvedArguments(category=category, arguments={"query": latest_user_message})
+
+    def resolve_for_executor(
+        self,
+        state: AgentState,
+        *,
+        executor: ExecutorType,
+    ) -> ResolvedArguments:
+        """根据执行器类型提取对应的结构化参数。"""
+
+        latest_user_message = str(state.get("latest_user_message", ""))
+        input_messages = state.get("input_messages", [])
+
+        if executor == "rag":
+            return self._resolve_policy_arguments(latest_user_message, category="policy")
+        if executor in {"mcp", "route"}:
+            return self._resolve_route_arguments(
+                latest_user_message,
+                category="route_planning",
+            )
+        if executor == "traffic":
+            return self._resolve_traffic_arguments(
+                latest_user_message,
+                category="traffic_status",
+            )
+        if executor == "report":
+            return self._resolve_report_arguments(
+                latest_user_message,
+                category="network_report",
+                input_messages=input_messages if isinstance(input_messages, list) else [],
+            )
+        return ResolvedArguments(category="general", arguments={"query": latest_user_message})
 
     def _resolve_route_arguments(
         self,
@@ -93,6 +125,7 @@ class ArgumentResolver:
         latest_user_message: str,
         *,
         category: ProblemCategory,
+        input_messages: list[LlmInputMessage] | None = None,
     ) -> ResolvedArguments:
         """提取路网报告问题中的报表参数。"""
 
@@ -111,6 +144,10 @@ class ArgumentResolver:
             arguments["report_type"] = "monthly"
         else:
             arguments["report_type"] = "ad_hoc"
+
+        reference_answer = self._extract_reference_answer(input_messages or [])
+        if reference_answer is not None:
+            arguments["reference_answer"] = reference_answer
 
         return ResolvedArguments(category=category, arguments=arguments)
 
@@ -148,3 +185,15 @@ class ArgumentResolver:
             if cleaned_value.endswith(suffix):
                 cleaned_value = cleaned_value[: -len(suffix)].strip()
         return cleaned_value
+
+    @staticmethod
+    def _extract_reference_answer(input_messages: list[LlmInputMessage]) -> str | None:
+        """从显式输入消息中提取最近一条 assistant 内容作为参考答案。"""
+
+        for message in reversed(input_messages):
+            if message.role != "assistant":
+                continue
+            content = message.content.strip()
+            if content:
+                return content
+        return None

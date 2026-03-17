@@ -3,7 +3,8 @@
 import pytest
 
 from app.agent.nodes.argument_node import ArgumentNode
-from app.agent.state import ExecutionPlan
+from app.agent.state import ExecutionPlan, ExecutionStep
+from app.clients.llm_client import LlmInputMessage
 
 
 @pytest.mark.asyncio
@@ -28,6 +29,7 @@ async def test_argument_node_extracts_route_arguments() -> None:
     assert resolved_arguments.arguments["origin"] == "杭州"
     assert resolved_arguments.arguments["destination"] == "金华"
     assert resolved_arguments.arguments["travel_mode"] == "auto"
+    assert result["step_arguments"]["route_1"].arguments["origin"] == "杭州"
     assert result["need_clarification"] is False
 
 
@@ -78,6 +80,85 @@ async def test_argument_node_extracts_report_flags() -> None:
     assert resolved_arguments.arguments["scope"] == "全路网"
     assert resolved_arguments.arguments["need_table"] is True
     assert resolved_arguments.arguments["need_comparison"] is True
+
+
+@pytest.mark.asyncio
+async def test_argument_node_builds_step_arguments_for_multi_step_route_plan() -> None:
+    """多步骤路线计划应为不同 step 生成独立参数。"""
+
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "杭州到金华怎么走，并说明是否符合高速清障标准以及当前路况如何？",
+            "primary_category": "route_planning",
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="multi_step",
+                recommended_route="route",
+                steps=[
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路线相关政策和标准要求",
+                    ),
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询路线规划相关数据",
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路线相关路况信息",
+                    ),
+                ],
+            ),
+        }
+    )
+
+    step_arguments = result["step_arguments"]
+    assert step_arguments["rag_1"].category == "policy"
+    assert "高速清障标准" in step_arguments["rag_1"].arguments["query"]
+    assert step_arguments["route_1"].arguments["origin"] == "杭州"
+    assert step_arguments["route_1"].arguments["destination"] == "金华"
+    assert step_arguments["traffic_1"].category == "traffic_status"
+
+
+@pytest.mark.asyncio
+async def test_argument_node_extracts_reference_answer_for_report_requests() -> None:
+    """报表类问题带上次回答时，应提取参考回答文本。"""
+
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "请基于上次结果生成今天全路网路况对比表格",
+            "input_messages": [
+                LlmInputMessage(
+                    role="assistant",
+                    content="上次报告显示杭州北向拥堵指数为 2.1。",
+                )
+            ],
+            "primary_category": "network_report",
+            "execution_plan": ExecutionPlan(
+                primary_category="network_report",
+                execution_mode="single_step",
+                recommended_route="report",
+                steps=[
+                    ExecutionStep(
+                        step_id="report_1",
+                        executor="report",
+                        goal="汇总路网数据",
+                    )
+                ],
+            ),
+        }
+    )
+
+    assert result["step_arguments"]["report_1"].arguments["reference_answer"] == (
+        "上次报告显示杭州北向拥堵指数为 2.1。"
+    )
 
 
 @pytest.mark.asyncio

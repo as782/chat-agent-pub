@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
-from app.agent.state import AgentState, ExecutorResult, merge_step_result, resolve_execution_step_id
+from app.agent.state import (
+    AgentState,
+    ExecutorResult,
+    get_execution_step,
+    merge_step_result,
+    resolve_execution_step_id,
+)
 from app.core.exceptions import AppException
 from app.mcp.manager import McpManager
 
@@ -25,6 +31,15 @@ class McpNode:
                 "当前未发现可用的 MCP 工具。",
                 error_code="mcp_no_available_tools",
             )
+
+        result: dict[str, object] = {
+            "mcp_context": self._mcp_manager.build_agent_context(runtime_tools),
+            "mcp_tools": runtime_tools,
+        }
+        current_step_id = str(state["current_step_id"]) if state.get("current_step_id") else None
+        current_step = get_execution_step(state, step_id=current_step_id)
+        if current_step is None or current_step.executor != "mcp":
+            return result
 
         step_id = resolve_execution_step_id(state, executor="mcp", default_step_id="mcp_1")
         executor_result = ExecutorResult(
@@ -49,7 +64,6 @@ class McpNode:
             sources=list({runtime_tool.server_name for runtime_tool in runtime_tools}),
         )
         return {
-            "mcp_context": self._mcp_manager.build_agent_context(runtime_tools),
-            "mcp_tools": runtime_tools,
+            **result,
             **merge_step_result(state, result=executor_result),
         }

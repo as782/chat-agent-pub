@@ -75,10 +75,10 @@ class PlannerService:
             return "network_report"
         if normalized_message.startswith("mcp:") or "#mcp" in normalized_message:
             return "route_planning"
-        if any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS):
-            return "traffic_status"
         if has_route_request:
             return "route_planning"
+        if any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS):
+            return "traffic_status"
         if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
             return "policy"
         if has_requested_tools:
@@ -146,30 +146,58 @@ class PlannerService:
             ]
 
         if primary_category == "route_planning":
-            if _needs_policy_support_for_route(
+            need_policy_support = _needs_policy_support_for_route(
                 latest_user_message=latest_user_message,
                 normalized_message=normalized_message,
-            ):
-                return [
+            )
+            need_traffic_support = _needs_traffic_support_for_route(
+                latest_user_message=latest_user_message,
+            )
+            route_dependency_step_ids: list[str] = []
+            route_steps: list[ExecutionStep] = []
+
+            if need_policy_support:
+                route_steps.append(
                     ExecutionStep(
                         step_id="rag_1",
                         executor="rag",
                         goal="检索路线相关政策和标准要求",
                         can_run_in_parallel=True,
-                    ),
+                    )
+                )
+                route_dependency_step_ids.append("rag_1")
+
+            route_steps.append(
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询路线规划相关数据",
+                    can_run_in_parallel=True,
+                )
+            )
+            route_dependency_step_ids.append("route_1")
+
+            if need_traffic_support:
+                route_steps.append(
                     ExecutionStep(
-                        step_id="route_1",
-                        executor="route",
-                        goal="查询路线规划相关数据",
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路线相关路况信息",
                         can_run_in_parallel=True,
-                    ),
+                    )
+                )
+                route_dependency_step_ids.append("traffic_1")
+
+            if len(route_dependency_step_ids) > 1:
+                route_steps.append(
                     ExecutionStep(
                         step_id="answer_1",
                         executor="answer",
-                        goal="结合政策与路线结果生成最终回答",
-                        depends_on=["rag_1", "route_1"],
-                    ),
-                ]
+                        goal="结合路线、路况和政策结果生成最终回答",
+                        depends_on=route_dependency_step_ids,
+                    )
+                )
+                return route_steps
             return [
                 ExecutionStep(
                     step_id="route_1",
@@ -185,6 +213,27 @@ class PlannerService:
             ]
 
         if primary_category == "traffic_status":
+            if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
+                return [
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路况研判相关政策和标准要求",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路况或实时交通数据",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路况结果与政策要求生成最终回答",
+                        depends_on=["rag_1", "traffic_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="traffic_1",
@@ -200,6 +249,27 @@ class PlannerService:
             ]
 
         if primary_category == "network_report":
+            if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
+                return [
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路网报告相关政策和标准要求",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="report_1",
+                        executor="report",
+                        goal="汇总多个区域或多个接口的路网数据",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路网数据与政策要求输出报告、对比结论和表格",
+                        depends_on=["rag_1", "report_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="report_1",
@@ -237,3 +307,9 @@ def _needs_policy_support_for_route(
         or normalized_message.startswith(("knowledge:", "konwledge:"))
         or "#knowledge" in normalized_message
     )
+
+
+def _needs_traffic_support_for_route(*, latest_user_message: str) -> bool:
+    """判断路线类问题是否同时需要补充路况信息。"""
+
+    return any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS)

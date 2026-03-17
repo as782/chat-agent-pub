@@ -8,7 +8,14 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.prompts import KNOWLEDGE_CONTEXT_PROMPT_PREFIX
-from app.agent.state import AgentState, ExecutorResult, merge_step_result, resolve_execution_step_id
+from app.agent.state import (
+    AgentState,
+    ExecutorResult,
+    ResolvedArguments,
+    merge_step_result,
+    resolve_execution_step_id,
+    resolve_step_arguments,
+)
 from app.knowledge.service import KnowledgeService
 from app.schemas.knowledge import KnowledgeSearchResult
 
@@ -27,9 +34,10 @@ class RagflowNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """执行知识检索，并返回注入回答节点所需的知识上下文。"""
 
-        normalized_query = self._normalize_query(str(state.get("latest_user_message", "")))
-        knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)
         step_id = resolve_execution_step_id(state, executor="rag", default_step_id="rag_1")
+        step_arguments = resolve_step_arguments(state, step_id=step_id, executor="rag")
+        normalized_query = self._resolve_query(state, step_arguments)
+        knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)
         if not knowledge_results:
             executor_result = ExecutorResult(
                 step_id=step_id,
@@ -74,6 +82,19 @@ class RagflowNode:
             "knowledge_context": self._build_knowledge_context(knowledge_results),
             **merge_step_result(state, result=executor_result),
         }
+
+    @staticmethod
+    def _resolve_query(
+        state: AgentState,
+        step_arguments: ResolvedArguments | None,
+    ) -> str:
+        """优先使用当前 rag 步骤参数中的 query，回退到原消息归一化。"""
+
+        if isinstance(step_arguments, ResolvedArguments):
+            query = str(step_arguments.arguments.get("query") or "").strip()
+            if query:
+                return query
+        return RagflowNode._normalize_query(str(state.get("latest_user_message", "")))
 
     @staticmethod
     def _normalize_query(raw_message: str) -> str:

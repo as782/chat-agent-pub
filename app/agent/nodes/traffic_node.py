@@ -15,6 +15,7 @@ from app.agent.state import (
     ResolvedArguments,
     merge_step_result,
     resolve_execution_step_id,
+    resolve_step_arguments,
 )
 
 
@@ -24,15 +25,14 @@ class TrafficNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """生成路况问题的业务上下文。"""
 
-        resolved_arguments = state.get("resolved_arguments")
-        if not isinstance(resolved_arguments, ResolvedArguments):
-            return {"traffic_context": None}
-
         step_id = resolve_execution_step_id(
             state,
             executor="traffic",
             default_step_id="traffic_1",
         )
+        resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="traffic")
+        if not isinstance(resolved_arguments, ResolvedArguments):
+            return {"traffic_context": None}
         executor_result = ExecutorResult(
             step_id=step_id,
             executor="traffic",

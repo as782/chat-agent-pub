@@ -60,6 +60,19 @@ def test_planner_builds_multi_step_route_and_policy_plan() -> None:
     assert [step.executor for step in plan.steps] == ["rag", "route", "answer"]
 
 
+def test_planner_builds_multi_step_route_and_traffic_plan() -> None:
+    """路线类问题带路况诉求时，应拆成路线与路况两个执行步骤。"""
+
+    planner = PlannerService()
+
+    plan = planner.build_plan(AgentState(latest_user_message="杭州到金华怎么走，当前路况怎么样？"))
+
+    assert plan.primary_category == "route_planning"
+    assert plan.execution_mode == "multi_step"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
+
+
 def test_planner_marks_traffic_status_requests() -> None:
     """路况类问题应生成交通数据查询计划。"""
 
@@ -70,6 +83,21 @@ def test_planner_marks_traffic_status_requests() -> None:
     assert plan.primary_category == "traffic_status"
     assert plan.recommended_route == "traffic"
     assert [step.executor for step in plan.steps] == ["traffic", "answer"]
+
+
+def test_planner_builds_multi_step_traffic_and_policy_plan() -> None:
+    """路况问题带政策约束时，应拆成知识检索与路况查询两个步骤。"""
+
+    planner = PlannerService()
+
+    plan = planner.build_plan(
+        AgentState(latest_user_message="当前杭金衢高速路况怎么样，是否符合清障标准？")
+    )
+
+    assert plan.primary_category == "traffic_status"
+    assert plan.execution_mode == "multi_step"
+    assert plan.recommended_route == "traffic"
+    assert [step.executor for step in plan.steps] == ["rag", "traffic", "answer"]
 
 
 def test_planner_marks_network_report_requests() -> None:
@@ -85,6 +113,23 @@ def test_planner_marks_network_report_requests() -> None:
     assert plan.execution_mode == "single_step"
     assert plan.recommended_route == "report"
     assert [step.executor for step in plan.steps] == ["report", "answer"]
+
+
+def test_planner_builds_multi_step_report_and_policy_plan() -> None:
+    """路网报告问题带政策要求时，应拆成知识检索与报告汇总两个步骤。"""
+
+    planner = PlannerService()
+
+    plan = planner.build_plan(
+        AgentState(
+            latest_user_message="请基于上次结果做一个今天全路网路况对比表格，并说明是否符合相关标准"
+        )
+    )
+
+    assert plan.primary_category == "network_report"
+    assert plan.execution_mode == "multi_step"
+    assert plan.recommended_route == "report"
+    assert [step.executor for step in plan.steps] == ["rag", "report", "answer"]
 
 
 def test_planner_defaults_to_general_for_plain_questions() -> None:

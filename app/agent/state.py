@@ -141,6 +141,7 @@ class AgentState(TypedDict, total=False):
     primary_category: ProblemCategory
     execution_plan: ExecutionPlan
     resolved_arguments: ResolvedArguments
+    step_arguments: dict[str, ResolvedArguments]
     step_results: dict[str, ExecutorResult]
     need_clarification: bool
     clarification_question: str | None
@@ -204,5 +205,49 @@ def merge_step_result(
     """把当前节点结果合并进统一 step_results。"""
 
     step_results = dict(state.get("step_results", {}))
-    step_results[result.step_id] = result
+    existing_result = step_results.get(result.step_id)
+    if not isinstance(existing_result, ExecutorResult):
+        step_results[result.step_id] = result
+        return {"step_results": step_results}
+
+    step_results[result.step_id] = ExecutorResult(
+        step_id=result.step_id,
+        executor=existing_result.executor,
+        is_success=existing_result.is_success and result.is_success,
+        raw_result={**existing_result.raw_result, **result.raw_result},
+        normalized_result={
+            **existing_result.normalized_result,
+            **result.normalized_result,
+        },
+        summary=result.summary or existing_result.summary,
+        sources=list(dict.fromkeys([*existing_result.sources, *result.sources])),
+        error=result.error or existing_result.error,
+    )
     return {"step_results": step_results}
+
+
+def resolve_step_arguments(
+    state: AgentState,
+    *,
+    step_id: str | None = None,
+    executor: ExecutorType | None = None,
+) -> ResolvedArguments | None:
+    """按 step_id 或 executor 读取当前步骤参数，兼容旧 resolved_arguments。"""
+
+    step_arguments = state.get("step_arguments")
+    if isinstance(step_arguments, dict):
+        if step_id is not None:
+            resolved_arguments = step_arguments.get(step_id)
+            if isinstance(resolved_arguments, ResolvedArguments):
+                return resolved_arguments
+        if executor is not None:
+            execution_step = get_execution_step(state, executor=executor)
+            if execution_step is not None:
+                resolved_arguments = step_arguments.get(execution_step.step_id)
+                if isinstance(resolved_arguments, ResolvedArguments):
+                    return resolved_arguments
+
+    fallback_arguments = state.get("resolved_arguments")
+    if isinstance(fallback_arguments, ResolvedArguments):
+        return fallback_arguments
+    return None

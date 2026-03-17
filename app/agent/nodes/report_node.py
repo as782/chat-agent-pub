@@ -15,6 +15,7 @@ from app.agent.state import (
     ResolvedArguments,
     merge_step_result,
     resolve_execution_step_id,
+    resolve_step_arguments,
 )
 
 
@@ -24,15 +25,14 @@ class ReportNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """生成路网报告问题的业务上下文。"""
 
-        resolved_arguments = state.get("resolved_arguments")
-        if not isinstance(resolved_arguments, ResolvedArguments):
-            return {"report_context": None}
-
         step_id = resolve_execution_step_id(
             state,
             executor="report",
             default_step_id="report_1",
         )
+        resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="report")
+        if not isinstance(resolved_arguments, ResolvedArguments):
+            return {"report_context": None}
         executor_result = ExecutorResult(
             step_id=step_id,
             executor="report",

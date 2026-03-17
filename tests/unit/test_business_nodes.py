@@ -39,6 +39,41 @@ async def test_route_node_builds_business_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_route_node_prefers_step_specific_arguments() -> None:
+    """存在逐步参数时，路线节点应优先使用当前 step 的参数。"""
+
+    node = RouteNode()
+
+    result = await node.run(
+        {
+            "current_step_id": "route_1",
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="multi_step",
+                recommended_route="route",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="route_planning",
+                arguments={"origin": "错误起点", "destination": "错误终点"},
+            ),
+            "step_arguments": {
+                "route_1": ResolvedArguments(
+                    category="route_planning",
+                    arguments={
+                        "origin": "杭州",
+                        "destination": "金华",
+                        "travel_mode": "auto",
+                    },
+                )
+            },
+        }
+    )
+
+    assert "杭州" in result["route_context"]
+    assert result["step_results"]["route_1"].normalized_result["destination"] == "金华"
+
+
+@pytest.mark.asyncio
 async def test_traffic_node_builds_business_context() -> None:
     """路况节点应把结构化参数整理为上下文文本。"""
 
