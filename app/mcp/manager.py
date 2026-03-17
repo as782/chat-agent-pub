@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from json import dumps, loads
+from time import perf_counter
 from typing import Any
 
 from app.core.config import get_settings
@@ -82,6 +83,7 @@ class McpManager:
     async def probe_server(self, server_name: str) -> McpProbeResponse:
         """探测指定 MCP 服务是否可用。"""
 
+        probe_start_time = perf_counter()
         server_definition = self._get_server_definition(server_name)
         if server_definition.transport in {"http", "streamable_http"}:
             if not server_definition.endpoint:
@@ -116,19 +118,28 @@ class McpManager:
                 env=server_definition.env or None,
             )
 
-        return McpProbeResponse(
+        probe_response = McpProbeResponse(
             name=server_definition.name,
             transport=server_definition.transport,
             is_available=is_available,
             detail=detail,
         )
+        LOGGER.info(
+            "MCP 服务探测完成：server=%s transport=%s is_available=%s duration_ms=%.2f",
+            server_definition.name,
+            server_definition.transport,
+            is_available,
+            (perf_counter() - probe_start_time) * 1000,
+        )
+        return probe_response
 
     async def list_tools(self, server_name: str) -> list[McpToolInfo]:
         """列出指定 MCP 服务提供的工具。"""
 
+        list_start_time = perf_counter()
         server_definition = self._get_server_definition(server_name)
         tool_definitions = await self._list_remote_tools(server_definition)
-        return [
+        tool_infos = [
             McpToolInfo(
                 server_name=server_name,
                 name=tool_definition.name,
@@ -141,6 +152,14 @@ class McpManager:
             )
             for tool_definition in tool_definitions
         ]
+        LOGGER.info(
+            "MCP 工具发现完成：server=%s transport=%s tool_count=%s duration_ms=%.2f",
+            server_definition.name,
+            server_definition.transport,
+            len(tool_infos),
+            (perf_counter() - list_start_time) * 1000,
+        )
+        return tool_infos
 
     async def call_tool(
         self,
@@ -151,6 +170,7 @@ class McpManager:
     ) -> McpToolCallResponse:
         """调用指定 MCP 服务的工具。"""
 
+        call_start_time = perf_counter()
         server_definition = self._get_server_definition(server_name)
         call_result = await self._call_remote_tool(
             server_definition=server_definition,
@@ -158,7 +178,7 @@ class McpManager:
             arguments=arguments,
         )
         normalized_output_text = self._build_tool_output_text(call_result)
-        return McpToolCallResponse(
+        response = McpToolCallResponse(
             server_name=server_name,
             tool_name=tool_name,
             arguments=arguments,
@@ -167,6 +187,19 @@ class McpManager:
             is_error=call_result.is_error,
             output_text=normalized_output_text,
         )
+        LOGGER.info(
+            (
+                "MCP 工具调用完成：server=%s transport=%s tool=%s "
+                "is_error=%s duration_ms=%.2f output_length=%s"
+            ),
+            server_definition.name,
+            server_definition.transport,
+            tool_name,
+            call_result.is_error,
+            (perf_counter() - call_start_time) * 1000,
+            len(normalized_output_text),
+        )
+        return response
 
     async def call_server_method(
         self,
@@ -219,6 +252,7 @@ class McpManager:
     ) -> list[McpRuntimeTool]:
         """构造供 Agent 直接绑定给模型的 MCP 工具列表。"""
 
+        build_start_time = perf_counter()
         selected_server_definitions = self._select_server_definitions(server_names)
         runtime_tools: list[McpRuntimeTool] = []
         seen_registered_names: set[str] = set()
@@ -248,6 +282,12 @@ class McpManager:
                     )
                 )
 
+        LOGGER.info(
+            "MCP 运行时工具构建完成：server_count=%s tool_count=%s duration_ms=%.2f",
+            len(selected_server_definitions),
+            len(runtime_tools),
+            (perf_counter() - build_start_time) * 1000,
+        )
         return runtime_tools
 
     def build_agent_context(self, runtime_tools: list[McpRuntimeTool] | None = None) -> str | None:

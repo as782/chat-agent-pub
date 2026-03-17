@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from json import dumps, loads
+from time import perf_counter
 from typing import Any
 
 from langchain.chat_models import init_chat_model
@@ -254,6 +255,7 @@ class LlmClient:
     ) -> LlmChatCompletionResult:
         """使用统一消息结构创建一次聊天补全。"""
 
+        request_start_time = perf_counter()
         self._log_chat_request(
             messages=messages,
             model_name=model_name,
@@ -286,10 +288,25 @@ class LlmClient:
         ) as exception:
             raise self._convert_openai_exception(exception) from exception
 
-        return self._build_completion_result(
+        completion_result = self._build_completion_result(
             llm_response=llm_response,
             requested_model_name=model_name,
         )
+        LOGGER.info(
+            (
+                "LLM 请求完成：mode=non_stream model=%s duration_ms=%.2f "
+                "finish_reason=%s prompt_tokens=%s completion_tokens=%s "
+                "total_tokens=%s tool_call_count=%s"
+            ),
+            completion_result.model_name,
+            (perf_counter() - request_start_time) * 1000,
+            completion_result.finish_reason,
+            completion_result.prompt_tokens,
+            completion_result.completion_tokens,
+            completion_result.total_tokens,
+            len(completion_result.tool_calls),
+        )
+        return completion_result
 
     def stream_chat_completion(
         self,
@@ -331,12 +348,49 @@ class LlmClient:
     ) -> AsyncIterator[LlmChatCompletionChunk]:
         """遍历 LangChain 流式输出并转换为统一增量结构。"""
 
+        request_start_time = perf_counter()
+        first_chunk_duration_ms: float | None = None
+        chunk_count = 0
+        final_finish_reason: str | None = None
+        final_prompt_tokens = 0
+        final_completion_tokens = 0
+        final_total_tokens = 0
+        resolved_model_name = requested_model_name or self._settings.openai_model
+
         try:
             async for llm_chunk in runnable.astream(llm_messages):
-                yield self._build_completion_chunk(
+                normalized_chunk = self._build_completion_chunk(
                     llm_chunk=llm_chunk,
                     requested_model_name=requested_model_name,
                 )
+                chunk_count += 1
+                resolved_model_name = normalized_chunk.model_name or resolved_model_name
+                if first_chunk_duration_ms is None:
+                    first_chunk_duration_ms = (perf_counter() - request_start_time) * 1000
+                if normalized_chunk.finish_reason is not None:
+                    final_finish_reason = normalized_chunk.finish_reason
+                if normalized_chunk.prompt_tokens is not None:
+                    final_prompt_tokens = normalized_chunk.prompt_tokens
+                if normalized_chunk.completion_tokens is not None:
+                    final_completion_tokens = normalized_chunk.completion_tokens
+                if normalized_chunk.total_tokens is not None:
+                    final_total_tokens = normalized_chunk.total_tokens
+                yield normalized_chunk
+            LOGGER.info(
+                (
+                    "LLM 请求完成：mode=stream model=%s first_chunk_ms=%s "
+                    "total_ms=%.2f finish_reason=%s chunks=%s prompt_tokens=%s "
+                    "completion_tokens=%s total_tokens=%s"
+                ),
+                resolved_model_name,
+                f"{first_chunk_duration_ms:.2f}" if first_chunk_duration_ms is not None else "none",
+                (perf_counter() - request_start_time) * 1000,
+                final_finish_reason,
+                chunk_count,
+                final_prompt_tokens,
+                final_completion_tokens,
+                final_total_tokens,
+            )
         except AppException:
             raise
         except (
@@ -442,19 +496,8 @@ class LlmClient:
                 serialized_tool_names.append(str(tool_name or "anonymous_tool"))
             else:
                 serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
-        request_payload = dumps(
-            {
-                "mode": "stream" if is_stream else "non_stream",
-                "model": model_name or self._settings.openai_model,
-                "tool_choice": tool_choice,
-                "enable_thinking": enable_thinking,
-                "tools": serialized_tool_names,
-                "messages": serialized_messages,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
-        LOGGER.info("向 LLM 发起请求：\n %s", request_payload)
+
+        # LOGGER.info("向 LLM 发起请求：\n %s", request_payload)
 
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""

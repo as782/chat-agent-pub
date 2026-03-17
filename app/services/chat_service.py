@@ -1,14 +1,13 @@
 """对话服务模块。
-
-负责内部聊天接口的会话落库、LangGraph 对话编排，以及 OpenAI 兼容响应构建。
-当前阶段负责把非流式和流式链路统一到同一套图状态准备逻辑中，不负责知识库和
-MCP 的底层协议实现。
+负责内部聊天接口的会话落库、LangGraph 对话编排与 OpenAI 兼容响应构建。
+当前阶段负责把非流式和流式链路统一到同一套图状态准备逻辑中，不负责知识库和 MCP 的底层协议实现。
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from time import perf_counter
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,13 +58,17 @@ class ChatService:
     ) -> tuple[str, OpenAIChatCompletionResponse]:
         """处理内部聊天请求，并返回 OpenAI 兼容响应。"""
 
+        request_id = self._generate_identifier()[:8]
+        request_start_time = perf_counter()
         execution_request = self._build_execution_request(
             chat_request=chat_request,
             session_id=session_id,
         )
         checkpoint_payload: dict[str, object] | None = None
+        checkpoint_duration_ms = 0.0
 
         try:
+            prepare_start_time = perf_counter()
             resolved_session_id = await self._ensure_session(
                 session_id=execution_request.session_id,
                 user_message=execution_request.latest_user_message,
@@ -73,16 +76,41 @@ class ChatService:
             )
             execution_request = replace(execution_request, session_id=resolved_session_id)
             await self._persist_user_message(execution_request)
+            prepare_duration_ms = (perf_counter() - prepare_start_time) * 1000
+
+            graph_start_time = perf_counter()
             turn_result, checkpoint_payload = await self._conversation_graph.run_turn(
                 execution_request
             )
+            graph_duration_ms = (perf_counter() - graph_start_time) * 1000
+
+            commit_start_time = perf_counter()
             await self._session_repository.update_timestamp(resolved_session_id)
             await self._db_session.commit()
+            commit_duration_ms = (perf_counter() - commit_start_time) * 1000
         except Exception:
             await self._db_session.rollback()
             raise
 
+        checkpoint_start_time = perf_counter()
         await self._save_checkpoint_safely(checkpoint_payload)
+        checkpoint_duration_ms = (perf_counter() - checkpoint_start_time) * 1000
+
+        LOGGER.info(
+            (
+                "聊天请求完成：request_id=%s mode=non_stream session_id=%s "
+                "prepare_ms=%.2f graph_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
+                "total_ms=%.2f finish_reason=%s"
+            ),
+            request_id,
+            resolved_session_id,
+            prepare_duration_ms,
+            graph_duration_ms,
+            commit_duration_ms,
+            checkpoint_duration_ms,
+            (perf_counter() - request_start_time) * 1000,
+            turn_result.finish_reason,
+        )
         return (
             resolved_session_id,
             self._openai_compat_service.build_chat_completion_response(turn_result),
@@ -95,12 +123,15 @@ class ChatService:
     ) -> tuple[str, AsyncIterator[str]]:
         """处理内部流式聊天请求，并返回 OpenAI 兼容 SSE。"""
 
+        request_id = self._generate_identifier()[:8]
+        request_start_time = perf_counter()
         execution_request = self._build_execution_request(
             chat_request=chat_request,
             session_id=session_id,
         )
 
         try:
+            prepare_start_time = perf_counter()
             resolved_session_id = await self._ensure_session(
                 session_id=execution_request.session_id,
                 user_message=execution_request.latest_user_message,
@@ -110,16 +141,34 @@ class ChatService:
             await self._persist_user_message(execution_request)
             # 先提交用户消息，避免流式响应已开始时会话仍未落库。
             await self._db_session.commit()
+            prepare_duration_ms = (perf_counter() - prepare_start_time) * 1000
+
+            prepare_state_start_time = perf_counter()
             prepared_state = await self._conversation_graph.prepare_stream_state(execution_request)
+            prepare_state_duration_ms = (perf_counter() - prepare_state_start_time) * 1000
         except Exception:
             await self._db_session.rollback()
             raise
 
+        LOGGER.info(
+            (
+                "聊天请求开始：request_id=%s mode=stream session_id=%s route=%s "
+                "prepare_ms=%.2f prepare_state_ms=%.2f total_elapsed_ms=%.2f"
+            ),
+            request_id,
+            resolved_session_id,
+            str(prepared_state["route"]),
+            prepare_duration_ms,
+            prepare_state_duration_ms,
+            (perf_counter() - request_start_time) * 1000,
+        )
         return (
             resolved_session_id,
             self._stream_graph_turn(
                 execution_request=execution_request,
                 prepared_state=prepared_state,
+                request_id=request_id,
+                request_start_time=request_start_time,
             ),
         )
 
@@ -159,8 +208,10 @@ class ChatService:
         *,
         execution_request: ChatExecutionRequest,
         prepared_state: AgentState,
+        request_id: str,
+        request_start_time: float,
     ) -> AsyncIterator[str]:
-        """在流式路径中执行完整图逻辑，并支持工具/MCP二阶段续答。"""
+        """在流式路径中执行完整图逻辑，并支持工具与 MCP 的二阶段续答。"""
 
         route = str(prepared_state["route"])
         prepared_context = prepared_state["prepared_context"]
@@ -179,14 +230,22 @@ class ChatService:
             if route in {"tool", "mcp"}
             else None
         )
-        # 这份对话上下文会在工具执行后持续追加 tool 消息，供下一轮流式补全复用。
+        # 这份上下文会在工具执行后持续追加 tool 消息，供下一轮补全复用。
         conversation_messages = list(prepared_context.messages)
         normalized_tool_choice = execution_request.tool_choice
         has_emitted_payload = False
         completion_result = None
+        first_payload_duration_ms: float | None = None
+        tool_execution_duration_ms = 0.0
+        persist_duration_ms = 0.0
+        memory_refresh_duration_ms = 0.0
+        commit_duration_ms = 0.0
+        checkpoint_duration_ms = 0.0
 
         try:
             for tool_round in range(MAX_TOOL_CALL_ROUNDS):
+                round_index = tool_round + 1
+                llm_round_start_time = perf_counter()
                 accumulator = LlmChatCompletionAccumulator(
                     requested_model_name=execution_request.model_name,
                     default_model_name=self._llm_client.default_model_name,
@@ -207,10 +266,33 @@ class ChatService:
                         llm_chunk,
                         include_finish_reason=should_emit_finish_reason,
                     ):
+                        if first_payload_duration_ms is None:
+                            first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
+                            LOGGER.info(
+                                (
+                                    "聊天请求首个流式事件已发出：request_id=%s "
+                                    "route=%s first_payload_ms=%.2f"
+                                ),
+                                request_id,
+                                route,
+                                first_payload_duration_ms,
+                            )
                         has_emitted_payload = True
                         yield payload
 
                 completion_result = accumulator.build_result()
+                LOGGER.info(
+                    (
+                        "聊天流式轮次完成：request_id=%s route=%s round=%s "
+                        "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
+                    ),
+                    request_id,
+                    route,
+                    round_index,
+                    (perf_counter() - llm_round_start_time) * 1000,
+                    completion_result.finish_reason,
+                    len(completion_result.tool_calls),
+                )
                 if not completion_result.tool_calls:
                     break
 
@@ -231,10 +313,27 @@ class ChatService:
                         tool_calls=completion_result.tool_calls,
                     )
                 )
+
+                tool_execute_start_time = perf_counter()
                 executed_tool_calls = await tool_node.execute_requested_tools_and_persist(
                     session_id=str(execution_request.session_id),
                     completion_result=completion_result,
                     runtime_mcp_tools=runtime_mcp_tools,
+                )
+                current_tool_execution_duration_ms = (
+                    perf_counter() - tool_execute_start_time
+                ) * 1000
+                tool_execution_duration_ms += current_tool_execution_duration_ms
+                LOGGER.info(
+                    (
+                        "聊天流式工具执行完成：request_id=%s route=%s round=%s "
+                        "tool_exec_ms=%.2f executed_tool_count=%s"
+                    ),
+                    request_id,
+                    route,
+                    round_index,
+                    current_tool_execution_duration_ms,
+                    len(executed_tool_calls),
                 )
                 for executed_tool_call in executed_tool_calls:
                     conversation_messages.append(
@@ -246,7 +345,7 @@ class ChatService:
                     )
 
                 normalized_tool_choice = "auto"
-                if tool_round + 1 >= MAX_TOOL_CALL_ROUNDS:
+                if round_index >= MAX_TOOL_CALL_ROUNDS:
                     raise AppException(
                         "工具调用轮次超过当前上限。",
                         error_code="tool_call_limit_exceeded",
@@ -258,27 +357,82 @@ class ChatService:
                     error_code="invalid_llm_response",
                 )
 
+            persist_start_time = perf_counter()
             await answer_node.persist_stream_result(
                 session_id=str(execution_request.session_id),
                 completion_result=completion_result,
                 used_session_memory=prepared_context.used_session_memory,
             )
+            persist_duration_ms = (perf_counter() - persist_start_time) * 1000
+
+            memory_refresh_start_time = perf_counter()
             checkpoint_payload = await self._conversation_graph.refresh_memory(
                 session_id=str(execution_request.session_id),
                 route=route,
             )
+            memory_refresh_duration_ms = (perf_counter() - memory_refresh_start_time) * 1000
+
+            commit_start_time = perf_counter()
             await self._session_repository.update_timestamp(str(execution_request.session_id))
             await self._db_session.commit()
+            commit_duration_ms = (perf_counter() - commit_start_time) * 1000
+
+            checkpoint_start_time = perf_counter()
             await self._save_checkpoint_safely(checkpoint_payload)
+            checkpoint_duration_ms = (perf_counter() - checkpoint_start_time) * 1000
 
             for payload in chunk_builder.finalize(completion_result.finish_reason):
+                if first_payload_duration_ms is None:
+                    first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
+                    LOGGER.info(
+                        (
+                            "聊天请求首个流式事件已发出：request_id=%s "
+                            "route=%s first_payload_ms=%.2f"
+                        ),
+                        request_id,
+                        route,
+                        first_payload_duration_ms,
+                    )
                 has_emitted_payload = True
                 yield payload
+
+            LOGGER.info(
+                (
+                    "聊天请求完成：request_id=%s mode=stream session_id=%s route=%s "
+                    "first_payload_ms=%s tool_exec_ms=%.2f persist_ms=%.2f "
+                    "memory_refresh_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
+                    "total_ms=%.2f finish_reason=%s"
+                ),
+                request_id,
+                execution_request.session_id,
+                route,
+                f"{first_payload_duration_ms:.2f}"
+                if first_payload_duration_ms is not None
+                else "none",
+                tool_execution_duration_ms,
+                persist_duration_ms,
+                memory_refresh_duration_ms,
+                commit_duration_ms,
+                checkpoint_duration_ms,
+                (perf_counter() - request_start_time) * 1000,
+                completion_result.finish_reason,
+            )
         except AppException as exception:
             await self._db_session.rollback()
             if not has_emitted_payload:
                 raise
 
+            LOGGER.warning(
+                (
+                    "聊天请求失败：request_id=%s mode=stream session_id=%s route=%s "
+                    "total_ms=%.2f error_code=%s"
+                ),
+                request_id,
+                execution_request.session_id,
+                route,
+                (perf_counter() - request_start_time) * 1000,
+                exception.error_code,
+            )
             yield self._openai_compat_service.build_stream_error_payload(exception)
             yield "data: [DONE]\n\n"
         except Exception as exception:
@@ -286,7 +440,12 @@ class ChatService:
             if not has_emitted_payload:
                 raise
 
-            LOGGER.exception("内部聊天流式输出过程中发生未处理异常。", exc_info=exception)
+            LOGGER.exception(
+                "内部聊天流式输出过程中发生未处理异常：request_id=%s route=%s",
+                request_id,
+                route,
+                exc_info=exception,
+            )
             yield self._openai_compat_service.build_stream_error_payload(
                 AppException(
                     "流式输出过程中发生内部异常。",
