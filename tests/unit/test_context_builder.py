@@ -112,3 +112,28 @@ def test_context_builder_includes_mcp_context_as_system_message() -> None:
     assert prepared_context.mcp_context == "以下是当前系统已配置的 MCP 服务骨架信息。"
     assert [message.role for message in prepared_context.messages] == ["system", "user"]
     assert prepared_context.messages[0].content == "以下是当前系统已配置的 MCP 服务骨架信息。"
+
+
+def test_context_builder_includes_answer_instruction_and_business_contexts() -> None:
+    """验证分类总结提示词和业务上下文会作为 system 消息注入。"""
+
+    builder = ContextBuilder()
+    prepared_context = builder.build_context(
+        input_messages=[LlmInputMessage(role="user", content="请输出今天全路网路况表格")],
+        recent_messages=[],
+        memory_summary=None,
+        need_session_memory=False,
+        answer_instruction="请优先输出表格，再给出总结。",
+        traffic_context="以下是路况查询参数：{target: 杭金衢高速}",
+        report_context="以下是路网报告任务参数：{scope: 全路网}",
+    )
+
+    assert prepared_context.answer_instruction == "请优先输出表格，再给出总结。"
+    assert prepared_context.traffic_context == "以下是路况查询参数：{target: 杭金衢高速}"
+    assert prepared_context.report_context == "以下是路网报告任务参数：{scope: 全路网}"
+    assert [message.role for message in prepared_context.messages] == [
+        "system",
+        "system",
+        "system",
+        "user",
+    ]

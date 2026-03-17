@@ -16,6 +16,9 @@ def resolve_agent_route(state: AgentState) -> AgentRoute:
 
     if state.get("requested_tool_names"):
         return "tool"
+    execution_plan = state.get("execution_plan")
+    if execution_plan is not None:
+        return execution_plan.recommended_route
     if _is_knowledge_request(
         raw_message=latest_user_message,
         normalized_message=normalized_message,

@@ -7,13 +7,10 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.prompts import KNOWLEDGE_CONTEXT_PROMPT_PREFIX
 from app.agent.state import AgentState
 from app.knowledge.service import KnowledgeService
 from app.schemas.knowledge import KnowledgeSearchResult
-
-KNOWLEDGE_PROMPT_PREFIX = (
-    "以下是知识库检索结果，请优先基于这些内容回答用户问题；如果资料不足请明确说明："
-)
 
 
 class RagflowNode:
@@ -58,7 +55,7 @@ class RagflowNode:
     def _build_knowledge_context(knowledge_results: list[KnowledgeSearchResult]) -> str:
         """把检索结果拼装成适合注入 system 消息的知识上下文。"""
 
-        context_lines = [KNOWLEDGE_PROMPT_PREFIX]
+        context_lines = [KNOWLEDGE_CONTEXT_PROMPT_PREFIX]
         for index, knowledge_result in enumerate(knowledge_results, start=1):
             context_lines.append(
                 f"[{index}] score={knowledge_result.score:.4f} "

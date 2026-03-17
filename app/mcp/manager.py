@@ -11,6 +11,7 @@ from json import dumps, loads
 from time import perf_counter
 from typing import Any
 
+from app.agent.prompts import MCP_CONTEXT_PROMPT_PREFIX
 from app.core.config import get_settings
 from app.core.exceptions import AppException, ConfigurationException
 from app.core.logger import get_logger
@@ -297,9 +298,7 @@ class McpManager:
         if not available_servers:
             return None
 
-        context_lines = [
-            "以下是当前系统已接入的 MCP 服务与工具信息，必要时可以优先选择合适的 MCP 工具完成查询："
-        ]
+        context_lines = [MCP_CONTEXT_PROMPT_PREFIX]
         for server_definition in available_servers:
             if server_definition.transport in {"http", "streamable_http"}:
                 context_lines.append(

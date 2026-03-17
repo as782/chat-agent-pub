@@ -1,6 +1,7 @@
 """Agent 路由决策单元测试。"""
 
 from app.agent.router import resolve_agent_route
+from app.agent.state import ExecutionPlan
 
 
 def test_router_prefers_tool_route_when_tools_are_requested() -> None:
@@ -54,3 +55,38 @@ def test_router_defaults_to_answer_route() -> None:
     route = resolve_agent_route({"latest_user_message": "你好"})
 
     assert route == "answer"
+
+
+def test_router_prefers_planner_recommended_route_when_available() -> None:
+    """验证 planner 已输出推荐路由时，router 会优先消费该结果。"""
+
+    route = resolve_agent_route(
+        {
+            "latest_user_message": "你好",
+            "execution_plan": ExecutionPlan(
+                primary_category="policy",
+                execution_mode="single_step",
+                recommended_route="ragflow",
+            ),
+        }
+    )
+
+    assert route == "ragflow"
+
+
+def test_router_still_prefers_explicit_tools_over_planner_route() -> None:
+    """验证显式传入 tools 时，仍保持最高优先级。"""
+
+    route = resolve_agent_route(
+        {
+            "latest_user_message": "你好",
+            "requested_tool_names": ["calculator"],
+            "execution_plan": ExecutionPlan(
+                primary_category="policy",
+                execution_mode="single_step",
+                recommended_route="ragflow",
+            ),
+        }
+    )
+
+    assert route == "tool"

@@ -11,6 +11,13 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context_builder import ContextBuilder, message_entity_to_input_message
+from app.agent.prompts import (
+    GENERAL_ANSWER_PROMPT,
+    NETWORK_REPORT_SUMMARY_PROMPT,
+    POLICY_SUMMARY_PROMPT,
+    ROUTE_SUMMARY_PROMPT,
+    TRAFFIC_SUMMARY_PROMPT,
+)
 from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult, PreparedContext
 from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
 from app.core.exceptions import AppException
@@ -65,8 +72,11 @@ class AnswerNode:
         self,
         execution_request: ChatExecutionRequest,
         *,
+        answer_instruction: str | None = None,
         knowledge_context: str | None = None,
         mcp_context: str | None = None,
+        traffic_context: str | None = None,
+        report_context: str | None = None,
     ) -> PreparedContext:
         """为流式和非流式路径统一准备模型上下文。"""
 
@@ -88,8 +98,11 @@ class AnswerNode:
             recent_messages=recent_messages,
             memory_summary=memory_summary,
             need_session_memory=execution_request.need_session_memory,
+            answer_instruction=answer_instruction,
             knowledge_context=knowledge_context,
             mcp_context=mcp_context,
+            traffic_context=traffic_context,
+            report_context=report_context,
         )
 
     async def prepare_context_state(self, state: AgentState) -> dict[str, PreparedContext]:
@@ -104,10 +117,19 @@ class AnswerNode:
         mcp_context = (
             str(state["mcp_context"]) if isinstance(state.get("mcp_context"), str) else None
         )
+        traffic_context = (
+            str(state["traffic_context"]) if isinstance(state.get("traffic_context"), str) else None
+        )
+        report_context = (
+            str(state["report_context"]) if isinstance(state.get("report_context"), str) else None
+        )
         prepared_context = await self.prepare_context(
             execution_request,
+            answer_instruction=self._resolve_answer_instruction(state),
             knowledge_context=knowledge_context,
             mcp_context=mcp_context,
+            traffic_context=traffic_context,
+            report_context=report_context,
         )
         return {"prepared_context": prepared_context}
 
@@ -236,3 +258,18 @@ class AnswerNode:
         """生成统一长度的业务标识。"""
 
         return uuid4().hex
+
+    @staticmethod
+    def _resolve_answer_instruction(state: AgentState) -> str:
+        """根据当前主分类选择最终回答提示词。"""
+
+        primary_category = state.get("primary_category", "general")
+        if primary_category == "policy":
+            return POLICY_SUMMARY_PROMPT
+        if primary_category == "route_planning":
+            return ROUTE_SUMMARY_PROMPT
+        if primary_category == "traffic_status":
+            return TRAFFIC_SUMMARY_PROMPT
+        if primary_category == "network_report":
+            return NETWORK_REPORT_SUMMARY_PROMPT
+        return GENERAL_ANSWER_PROMPT

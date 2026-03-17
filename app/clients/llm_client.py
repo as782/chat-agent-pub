@@ -34,6 +34,7 @@ from openai import (
     UnprocessableEntityError,
 )
 
+from app.agent.prompts import BASE_SINGLE_TURN_SYSTEM_PROMPT
 from app.core.config import get_settings
 from app.core.exceptions import AppException, ConfigurationException, UpstreamServiceException
 from app.core.logger import get_logger
@@ -214,13 +215,7 @@ class LlmClient:
     def __init__(self) -> None:
         self._settings = get_settings()
         self._prompt_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "你是最小可用 Agent 后端中的基础问答模块，需要简洁、准确地回答用户。",
-                ),
-                ("human", "{user_message}"),
-            ]
+            [("system", BASE_SINGLE_TURN_SYSTEM_PROMPT), ("human", "{user_message}")]
         )
 
     @property
@@ -497,7 +492,15 @@ class LlmClient:
             else:
                 serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
 
-        # LOGGER.info("向 LLM 发起请求：\n %s", request_payload)
+        request_payload = {
+            "mode": "stream" if is_stream else "non_stream",
+            "model": model_name or self._settings.openai_model,
+            "tool_choice": tool_choice,
+            "enable_thinking": enable_thinking,
+            "tools": serialized_tool_names,
+            "messages": serialized_messages,
+        }
+        LOGGER.info("向 LLM 发起请求：\n %s", dumps(request_payload, ensure_ascii=False))
 
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""

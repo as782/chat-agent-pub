@@ -8,11 +8,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from app.agent.prompts import MEMORY_SUMMARY_PROMPT_PREFIX
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity
-
-MEMORY_SUMMARY_PROMPT_PREFIX = "以下是当前会话的历史摘要，仅在不与用户本次显式输入冲突时参考：\n"
 
 
 def message_entity_to_input_message(message_entity: MessageEntity) -> LlmInputMessage:
@@ -45,7 +44,7 @@ def message_entity_to_input_message(message_entity: MessageEntity) -> LlmInputMe
 
 
 def serialize_input_messages(messages: Sequence[LlmInputMessage]) -> list[dict[str, Any]]:
-    """序列化统一消息，供记忆仓储和 Redis checkpoint 复用。"""
+    """序列化统一消息，供记忆存储和 Redis checkpoint 复用。"""
 
     return [
         {
@@ -117,8 +116,11 @@ class ContextBuilder:
         recent_messages: Sequence[LlmInputMessage],
         memory_summary: str | None,
         need_session_memory: bool,
+        answer_instruction: str | None = None,
         knowledge_context: str | None = None,
         mcp_context: str | None = None,
+        traffic_context: str | None = None,
+        report_context: str | None = None,
     ) -> PreparedContext:
         """构建当前轮次的模型输入上下文。
 
@@ -128,21 +130,17 @@ class ContextBuilder:
         """
 
         if not need_session_memory:
-            context_messages = []
+            context_messages: list[LlmInputMessage] = []
+            if answer_instruction:
+                context_messages.append(LlmInputMessage(role="system", content=answer_instruction))
             if knowledge_context:
-                context_messages.append(
-                    LlmInputMessage(
-                        role="system",
-                        content=knowledge_context,
-                    )
-                )
+                context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
             if mcp_context:
-                context_messages.append(
-                    LlmInputMessage(
-                        role="system",
-                        content=mcp_context,
-                    )
-                )
+                context_messages.append(LlmInputMessage(role="system", content=mcp_context))
+            if traffic_context:
+                context_messages.append(LlmInputMessage(role="system", content=traffic_context))
+            if report_context:
+                context_messages.append(LlmInputMessage(role="system", content=report_context))
             context_messages.extend(input_messages)
             return PreparedContext(
                 messages=context_messages,
@@ -150,9 +148,14 @@ class ContextBuilder:
                 memory_summary=None,
                 knowledge_context=knowledge_context,
                 mcp_context=mcp_context,
+                traffic_context=traffic_context,
+                report_context=report_context,
+                answer_instruction=answer_instruction,
             )
 
         context_messages: list[LlmInputMessage] = []
+        if answer_instruction:
+            context_messages.append(LlmInputMessage(role="system", content=answer_instruction))
         if memory_summary:
             context_messages.append(
                 LlmInputMessage(
@@ -161,22 +164,15 @@ class ContextBuilder:
                 )
             )
         if knowledge_context:
-            context_messages.append(
-                LlmInputMessage(
-                    role="system",
-                    content=knowledge_context,
-                )
-            )
+            context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
         if mcp_context:
-            context_messages.append(
-                LlmInputMessage(
-                    role="system",
-                    content=mcp_context,
-                )
-            )
+            context_messages.append(LlmInputMessage(role="system", content=mcp_context))
+        if traffic_context:
+            context_messages.append(LlmInputMessage(role="system", content=traffic_context))
+        if report_context:
+            context_messages.append(LlmInputMessage(role="system", content=report_context))
 
-        # 这里按“系统历史在前、本次显式输入在后”合并上下文，
-        # 同时移除历史尾部与本次输入尾部完全重叠的部分，避免重复注入最后一轮用户消息。
+        # 历史消息放前，本次显式输入放后，同时去掉完全重叠的尾部。
         deduplicated_recent_messages = self._drop_overlapped_recent_suffix(
             recent_messages=recent_messages,
             input_messages=input_messages,
@@ -189,6 +185,9 @@ class ContextBuilder:
             memory_summary=memory_summary,
             knowledge_context=knowledge_context,
             mcp_context=mcp_context,
+            traffic_context=traffic_context,
+            report_context=report_context,
+            answer_instruction=answer_instruction,
         )
 
     def _drop_overlapped_recent_suffix(
