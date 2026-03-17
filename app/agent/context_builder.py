@@ -119,6 +119,7 @@ class ContextBuilder:
         answer_instruction: str | None = None,
         executor_results_context: str | None = None,
         knowledge_context: str | None = None,
+        route_context: str | None = None,
         mcp_context: str | None = None,
         traffic_context: str | None = None,
         report_context: str | None = None,
@@ -140,6 +141,8 @@ class ContextBuilder:
                 )
             if knowledge_context:
                 context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
+            if route_context:
+                context_messages.append(LlmInputMessage(role="system", content=route_context))
             if mcp_context:
                 context_messages.append(LlmInputMessage(role="system", content=mcp_context))
             if traffic_context:
@@ -152,6 +155,7 @@ class ContextBuilder:
                 used_session_memory=False,
                 memory_summary=None,
                 knowledge_context=knowledge_context,
+                route_context=route_context,
                 mcp_context=mcp_context,
                 traffic_context=traffic_context,
                 report_context=report_context,
@@ -175,6 +179,8 @@ class ContextBuilder:
             )
         if knowledge_context:
             context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
+        if route_context:
+            context_messages.append(LlmInputMessage(role="system", content=route_context))
         if mcp_context:
             context_messages.append(LlmInputMessage(role="system", content=mcp_context))
         if traffic_context:
@@ -194,6 +200,7 @@ class ContextBuilder:
             used_session_memory=bool(memory_summary or deduplicated_recent_messages),
             memory_summary=memory_summary,
             knowledge_context=knowledge_context,
+            route_context=route_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
             report_context=report_context,

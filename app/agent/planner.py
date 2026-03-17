@@ -93,7 +93,7 @@ class PlannerService:
         if primary_category == "policy":
             return "ragflow"
         if primary_category == "route_planning":
-            return "mcp"
+            return "route"
         if primary_category == "traffic_status":
             return "traffic"
         if primary_category == "network_report":
@@ -141,15 +141,15 @@ class PlannerService:
         if primary_category == "route_planning":
             return [
                 ExecutionStep(
-                    step_id="mcp_1",
-                    executor="mcp",
+                    step_id="route_1",
+                    executor="route",
                     goal="查询路线规划相关数据",
                 ),
                 ExecutionStep(
                     step_id="answer_1",
                     executor="answer",
                     goal="总结路线结果并回答用户",
-                    depends_on=["mcp_1"],
+                    depends_on=["route_1"],
                 ),
             ]
 

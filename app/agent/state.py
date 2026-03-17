@@ -13,7 +13,7 @@ from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
 from app.tools.registry import ExecutedToolCall
 
-AgentRoute = Literal["answer", "tool", "ragflow", "mcp", "traffic", "report"]
+AgentRoute = Literal["answer", "tool", "ragflow", "route", "mcp", "traffic", "report"]
 ProblemCategory = Literal[
     "policy",
     "route_planning",
@@ -97,6 +97,7 @@ class PreparedContext:
     used_session_memory: bool
     memory_summary: str | None = None
     knowledge_context: str | None = None
+    route_context: str | None = None
     mcp_context: str | None = None
     traffic_context: str | None = None
     report_context: str | None = None
@@ -140,6 +141,7 @@ class AgentState(TypedDict, total=False):
     clarification_question: str | None
     knowledge_results: list[KnowledgeSearchResult]
     knowledge_context: str | None
+    route_context: str | None
     mcp_context: str | None
     traffic_context: str | None
     report_context: str | None

@@ -190,7 +190,7 @@ class ToolNode:
 
         builtin_tools = (
             []
-            if route == "mcp"
+            if route in {"mcp", "route"}
             else self._tool_registry.get_tools(requested_tool_names)
             if requested_tool_names is not None
             else []

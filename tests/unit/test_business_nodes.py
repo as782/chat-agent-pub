@@ -3,8 +3,39 @@
 import pytest
 
 from app.agent.nodes.report_node import ReportNode
+from app.agent.nodes.route_node import RouteNode
 from app.agent.nodes.traffic_node import TrafficNode
 from app.agent.state import ExecutionPlan, ResolvedArguments
+
+
+@pytest.mark.asyncio
+async def test_route_node_builds_business_context() -> None:
+    """路线节点应把结构化参数整理为上下文文本。"""
+
+    node = RouteNode()
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="single_step",
+                recommended_route="route",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="route_planning",
+                arguments={
+                    "origin": "杭州",
+                    "destination": "金华",
+                    "travel_mode": "auto",
+                },
+            ),
+        }
+    )
+
+    assert result["route_context"] is not None
+    assert "杭州" in result["route_context"]
+    assert result["step_results"]["route_1"].executor == "route"
+    assert result["step_results"]["route_1"].normalized_result["destination"] == "金华"
 
 
 @pytest.mark.asyncio

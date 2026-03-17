@@ -82,6 +82,7 @@ class AnswerNode:
         answer_instruction: str | None = None,
         step_results: dict[str, ExecutorResult] | None = None,
         knowledge_context: str | None = None,
+        route_context: str | None = None,
         mcp_context: str | None = None,
         traffic_context: str | None = None,
         report_context: str | None = None,
@@ -109,6 +110,7 @@ class AnswerNode:
             answer_instruction=answer_instruction,
             executor_results_context=self._build_executor_results_context(step_results or {}),
             knowledge_context=knowledge_context,
+            route_context=route_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
             report_context=report_context,
@@ -124,6 +126,9 @@ class AnswerNode:
             if isinstance(state.get("knowledge_context"), str)
             else None
         )
+        route_context = (
+            str(state["route_context"]) if isinstance(state.get("route_context"), str) else None
+        )
         mcp_context = (
             str(state["mcp_context"]) if isinstance(state.get("mcp_context"), str) else None
         )
@@ -138,6 +143,7 @@ class AnswerNode:
             answer_instruction=self._resolve_answer_instruction(state),
             step_results=step_results,
             knowledge_context=knowledge_context,
+            route_context=route_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
             report_context=report_context,

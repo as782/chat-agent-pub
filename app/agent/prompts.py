@@ -15,6 +15,11 @@ KNOWLEDGE_CONTEXT_PROMPT_PREFIX = (
     "以下是知识库检索结果，请优先基于这些内容回答用户问题；如果资料不足请明确说明："
 )
 
+ROUTE_CONTEXT_PROMPT_PREFIX = (
+    "以下是当前路线规划问题的结构化查询信息，请结合这些信息组织路线方案，"
+    "必要时说明仍缺少哪些实时数据："
+)
+
 MCP_CONTEXT_PROMPT_PREFIX = (
     "以下是当前系统已接入的 MCP 服务与工具信息，必要时可以优先选择合适的 MCP 工具完成查询："
 )

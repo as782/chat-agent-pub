@@ -17,6 +17,7 @@ from app.agent.nodes.memory_node import MemoryNode
 from app.agent.nodes.planner_node import PlannerNode
 from app.agent.nodes.ragflow_node import RagflowNode
 from app.agent.nodes.report_node import ReportNode
+from app.agent.nodes.route_node import RouteNode
 from app.agent.nodes.router_node import RouterNode
 from app.agent.nodes.tool_node import ToolNode
 from app.agent.nodes.traffic_node import TrafficNode
@@ -40,6 +41,7 @@ class ConversationGraph:
         self._planner_node = PlannerNode()
         self._argument_node = ArgumentNode()
         self._router_node = RouterNode()
+        self._route_node = RouteNode()
         self._traffic_node = TrafficNode()
         self._report_node = ReportNode()
         self._answer_node = AnswerNode(
@@ -128,6 +130,7 @@ class ConversationGraph:
         graph_builder.add_node("planner_node", self._planner_node.run)
         graph_builder.add_node("argument_node", self._argument_node.run)
         graph_builder.add_node("router_node", self._router_node.run)
+        graph_builder.add_node("route_node", self._route_node.run)
         graph_builder.add_node("tool_node", self._tool_node.run)
         graph_builder.add_node("ragflow_node", self._ragflow_node.run)
         graph_builder.add_node("mcp_node", self._mcp_node.run)
@@ -146,11 +149,13 @@ class ConversationGraph:
                 "tool_node": "tool_node",
                 "answer_node": "answer_node",
                 "ragflow_node": "ragflow_node",
+                "route_node": "route_node",
                 "mcp_node": "mcp_node",
                 "traffic_node": "traffic_node",
                 "report_node": "report_node",
             },
         )
+        graph_builder.add_edge("route_node", "mcp_node")
         graph_builder.add_edge("tool_node", "memory_node")
         graph_builder.add_edge("ragflow_node", "answer_node")
         graph_builder.add_edge("mcp_node", "tool_node")
@@ -188,6 +193,8 @@ class ConversationGraph:
             return "tool_node"
         if route == "ragflow":
             return "ragflow_node"
+        if route == "route":
+            return "route_node"
         if route == "mcp":
             return "mcp_node"
         if route == "traffic":
@@ -213,6 +220,11 @@ class ConversationGraph:
         if merged_state.get("route") == "ragflow":
             knowledge_state = await self._ragflow_node.run(merged_state)
             merged_state = {**merged_state, **knowledge_state}
+        if merged_state.get("route") == "route":
+            route_state = await self._route_node.run(merged_state)
+            merged_state = {**merged_state, **route_state}
+            mcp_state = await self._mcp_node.run(merged_state)
+            merged_state = {**merged_state, **mcp_state}
         if merged_state.get("route") == "mcp":
             mcp_state = await self._mcp_node.run(merged_state)
             merged_state = {**merged_state, **mcp_state}

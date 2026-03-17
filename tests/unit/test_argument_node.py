@@ -19,7 +19,7 @@ async def test_argument_node_extracts_route_arguments() -> None:
             "execution_plan": ExecutionPlan(
                 primary_category="route_planning",
                 execution_mode="single_step",
-                recommended_route="mcp",
+                recommended_route="route",
             ),
         }
     )
@@ -44,7 +44,7 @@ async def test_argument_node_marks_missing_route_arguments() -> None:
             "execution_plan": ExecutionPlan(
                 primary_category="route_planning",
                 execution_mode="single_step",
-                recommended_route="mcp",
+                recommended_route="route",
             ),
         }
     )

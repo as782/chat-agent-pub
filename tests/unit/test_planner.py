@@ -41,8 +41,8 @@ def test_planner_marks_route_planning_requests() -> None:
     plan = planner.build_plan(AgentState(latest_user_message="杭州到金华怎么走"))
 
     assert plan.primary_category == "route_planning"
-    assert plan.recommended_route == "mcp"
-    assert [step.executor for step in plan.steps] == ["mcp", "answer"]
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
 
 
 def test_planner_marks_traffic_status_requests() -> None:
