@@ -39,6 +39,8 @@ class PlannerService:
         steps = self._build_steps(
             primary_category=primary_category,
             has_requested_tools=bool(requested_tool_names),
+            latest_user_message=latest_user_message,
+            normalized_message=normalized_message,
         )
         execution_mode = "direct" if len(steps) <= 1 else "single_step"
         if len(steps) > 2:
@@ -60,6 +62,9 @@ class PlannerService:
     ) -> ProblemCategory:
         """识别当前问题的主业务分类。"""
 
+        has_route_request = normalized_message.startswith("mcp:") or any(
+            keyword in latest_user_message for keyword in ROUTE_KEYWORDS
+        )
         if (
             latest_user_message.startswith("知识库:")
             or normalized_message.startswith(("knowledge:", "konwledge:"))
@@ -72,10 +77,10 @@ class PlannerService:
             return "route_planning"
         if any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS):
             return "traffic_status"
+        if has_route_request:
+            return "route_planning"
         if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
             return "policy"
-        if any(keyword in latest_user_message for keyword in ROUTE_KEYWORDS):
-            return "route_planning"
         if has_requested_tools:
             return "general"
         return "general"
@@ -105,6 +110,8 @@ class PlannerService:
         *,
         primary_category: ProblemCategory,
         has_requested_tools: bool,
+        latest_user_message: str,
+        normalized_message: str,
     ) -> list[ExecutionStep]:
         """根据主分类生成最小可执行步骤。"""
 
@@ -139,6 +146,30 @@ class PlannerService:
             ]
 
         if primary_category == "route_planning":
+            if _needs_policy_support_for_route(
+                latest_user_message=latest_user_message,
+                normalized_message=normalized_message,
+            ):
+                return [
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路线相关政策和标准要求",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询路线规划相关数据",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合政策与路线结果生成最终回答",
+                        depends_on=["rag_1", "route_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="route_1",
@@ -191,3 +222,18 @@ class PlannerService:
                 goal="直接回答用户问题",
             )
         ]
+
+
+def _needs_policy_support_for_route(
+    *,
+    latest_user_message: str,
+    normalized_message: str,
+) -> bool:
+    """判断路线类问题是否同时需要补充政策标准检索。"""
+
+    return (
+        any(keyword in latest_user_message for keyword in POLICY_KEYWORDS)
+        or latest_user_message.startswith("知识库:")
+        or normalized_message.startswith(("knowledge:", "konwledge:"))
+        or "#knowledge" in normalized_message
+    )

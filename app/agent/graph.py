@@ -19,6 +19,7 @@ from app.agent.nodes.ragflow_node import RagflowNode
 from app.agent.nodes.report_node import ReportNode
 from app.agent.nodes.route_node import RouteNode
 from app.agent.nodes.router_node import RouterNode
+from app.agent.nodes.scheduler_node import SchedulerNode
 from app.agent.nodes.tool_node import ToolNode
 from app.agent.nodes.traffic_node import TrafficNode
 from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult, PreparedContext
@@ -40,6 +41,7 @@ class ConversationGraph:
         shared_tool_registry = tool_registry or ToolRegistry()
         self._planner_node = PlannerNode()
         self._argument_node = ArgumentNode()
+        self._scheduler_node = SchedulerNode()
         self._router_node = RouterNode()
         self._route_node = RouteNode()
         self._traffic_node = TrafficNode()
@@ -129,6 +131,7 @@ class ConversationGraph:
         graph_builder = StateGraph(AgentState)
         graph_builder.add_node("planner_node", self._planner_node.run)
         graph_builder.add_node("argument_node", self._argument_node.run)
+        graph_builder.add_node("scheduler_node", self._scheduler_node.run)
         graph_builder.add_node("router_node", self._router_node.run)
         graph_builder.add_node("route_node", self._route_node.run)
         graph_builder.add_node("tool_node", self._tool_node.run)
@@ -141,7 +144,8 @@ class ConversationGraph:
 
         graph_builder.add_edge(START, "planner_node")
         graph_builder.add_edge("planner_node", "argument_node")
-        graph_builder.add_edge("argument_node", "router_node")
+        graph_builder.add_edge("argument_node", "scheduler_node")
+        graph_builder.add_edge("scheduler_node", "router_node")
         graph_builder.add_conditional_edges(
             "router_node",
             self._resolve_next_node,
@@ -156,11 +160,11 @@ class ConversationGraph:
             },
         )
         graph_builder.add_edge("route_node", "mcp_node")
-        graph_builder.add_edge("tool_node", "answer_node")
-        graph_builder.add_edge("ragflow_node", "answer_node")
+        graph_builder.add_edge("tool_node", "scheduler_node")
+        graph_builder.add_edge("ragflow_node", "scheduler_node")
         graph_builder.add_edge("mcp_node", "tool_node")
-        graph_builder.add_edge("traffic_node", "answer_node")
-        graph_builder.add_edge("report_node", "answer_node")
+        graph_builder.add_edge("traffic_node", "scheduler_node")
+        graph_builder.add_edge("report_node", "scheduler_node")
         graph_builder.add_edge("answer_node", "memory_node")
         graph_builder.add_edge("memory_node", END)
         return graph_builder.compile()
@@ -208,13 +212,17 @@ class ConversationGraph:
 
         planned_state = await self._planner_node.run(initial_state)
         argument_state = await self._argument_node.run({**initial_state, **planned_state})
-        route_state = await self._router_node.run(
+        scheduled_state = await self._scheduler_node.run(
             {**initial_state, **planned_state, **argument_state}
+        )
+        route_state = await self._router_node.run(
+            {**initial_state, **planned_state, **argument_state, **scheduled_state}
         )
         merged_state: AgentState = {
             **initial_state,
             **planned_state,
             **argument_state,
+            **scheduled_state,
             **route_state,
         }
         if merged_state.get("route") == "ragflow":

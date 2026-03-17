@@ -11,7 +11,12 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
-from app.agent.state import AgentState
+from app.agent.state import (
+    AgentState,
+    ExecutorResult,
+    get_execution_step,
+    merge_step_result,
+)
 from app.clients.llm_client import (
     LlmBindableTool,
     LlmChatCompletionResult,
@@ -70,6 +75,11 @@ class ToolNode:
             **prepared_context_state,
             "tool_completion_result": completion_result,
             "executed_tool_calls": executed_tool_calls,
+            **self._build_tool_step_result(
+                state=state,
+                completion_result=completion_result,
+                executed_tool_calls=executed_tool_calls,
+            ),
         }
 
     def build_available_tools(
@@ -198,6 +208,54 @@ class ToolNode:
                 error_code="no_available_tools",
             )
         return available_tools
+
+    def _build_tool_step_result(
+        self,
+        *,
+        state: AgentState,
+        completion_result: LlmChatCompletionResult,
+        executed_tool_calls: list[ExecutedToolCall],
+    ) -> dict[str, object]:
+        """把当前轮次的工具执行结果合并进统一 step_results。"""
+
+        current_step = get_execution_step(
+            state,
+            step_id=(
+                str(state["current_step_id"]) if state.get("current_step_id") is not None else None
+            ),
+        )
+        if current_step is None:
+            return {}
+
+        executor_result = ExecutorResult(
+            step_id=current_step.step_id,
+            executor=current_step.executor,
+            is_success=True,
+            raw_result={
+                "tool_calls": [
+                    {
+                        "tool_call_id": tool_call.tool_call_id,
+                        "tool_name": tool_call.tool_name,
+                        "arguments": tool_call.arguments,
+                        "output": tool_call.output,
+                    }
+                    for tool_call in executed_tool_calls
+                ],
+                "finish_reason": completion_result.finish_reason,
+            },
+            normalized_result={
+                "executed_tool_count": len(executed_tool_calls),
+                "tool_names": [tool_call.tool_name for tool_call in executed_tool_calls],
+                "finish_reason": completion_result.finish_reason,
+            },
+            summary=(
+                f"已完成 {len(executed_tool_calls)} 次工具调用并获得最终结果。"
+                if executed_tool_calls
+                else "当前步骤未触发工具调用，已直接得到结果。"
+            ),
+            sources=[tool_call.tool_name for tool_call in executed_tool_calls],
+        )
+        return merge_step_result(state, result=executor_result)
 
     async def _execute_requested_tools(
         self,

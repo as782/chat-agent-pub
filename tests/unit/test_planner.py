@@ -45,6 +45,21 @@ def test_planner_marks_route_planning_requests() -> None:
     assert [step.executor for step in plan.steps] == ["route", "answer"]
 
 
+def test_planner_builds_multi_step_route_and_policy_plan() -> None:
+    """路线类问题包含政策约束时，应拆成知识检索与路线查询的多步骤计划。"""
+
+    planner = PlannerService()
+
+    plan = planner.build_plan(
+        AgentState(latest_user_message="杭州到金华怎么走，并说明是否符合高速清障标准？")
+    )
+
+    assert plan.primary_category == "route_planning"
+    assert plan.execution_mode == "multi_step"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["rag", "route", "answer"]
+
+
 def test_planner_marks_traffic_status_requests() -> None:
     """路况类问题应生成交通数据查询计划。"""
 

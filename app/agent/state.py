@@ -133,6 +133,11 @@ class AgentState(TypedDict, total=False):
     tool_choice: str | dict[str, object] | None
     enable_thinking: bool | None
     route: AgentRoute
+    scheduled_route: AgentRoute
+    current_step_id: str | None
+    runnable_step_ids: list[str]
+    completed_step_ids: list[str]
+    pending_step_ids: list[str]
     primary_category: ProblemCategory
     execution_plan: ExecutionPlan
     resolved_arguments: ResolvedArguments
@@ -169,6 +174,26 @@ def resolve_execution_step_id(
         if step.executor == executor:
             return step.step_id
     return default_step_id
+
+
+def get_execution_step(
+    state: AgentState,
+    *,
+    step_id: str | None = None,
+    executor: ExecutorType | None = None,
+) -> ExecutionStep | None:
+    """从 execution_plan 中按 step_id 或 executor 查找执行步骤。"""
+
+    execution_plan = state.get("execution_plan")
+    if execution_plan is None:
+        return None
+
+    for step in execution_plan.steps:
+        if step_id is not None and step.step_id == step_id:
+            return step
+        if executor is not None and step.executor == executor:
+            return step
+    return None
 
 
 def merge_step_result(
