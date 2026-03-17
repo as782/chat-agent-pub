@@ -67,17 +67,26 @@ class ConversationGraph:
             checkpoint_payload if isinstance(checkpoint_payload, dict) else None,
         )
 
-    async def prepare_stream_context(
+    async def prepare_stream_state(
         self,
         execution_request: ChatExecutionRequest,
-    ) -> tuple[str, PreparedContext]:
-        """为流式路径准备与主图一致的上下文。"""
+    ) -> AgentState:
+        """为流式路径准备与主图一致的预处理状态。"""
 
         initial_state = self._build_initial_state(execution_request)
         merged_state = await self._prepare_route_state(initial_state)
         context_state = await self._answer_node.prepare_context_state(merged_state)
-        prepared_context = context_state["prepared_context"]
-        return str(merged_state["route"]), prepared_context
+        return {**merged_state, **context_state}
+
+    async def prepare_stream_context(
+        self,
+        execution_request: ChatExecutionRequest,
+    ) -> tuple[str, PreparedContext]:
+        """兼容旧流式调用入口。"""
+
+        prepared_state = await self.prepare_stream_state(execution_request)
+        prepared_context = prepared_state["prepared_context"]
+        return str(prepared_state["route"]), prepared_context
 
     async def refresh_memory(
         self,
@@ -98,6 +107,11 @@ class ConversationGraph:
         """暴露回答节点，供流式路径复用持久化逻辑。"""
 
         return self._answer_node
+
+    def get_tool_node(self) -> ToolNode:
+        """暴露工具节点，供流式路径复用工具执行逻辑。"""
+
+        return self._tool_node
 
     def _build_graph(self) -> Any:
         """组装 LangGraph 状态图。"""

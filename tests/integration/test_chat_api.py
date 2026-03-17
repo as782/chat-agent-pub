@@ -301,10 +301,10 @@ def test_chat_api_executes_mcp_tool_when_requested(
             server_name=server_name,
             tool_name=tool_name,
             arguments=arguments,
-            content=[{"type": "text", "text": "杭州晴，26 度"}],
-            structured_content={"city": "杭州", "weather": "晴", "temperature": "26"},
+            content=[{"type": "text", "text": "Hangzhou sunny, 26 C"}],
+            structured_content={"city": "Hangzhou", "weather": "sunny", "temperature": "26"},
             is_error=False,
-            output_text="杭州晴，26 度",
+            output_text="Hangzhou sunny, 26 C",
         )
 
     monkeypatch.setattr(
@@ -328,7 +328,7 @@ def test_chat_api_executes_mcp_tool_when_requested(
     assert response.status_code == 200
     assert (
         response_payload["choices"][0]["message"]["content"]
-        == "测试模型回答：工具结果是 杭州晴，26 度"
+        == "测试模型回答：工具结果是 Hangzhou sunny, 26 C"
     )
     assert history_response.status_code == 200
     assert [message["role"] for message in history_payload["items"]] == [
@@ -361,6 +361,139 @@ def test_chat_api_streams_response_when_requested(app_client: TestClient) -> Non
     assert '"role": "assistant"' in response_body
     assert response_body.count('"content":') >= 2
     assert "[DONE]" in response_body
+
+
+def test_chat_api_stream_executes_builtin_tool_when_requested(app_client: TestClient) -> None:
+    """验证流式内部聊天接口会在同一条 SSE 中完成工具调用后二阶段续答。"""
+
+    with app_client.stream(
+        "POST",
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "请帮我计算 1+1"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string"}},
+                            "required": ["expression"],
+                        },
+                    },
+                }
+            ],
+            "stream": True,
+        },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+        session_id = response.headers["X-Session-ID"]
+
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert '"tool_calls"' in response_body
+    assert "测试模型回答：" in response_body
+    assert "工具结果是 2" in response_body
+    assert "[DONE]" in response_body
+    assert history_response.status_code == 200
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["content"] == "2"
+    assert history_payload["items"][3]["content"] == "测试模型回答：工具结果是 2"
+
+
+def test_chat_api_stream_executes_mcp_tool_when_requested(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证流式内部聊天接口会在同一条 SSE 中完成 MCP 工具执行后二阶段续答。"""
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的 MCP 运行时工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__weather",
+                server_name="demo-mcp-http",
+                remote_tool_name="weather",
+                description="查询城市天气。",
+                input_schema={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            )
+        ]
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的 MCP 工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "weather"
+        assert arguments == {"city": "杭州"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "Hangzhou sunny, 26 C"}],
+            structured_content={"city": "Hangzhou", "weather": "sunny", "temperature": "26"},
+            is_error=False,
+            output_text="Hangzhou sunny, 26 C",
+        )
+
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
+
+    with app_client.stream(
+        "POST",
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "mcp: 帮我查杭州天气"}],
+            "stream": True,
+        },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+        session_id = response.headers["X-Session-ID"]
+
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert '"tool_calls"' in response_body
+    assert "测试模型回答：" in response_body
+    assert "工具结果是" in response_body
+    assert "[DONE]" in response_body
+    assert history_response.status_code == 200
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__weather"
+    assert history_payload["items"][3]["content"] == "测试模型回答：工具结果是 Hangzhou sunny, 26 C"
 
 
 def test_chat_api_returns_404_when_session_not_found(app_client: TestClient) -> None:

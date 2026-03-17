@@ -24,7 +24,7 @@ from app.mcp.models import McpRuntimeTool
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry
 
-MAX_TOOL_CALL_ROUNDS = 3
+MAX_TOOL_CALL_ROUNDS = 10
 
 
 class ToolNode:
@@ -77,6 +77,40 @@ class ToolNode:
             "final_result": final_result,
         }
 
+    def build_available_tools(
+        self,
+        *,
+        route: str,
+        requested_tool_names: list[str] | None,
+        runtime_mcp_tools: list[McpRuntimeTool],
+    ) -> list[LlmBindableTool]:
+        """构造当前轮次可绑定给模型的工具集合。"""
+
+        return self._build_available_tools(
+            route=route,
+            requested_tool_names=requested_tool_names,
+            runtime_mcp_tools=runtime_mcp_tools,
+        )
+
+    async def execute_requested_tools_and_persist(
+        self,
+        *,
+        session_id: str,
+        completion_result: LlmChatCompletionResult,
+        runtime_mcp_tools: list[McpRuntimeTool],
+    ) -> list[ExecutedToolCall]:
+        """执行模型请求的工具，并将 tool 消息持久化。"""
+
+        executed_tool_calls = await self._execute_requested_tools(
+            completion_result=completion_result,
+            runtime_mcp_tools=runtime_mcp_tools,
+        )
+        await self._persist_tool_messages(
+            session_id=session_id,
+            executed_tool_calls=executed_tool_calls,
+        )
+        return executed_tool_calls
+
     async def _execute_tool_completion_loop(
         self,
         *,
@@ -120,19 +154,12 @@ class ToolNode:
                 completion_result=completion_result,
                 runtime_mcp_tools=runtime_mcp_tools,
             )
+            await self._persist_tool_messages(
+                session_id=session_id,
+                executed_tool_calls=current_tool_results,
+            )
             for tool_result in current_tool_results:
                 executed_tool_calls.append(tool_result)
-                await self._message_repository.create(
-                    message_id=uuid4().hex,
-                    session_id=session_id,
-                    role="tool",
-                    content=tool_result.output,
-                    message_metadata={
-                        "tool_call_id": tool_result.tool_call_id,
-                        "tool_name": tool_result.tool_name,
-                        "arguments": tool_result.arguments,
-                    },
-                )
                 conversation_messages.append(
                     LlmInputMessage(
                         role="tool",
@@ -229,8 +256,29 @@ class ToolNode:
 
         return executed_tool_calls
 
+    async def _persist_tool_messages(
+        self,
+        *,
+        session_id: str,
+        executed_tool_calls: list[ExecutedToolCall],
+    ) -> None:
+        """把工具执行结果写入消息历史。"""
+
+        for tool_result in executed_tool_calls:
+            await self._message_repository.create(
+                message_id=uuid4().hex,
+                session_id=session_id,
+                role="tool",
+                content=tool_result.output,
+                message_metadata={
+                    "tool_call_id": tool_result.tool_call_id,
+                    "tool_name": tool_result.tool_name,
+                    "arguments": tool_result.arguments,
+                },
+            )
+
     @staticmethod
-    def _extract_runtime_mcp_tools(state: AgentState) -> list[McpRuntimeTool]:
+    def extract_runtime_mcp_tools(state: AgentState) -> list[McpRuntimeTool]:
         """从状态中提取当前轮次的 MCP 运行时工具。"""
 
         raw_runtime_mcp_tools = state.get("mcp_tools", [])
@@ -241,3 +289,9 @@ class ToolNode:
             for runtime_tool in raw_runtime_mcp_tools
             if isinstance(runtime_tool, McpRuntimeTool)
         ]
+
+    @staticmethod
+    def _extract_runtime_mcp_tools(state: AgentState) -> list[McpRuntimeTool]:
+        """兼容旧调用入口。"""
+
+        return ToolNode.extract_runtime_mcp_tools(state)

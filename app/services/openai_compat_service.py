@@ -65,7 +65,12 @@ class _OpenAIStreamChunkBuilder:
         self.created_at = int(datetime.now(UTC).timestamp())
         self.resolved_model_name = self.default_model_name
 
-    def consume_chunk(self, chunk: LlmChatCompletionChunk) -> list[str]:
+    def consume_chunk(
+        self,
+        chunk: LlmChatCompletionChunk,
+        *,
+        include_finish_reason: bool = True,
+    ) -> list[str]:
         """将统一增量结果转换为一个或多个 OpenAI 兼容 chunk。"""
 
         if chunk.model_name:
@@ -106,7 +111,7 @@ class _OpenAIStreamChunkBuilder:
                 )
             )
 
-        if chunk.finish_reason:
+        if include_finish_reason and chunk.finish_reason:
             payloads.append(self._build_finish_payload(chunk.finish_reason))
 
         return payloads

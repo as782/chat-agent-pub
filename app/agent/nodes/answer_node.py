@@ -1,6 +1,7 @@
 """回答节点模块。
+
 负责构建模型上下文、执行普通回答补全，并持久化本轮输出。
-当前阶段不负责工具循环编排，该能力已拆到独立 tool_node。
+当前阶段不负责工具循环编排，这部分能力由独立的 tool_node 承担。
 """
 
 from __future__ import annotations
@@ -119,7 +120,7 @@ class AnswerNode:
     ) -> ChatTurnResult:
         """持久化流式路径最终得到的模型输出。"""
 
-        return await self._persist_completion_result(
+        return await self.persist_completion_result(
             session_id=session_id,
             completion_result=completion_result,
             executed_tool_calls=[],
@@ -137,7 +138,7 @@ class AnswerNode:
         """持久化最终回答，并构造统一回包结果。"""
 
         if completion_result.tool_calls:
-            await self._persist_assistant_tool_calls(
+            await self.persist_assistant_tool_calls(
                 session_id=session_id,
                 completion_result=completion_result,
             )

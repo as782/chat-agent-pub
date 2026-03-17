@@ -1,6 +1,8 @@
 """对话服务模块。
-负责内部聊天接口的会话落库、LangGraph 对话编排与 OpenAI 兼容响应构建。
-当前阶段已接入多轮短期记忆，但不负责知识库和 MCP 分支。
+
+负责内部聊天接口的会话落库、LangGraph 对话编排，以及 OpenAI 兼容响应构建。
+当前阶段负责把非流式和流式链路统一到同一套图状态准备逻辑中，不负责知识库和
+MCP 的底层协议实现。
 """
 
 from __future__ import annotations
@@ -12,8 +14,9 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import ConversationGraph
-from app.agent.state import ChatExecutionRequest, PreparedContext
-from app.clients.llm_client import LlmChatCompletionAccumulator, LlmClient
+from app.agent.nodes.tool_node import MAX_TOOL_CALL_ROUNDS
+from app.agent.state import AgentState, ChatExecutionRequest
+from app.clients.llm_client import LlmChatCompletionAccumulator, LlmClient, LlmInputMessage
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
@@ -54,7 +57,7 @@ class ChatService:
         chat_request: OpenAIChatCompletionRequest,
         session_id: str | None = None,
     ) -> tuple[str, OpenAIChatCompletionResponse]:
-        """处理内部聊天请求，并返回 OpenAI 兼容响应与会话标识。"""
+        """处理内部聊天请求，并返回 OpenAI 兼容响应。"""
 
         execution_request = self._build_execution_request(
             chat_request=chat_request,
@@ -90,7 +93,7 @@ class ChatService:
         chat_request: OpenAIChatCompletionRequest,
         session_id: str | None = None,
     ) -> tuple[str, AsyncIterator[str]]:
-        """处理内部聊天请求，并返回带多轮记忆的流式 OpenAI 兼容 SSE。"""
+        """处理内部流式聊天请求，并返回 OpenAI 兼容 SSE。"""
 
         execution_request = self._build_execution_request(
             chat_request=chat_request,
@@ -105,11 +108,9 @@ class ChatService:
             )
             execution_request = replace(execution_request, session_id=resolved_session_id)
             await self._persist_user_message(execution_request)
-            # 先提交用户消息与会话，确保流式响应开始后会话已可追踪。
+            # 先提交用户消息，避免流式响应已开始时会话仍未落库。
             await self._db_session.commit()
-            route, prepared_context = await self._conversation_graph.prepare_stream_context(
-                execution_request
-            )
+            prepared_state = await self._conversation_graph.prepare_stream_state(execution_request)
         except Exception:
             await self._db_session.rollback()
             raise
@@ -118,8 +119,7 @@ class ChatService:
             resolved_session_id,
             self._stream_graph_turn(
                 execution_request=execution_request,
-                route=route,
-                prepared_context=prepared_context,
+                prepared_state=prepared_state,
             ),
         )
 
@@ -129,7 +129,7 @@ class ChatService:
         chat_request: OpenAIChatCompletionRequest,
         session_id: str | None,
     ) -> ChatExecutionRequest:
-        """将 OpenAI 兼容请求转换为内部执行请求。"""
+        """把 OpenAI 兼容请求转换为内部统一执行请求。"""
 
         requested_tool_names = self._openai_compat_service.extract_requested_tool_names(
             chat_request
@@ -158,40 +158,107 @@ class ChatService:
         self,
         *,
         execution_request: ChatExecutionRequest,
-        route: str,
-        prepared_context: PreparedContext,
+        prepared_state: AgentState,
     ) -> AsyncIterator[str]:
-        """在流式路径中复用上下文构建和记忆刷新逻辑。"""
+        """在流式路径中执行完整图逻辑，并支持工具/MCP二阶段续答。"""
 
+        route = str(prepared_state["route"])
+        prepared_context = prepared_state["prepared_context"]
         chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
             default_model_name=execution_request.model_name or self._llm_client.default_model_name
         )
-        accumulator = LlmChatCompletionAccumulator(
-            requested_model_name=execution_request.model_name,
-            default_model_name=self._llm_client.default_model_name,
-        )
+        answer_node = self._conversation_graph.get_answer_node()
+        tool_node = self._conversation_graph.get_tool_node()
+        runtime_mcp_tools = tool_node.extract_runtime_mcp_tools(prepared_state)
         available_tools = (
-            self._tool_registry.get_tools(execution_request.requested_tool_names)
-            if execution_request.requested_tool_names is not None
+            tool_node.build_available_tools(
+                route=route,
+                requested_tool_names=execution_request.requested_tool_names,
+                runtime_mcp_tools=runtime_mcp_tools,
+            )
+            if route in {"tool", "mcp"}
             else None
         )
+        # 这份对话上下文会在工具执行后持续追加 tool 消息，供下一轮流式补全复用。
+        conversation_messages = list(prepared_context.messages)
+        normalized_tool_choice = execution_request.tool_choice
         has_emitted_payload = False
+        completion_result = None
 
         try:
-            async for llm_chunk in self._llm_client.stream_chat_completion(
-                messages=prepared_context.messages,
-                model_name=execution_request.model_name,
-                tools=available_tools,
-                tool_choice=execution_request.tool_choice,
-                enable_thinking=execution_request.enable_thinking,
-            ):
-                accumulator.append_chunk(llm_chunk)
-                for payload in chunk_builder.consume_chunk(llm_chunk):
-                    has_emitted_payload = True
-                    yield payload
+            for tool_round in range(MAX_TOOL_CALL_ROUNDS):
+                accumulator = LlmChatCompletionAccumulator(
+                    requested_model_name=execution_request.model_name,
+                    default_model_name=self._llm_client.default_model_name,
+                )
+                async for llm_chunk in self._llm_client.stream_chat_completion(
+                    messages=conversation_messages,
+                    model_name=execution_request.model_name,
+                    tools=available_tools,
+                    tool_choice=normalized_tool_choice,
+                    enable_thinking=execution_request.enable_thinking,
+                ):
+                    accumulator.append_chunk(llm_chunk)
+                    # 中间轮如果模型要求调用工具，不立刻输出 finish 事件，而是继续执行工具后续答。
+                    should_emit_finish_reason = not (
+                        available_tools is not None and llm_chunk.finish_reason == "tool_calls"
+                    )
+                    for payload in chunk_builder.consume_chunk(
+                        llm_chunk,
+                        include_finish_reason=should_emit_finish_reason,
+                    ):
+                        has_emitted_payload = True
+                        yield payload
 
-            completion_result = accumulator.build_result()
-            await self._conversation_graph.get_answer_node().persist_stream_result(
+                completion_result = accumulator.build_result()
+                if not completion_result.tool_calls:
+                    break
+
+                if available_tools is None:
+                    raise AppException(
+                        "模型返回了工具调用，但当前请求未开放任何工具。",
+                        error_code="invalid_llm_response",
+                    )
+
+                await answer_node.persist_assistant_tool_calls(
+                    session_id=str(execution_request.session_id),
+                    completion_result=completion_result,
+                )
+                conversation_messages.append(
+                    LlmInputMessage(
+                        role="assistant",
+                        content=completion_result.content,
+                        tool_calls=completion_result.tool_calls,
+                    )
+                )
+                executed_tool_calls = await tool_node.execute_requested_tools_and_persist(
+                    session_id=str(execution_request.session_id),
+                    completion_result=completion_result,
+                    runtime_mcp_tools=runtime_mcp_tools,
+                )
+                for executed_tool_call in executed_tool_calls:
+                    conversation_messages.append(
+                        LlmInputMessage(
+                            role="tool",
+                            content=executed_tool_call.output,
+                            tool_call_id=executed_tool_call.tool_call_id,
+                        )
+                    )
+
+                normalized_tool_choice = "auto"
+                if tool_round + 1 >= MAX_TOOL_CALL_ROUNDS:
+                    raise AppException(
+                        "工具调用轮次超过当前上限。",
+                        error_code="tool_call_limit_exceeded",
+                    )
+
+            if completion_result is None:
+                raise AppException(
+                    "模型未返回最终回答。",
+                    error_code="invalid_llm_response",
+                )
+
+            await answer_node.persist_stream_result(
                 session_id=str(execution_request.session_id),
                 completion_result=completion_result,
                 used_session_memory=prepared_context.used_session_memory,
