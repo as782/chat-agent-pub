@@ -157,7 +157,7 @@ class PlannerService:
             return [
                 ExecutionStep(
                     step_id="traffic_1",
-                    executor="tool",
+                    executor="traffic",
                     goal="查询路况或实时交通数据",
                 ),
                 ExecutionStep(

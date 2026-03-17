@@ -54,7 +54,7 @@ def test_planner_marks_traffic_status_requests() -> None:
 
     assert plan.primary_category == "traffic_status"
     assert plan.recommended_route == "traffic"
-    assert [step.executor for step in plan.steps] == ["tool", "answer"]
+    assert [step.executor for step in plan.steps] == ["traffic", "answer"]
 
 
 def test_planner_marks_network_report_requests() -> None:
