@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
-from app.clients.llm_client import LlmInputMessage
+from app.clients.llm_client import LlmChatCompletionResult, LlmInputMessage
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
 from app.tools.registry import ExecutedToolCall
@@ -147,6 +147,8 @@ class AgentState(TypedDict, total=False):
     report_context: str | None
     mcp_tools: list[McpRuntimeTool]
     prepared_context: PreparedContext
+    tool_completion_result: LlmChatCompletionResult
+    executed_tool_calls: list[ExecutedToolCall]
     final_result: ChatTurnResult
     checkpoint_payload: dict[str, object] | None
 

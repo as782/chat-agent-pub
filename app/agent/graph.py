@@ -156,7 +156,7 @@ class ConversationGraph:
             },
         )
         graph_builder.add_edge("route_node", "mcp_node")
-        graph_builder.add_edge("tool_node", "memory_node")
+        graph_builder.add_edge("tool_node", "answer_node")
         graph_builder.add_edge("ragflow_node", "answer_node")
         graph_builder.add_edge("mcp_node", "tool_node")
         graph_builder.add_edge("traffic_node", "answer_node")

@@ -66,15 +66,10 @@ class ToolNode:
             enable_thinking=execution_request.enable_thinking,
             runtime_mcp_tools=runtime_mcp_tools,
         )
-        final_result = await self._answer_node.persist_completion_result(
-            session_id=str(state["session_id"]),
-            completion_result=completion_result,
-            executed_tool_calls=executed_tool_calls,
-            used_session_memory=prepared_context.used_session_memory,
-        )
         return {
             **prepared_context_state,
-            "final_result": final_result,
+            "tool_completion_result": completion_result,
+            "executed_tool_calls": executed_tool_calls,
         }
 
     def build_available_tools(

@@ -56,18 +56,30 @@ class AnswerNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """执行普通回答节点主逻辑。"""
 
-        prepared_context_state = await self.prepare_context_state(state)
-        prepared_context = prepared_context_state["prepared_context"]
-        execution_request = self.build_execution_request_from_state(state)
-        completion_result = await self._llm_client.create_chat_completion(
-            messages=prepared_context.messages,
-            model_name=execution_request.model_name,
-            enable_thinking=execution_request.enable_thinking,
-        )
+        prepared_context = state.get("prepared_context")
+        if isinstance(prepared_context, PreparedContext):
+            prepared_context_state: dict[str, PreparedContext] = {
+                "prepared_context": prepared_context
+            }
+        else:
+            prepared_context_state = await self.prepare_context_state(state)
+            prepared_context = prepared_context_state["prepared_context"]
+
+        completion_result = state.get("tool_completion_result")
+        executed_tool_calls = self._extract_executed_tool_calls(state)
+        if not isinstance(completion_result, LlmChatCompletionResult):
+            execution_request = self.build_execution_request_from_state(state)
+            completion_result = await self._llm_client.create_chat_completion(
+                messages=prepared_context.messages,
+                model_name=execution_request.model_name,
+                enable_thinking=execution_request.enable_thinking,
+            )
+            executed_tool_calls = []
+
         final_result = await self.persist_completion_result(
             session_id=str(state["session_id"]),
             completion_result=completion_result,
-            executed_tool_calls=[],
+            executed_tool_calls=executed_tool_calls,
             used_session_memory=prepared_context.used_session_memory,
         )
         return {
@@ -318,3 +330,16 @@ class AnswerNode:
                 )
 
         return "\n".join(context_lines) if len(context_lines) > 1 else None
+
+    @staticmethod
+    def _extract_executed_tool_calls(state: AgentState) -> list[ExecutedToolCall]:
+        """从图状态中提取当前轮次已经执行完成的工具结果。"""
+
+        raw_executed_tool_calls = state.get("executed_tool_calls", [])
+        if not isinstance(raw_executed_tool_calls, list):
+            return []
+        return [
+            executed_tool_call
+            for executed_tool_call in raw_executed_tool_calls
+            if isinstance(executed_tool_call, ExecutedToolCall)
+        ]
