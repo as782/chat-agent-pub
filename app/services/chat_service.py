@@ -150,6 +150,7 @@ class ChatService:
             model_name=chat_request.model,
             requested_tool_names=requested_tool_names,
             tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
+            enable_thinking=chat_request.enable_thinking,
             user_id=chat_request.user,
         )
 
@@ -182,6 +183,7 @@ class ChatService:
                 model_name=execution_request.model_name,
                 tools=available_tools,
                 tool_choice=execution_request.tool_choice,
+                enable_thinking=execution_request.enable_thinking,
             ):
                 accumulator.append_chunk(llm_chunk)
                 for payload in chunk_builder.consume_chunk(llm_chunk):

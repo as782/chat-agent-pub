@@ -94,6 +94,10 @@ class OpenAIChatCompletionRequest(BaseModel):
         default=None,
         description="工具选择策略，可为 auto、none、required 或指定函数。",
     )
+    enable_thinking: bool | None = Field(
+        default=None,
+        description="兼容部分 Qwen 系列模型的思考模式开关。",
+    )
 
 
 class OpenAIChatCompletionAssistantMessage(BaseModel):

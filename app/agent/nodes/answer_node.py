@@ -47,6 +47,7 @@ class AnswerNode:
         completion_result = await self._llm_client.create_chat_completion(
             messages=prepared_context.messages,
             model_name=execution_request.model_name,
+            enable_thinking=execution_request.enable_thinking,
         )
         final_result = await self.persist_completion_result(
             session_id=str(state["session_id"]),
@@ -219,6 +220,7 @@ class AnswerNode:
             model_name=state.get("model_name"),
             requested_tool_names=state.get("requested_tool_names"),
             tool_choice=state.get("tool_choice"),
+            enable_thinking=state.get("enable_thinking"),
             user_id=state.get("user_id"),
         )
 

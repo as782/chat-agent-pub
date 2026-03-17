@@ -1,5 +1,4 @@
 """知识库节点模块。
-
 负责在命中知识库路由时调用 RAGFlow 检索，并把结果整理成可注入模型的上下文。
 当前阶段只做检索增强，不负责复杂引用标注和多知识源编排。
 """
@@ -49,8 +48,10 @@ class RagflowNode:
         """清理知识库路由前缀，保留真正的用户问题。"""
 
         normalized_query = raw_message.strip()
-        if normalized_query.startswith("知识库:"):
-            normalized_query = normalized_query.removeprefix("知识库:").strip()
+        for prefix in ("知识库:", "knowledge:", "konwledge:"):
+            if normalized_query.lower().startswith(prefix.lower()):
+                normalized_query = normalized_query[len(prefix) :].strip()
+                break
         return normalized_query.replace("#knowledge", "").strip()
 
     @staticmethod

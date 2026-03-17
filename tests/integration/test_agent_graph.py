@@ -28,10 +28,11 @@ async def test_conversation_graph_reuses_session_history(
         model_name: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
     ) -> LlmChatCompletionResult:
         """根据上下文中的历史用户消息生成稳定回答。"""
 
-        del self, tools, tool_choice
+        del self, tools, tool_choice, enable_thinking
         user_messages = [
             str(getattr(message, "content", ""))
             for message in messages

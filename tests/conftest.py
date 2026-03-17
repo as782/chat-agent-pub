@@ -41,6 +41,14 @@ def clear_settings_cache() -> Iterator[None]:
     clear_database_caches()
 
 
+@pytest.fixture(autouse=True)
+def isolate_mcp_servers_env(monkeypatch: MonkeyPatch) -> Iterator[None]:
+    """为测试提供稳定的 MCP 默认配置，避免受本地 .env 污染。"""
+
+    monkeypatch.setenv("MCP_SERVERS_JSON", "[]")
+    yield
+
+
 @pytest.fixture
 def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]:
     """提供使用临时 SQLite 数据库和假 LLM 的 FastAPI 测试客户端。"""
@@ -72,10 +80,11 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         model_name: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
     ) -> LlmChatCompletionResult:
         """为集成测试返回稳定的假模型回答与工具调用。"""
 
-        del self, tool_choice
+        del self, tool_choice, enable_thinking
         latest_user_message = ""
         latest_tool_output = ""
         all_message_contents: list[str] = []
@@ -244,10 +253,11 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         model_name: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
     ) -> AsyncIterator[LlmChatCompletionChunk]:
         """为集成测试返回真实逐块产生的假流式结果。"""
 
-        del self, tool_choice
+        del self, tool_choice, enable_thinking
         latest_user_message = ""
         user_messages: list[str] = []
         all_message_contents: list[str] = []

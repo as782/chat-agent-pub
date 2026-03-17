@@ -216,6 +216,7 @@ class OpenAICompatService:
             model_name=request.model,
             tools=selected_tools,
             tool_choice=tool_choice,
+            enable_thinking=request.enable_thinking,
         )
 
         return self._stream_llm_chunks_as_openai_sse(
@@ -336,6 +337,7 @@ class OpenAICompatService:
             model_name=request.model,
             tools=selected_tools,
             tool_choice=tool_choice,
+            enable_thinking=request.enable_thinking,
         )
 
     def build_input_messages(self, messages: list[OpenAIChatMessage]) -> list[LlmInputMessage]:

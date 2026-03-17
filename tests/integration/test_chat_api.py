@@ -216,6 +216,48 @@ def test_chat_api_uses_knowledge_route_when_requested(app_client: TestClient, mo
     )
 
 
+def test_chat_api_uses_misspelled_knowledge_prefix_when_requested(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证 konwledge 前缀也会命中知识库分支。"""
+
+    async def fake_retrieve_for_agent(
+        self: object,
+        *,
+        query: str,
+        top_k: int = 4,
+    ) -> list[KnowledgeSearchResult]:
+        """返回稳定的知识检索结果。"""
+
+        del self, top_k
+        assert query == "高速清障最低标准是什么？"
+        return [
+            KnowledgeSearchResult(
+                document_id="doc-002",
+                chunk_id="chunk-002",
+                score=0.95,
+                content="高速清障最低标准以实际法规和运营单位要求为准。",
+                source="高速运营规范",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.agent.nodes.ragflow_node.KnowledgeService.retrieve_for_agent",
+        fake_retrieve_for_agent,
+    )
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "konwledge: 高速清障最低标准是什么？"}],
+        },
+    )
+
+    assert response.status_code == 200
+
+
 def test_chat_api_executes_mcp_tool_when_requested(
     app_client: TestClient,
     monkeypatch,
@@ -349,10 +391,11 @@ def test_chat_api_stream_returns_json_error_when_first_chunk_fails(
         model_name: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
     ) -> AsyncIterator[LlmChatCompletionChunk]:
         """模拟首个流式块生成前发生限流错误。"""
 
-        del self, messages, model_name, tools, tool_choice
+        del self, messages, model_name, tools, tool_choice, enable_thinking
 
         async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
             raise UpstreamServiceException(

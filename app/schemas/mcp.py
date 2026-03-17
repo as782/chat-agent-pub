@@ -16,7 +16,7 @@ class McpServerInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="MCP 服务名称。")
-    transport: Literal["http", "streamable_http", "stdio"] = Field(description="连接方式。")
+    transport: Literal["http", "streamable_http", "sse", "stdio"] = Field(description="连接方式。")
     endpoint: str | None = Field(default=None, description="HTTP 端点地址。")
     command: str | None = Field(default=None, description="stdio 启动命令。")
     is_enabled: bool = Field(default=True, description="当前是否启用。")
@@ -36,7 +36,7 @@ class McpProbeResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="MCP 服务名称。")
-    transport: Literal["http", "streamable_http", "stdio"] = Field(description="连接方式。")
+    transport: Literal["http", "streamable_http", "sse", "stdio"] = Field(description="连接方式。")
     is_available: bool = Field(description="当前是否可用。")
     detail: str = Field(description="探测说明。")
 

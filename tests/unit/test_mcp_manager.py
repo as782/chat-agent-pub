@@ -36,6 +36,82 @@ def test_mcp_manager_reads_server_definitions_from_environment(monkeypatch: Monk
     assert server_list[0].endpoint == "https://mcp.example.com/mcp"
 
 
+def test_mcp_manager_reads_amap_style_mapping_from_environment(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """验证 MCP 管理器兼容高德文档中的 mcpServers 映射格式。"""
+
+    monkeypatch.setenv(
+        "MCP_SERVERS_JSON",
+        json.dumps(
+            {
+                "mcpServers": {
+                    "amap-maps-streamableHTTP": {
+                        "url": "https://mcp.amap.com/mcp?key=test-key",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    manager = McpManager()
+    server_list = manager.list_servers()
+
+    assert server_list[0].name == "amap-maps-streamableHTTP"
+    assert server_list[0].transport == "http"
+    assert server_list[0].endpoint == "https://mcp.amap.com/mcp?key=test-key"
+
+
+def test_mcp_manager_reads_list_wrapped_mcp_servers_mapping(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """验证 MCP 管理器兼容列表包裹的 mcpServers 映射格式。"""
+
+    monkeypatch.setenv(
+        "MCP_SERVERS_JSON",
+        json.dumps(
+            [
+                {
+                    "mcpServers": {
+                        "amap": {
+                            "url": "https://mcp.amap.com/mcp?key=test-key",
+                            "headers": {"x-test": "1"},
+                        }
+                    }
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    manager = McpManager()
+    server_list = manager.list_servers()
+
+    assert server_list[0].name == "amap"
+    assert server_list[0].transport == "http"
+    assert server_list[0].endpoint == "https://mcp.amap.com/mcp?key=test-key"
+
+
+def test_mcp_manager_infers_sse_transport_from_url(monkeypatch: MonkeyPatch) -> None:
+    """验证 MCP 管理器能从常见 SSE URL 自动推断传输方式。"""
+
+    monkeypatch.setenv(
+        "MCP_SERVERS_JSON",
+        json.dumps(
+            {"mcpServers": {"demo-sse": {"url": "https://mcp.example.com/sse"}}},
+            ensure_ascii=False,
+        ),
+    )
+
+    manager = McpManager()
+    server_list = manager.list_servers()
+
+    assert server_list[0].name == "demo-sse"
+    assert server_list[0].transport == "sse"
+    assert server_list[0].endpoint == "https://mcp.example.com/sse"
+
+
 @pytest.mark.asyncio
 async def test_mcp_manager_probes_http_server(monkeypatch: MonkeyPatch) -> None:
     """验证 MCP 管理器会把 HTTP 服务探测委托给 HTTP 客户端。"""
@@ -156,6 +232,58 @@ async def test_mcp_manager_calls_remote_tool(monkeypatch: MonkeyPatch) -> None:
 
     assert tool_result.tool_name == "weather"
     assert tool_result.output_text == "杭州晴，26 度"
+
+
+@pytest.mark.asyncio
+async def test_mcp_manager_calls_sse_tool_with_friendly_error(monkeypatch: MonkeyPatch) -> None:
+    """验证 SSE MCP 工具错误会被转换为更直接的诊断信息。"""
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        endpoint: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> McpClientToolCallResult:
+        """返回稳定的高德 Key 错误。"""
+
+        del self, headers
+        assert endpoint == "https://mcp.example.com/sse"
+        assert tool_name == "maps_direction_transit_integrated"
+        assert arguments == {"origin": "金华", "destination": "杭州"}
+        return McpClientToolCallResult(
+            content=[
+                {
+                    "type": "text",
+                    "text": "USERKEY_PLAT_NOMATCH",
+                }
+            ],
+            structured_content=None,
+            is_error=True,
+            output_text="USERKEY_PLAT_NOMATCH",
+        )
+
+    monkeypatch.setattr("app.mcp.sse_client.McpSseClient.call_tool", fake_call_tool)
+    manager = McpManager(
+        server_definitions=[
+            McpServerDefinition(
+                name="demo-sse",
+                transport="sse",
+                endpoint="https://mcp.example.com/sse",
+            )
+        ]
+    )
+
+    tool_result = await manager.call_tool(
+        server_name="demo-sse",
+        tool_name="maps_direction_transit_integrated",
+        arguments={"origin": "金华", "destination": "杭州"},
+    )
+
+    assert tool_result.is_error is True
+    assert "USERKEY_PLAT_NOMATCH" in tool_result.output_text
+    assert "高德 Key 与当前调用平台不匹配" in tool_result.output_text
 
 
 @pytest.mark.asyncio

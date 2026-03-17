@@ -24,6 +24,22 @@ def test_router_marks_knowledge_requests() -> None:
     assert route == "ragflow"
 
 
+def test_router_marks_english_knowledge_requests() -> None:
+    """验证英文 knowledge 前缀也会命中知识库路由。"""
+
+    route = resolve_agent_route({"latest_user_message": "knowledge: 高速清障最低标准是什么？"})
+
+    assert route == "ragflow"
+
+
+def test_router_marks_common_misspelled_knowledge_requests() -> None:
+    """验证常见拼错的 konwledge 前缀也会命中知识库路由。"""
+
+    route = resolve_agent_route({"latest_user_message": "konwledge: 高速清障最低标准是什么？"})
+
+    assert route == "ragflow"
+
+
 def test_router_marks_mcp_requests() -> None:
     """验证 MCP 前缀会被标记为 MCP 路由。"""
 

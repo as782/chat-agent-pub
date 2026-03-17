@@ -250,6 +250,7 @@ class LlmClient:
         model_name: str | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        enable_thinking: bool | None = None,
     ) -> LlmChatCompletionResult:
         """使用统一消息结构创建一次聊天补全。"""
 
@@ -259,8 +260,13 @@ class LlmClient:
             tools=tools,
             tool_choice=tool_choice,
             is_stream=False,
+            enable_thinking=enable_thinking,
         )
-        chat_model = self._create_chat_model(model_name=model_name)
+        chat_model = self._create_chat_model(
+            model_name=model_name,
+            is_stream=False,
+            enable_thinking=enable_thinking,
+        )
         runnable = chat_model.bind_tools(tools, tool_choice=tool_choice) if tools else chat_model
         llm_messages = self._build_langchain_messages(messages)
 
@@ -291,6 +297,7 @@ class LlmClient:
         model_name: str | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        enable_thinking: bool | None = None,
     ) -> AsyncIterator[LlmChatCompletionChunk]:
         """以真实流式方式输出聊天补全增量。"""
 
@@ -300,8 +307,13 @@ class LlmClient:
             tools=tools,
             tool_choice=tool_choice,
             is_stream=True,
+            enable_thinking=enable_thinking,
         )
-        chat_model = self._create_chat_model(model_name=model_name)
+        chat_model = self._create_chat_model(
+            model_name=model_name,
+            is_stream=True,
+            enable_thinking=enable_thinking,
+        )
         runnable = chat_model.bind_tools(tools, tool_choice=tool_choice) if tools else chat_model
         llm_messages = self._build_langchain_messages(messages)
         return self._iterate_stream_chunks(
@@ -339,7 +351,13 @@ class LlmClient:
         ) as exception:
             raise self._convert_openai_exception(exception) from exception
 
-    def _create_chat_model(self, model_name: str | None = None) -> object:
+    def _create_chat_model(
+        self,
+        model_name: str | None = None,
+        *,
+        is_stream: bool = False,
+        enable_thinking: bool | None = None,
+    ) -> object:
         """根据环境配置创建 LangChain 聊天模型客户端。"""
 
         api_key = self._settings.openai_api_key
@@ -349,12 +367,40 @@ class LlmClient:
                 details={"config_key": "OPENAI_API_KEY"},
             )
 
+        resolved_model_name = model_name or self._settings.openai_model
+        provider_extra_body = self._build_provider_extra_body(
+            model_name=resolved_model_name,
+            is_stream=is_stream,
+            enable_thinking=enable_thinking,
+        )
+
         return init_chat_model(
-            model=model_name or self._settings.openai_model,
+            model=resolved_model_name,
             model_provider="openai",
             api_key=api_key.get_secret_value(),
             base_url=self._settings.openai_base_url or None,
+            extra_body=provider_extra_body or None,
         )
+
+    def _build_provider_extra_body(
+        self,
+        *,
+        model_name: str,
+        is_stream: bool,
+        enable_thinking: bool | None,
+    ) -> dict[str, Any]:
+        """构造兼容提供方所需的额外请求体参数。"""
+
+        if enable_thinking is not None:
+            return {"enable_thinking": enable_thinking}
+
+        normalized_model_name = model_name.lower()
+        if normalized_model_name.startswith("qwen3") and not is_stream:
+            # 部分 OpenAI 兼容网关在非流式调用 Qwen3 时要求显式关闭 thinking 模式，
+            # 否则会直接返回 400 invalid_parameter_error。
+            return {"enable_thinking": False}
+
+        return {}
 
     def _log_chat_request(
         self,
@@ -364,6 +410,7 @@ class LlmClient:
         tools: Sequence[LlmBindableTool] | None,
         tool_choice: str | dict[str, Any] | None,
         is_stream: bool,
+        enable_thinking: bool | None,
     ) -> None:
         """记录发往大模型的完整输入，便于后续调试上下文构造。"""
 
@@ -400,6 +447,7 @@ class LlmClient:
                 "mode": "stream" if is_stream else "non_stream",
                 "model": model_name or self._settings.openai_model,
                 "tool_choice": tool_choice,
+                "enable_thinking": enable_thinking,
                 "tools": serialized_tool_names,
                 "messages": serialized_messages,
             },

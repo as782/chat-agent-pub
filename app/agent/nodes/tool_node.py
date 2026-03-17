@@ -63,6 +63,7 @@ class ToolNode:
             session_id=str(state["session_id"]),
             available_tools=available_tools,
             tool_choice=execution_request.tool_choice,
+            enable_thinking=execution_request.enable_thinking,
             runtime_mcp_tools=runtime_mcp_tools,
         )
         final_result = await self._answer_node.persist_completion_result(
@@ -84,6 +85,7 @@ class ToolNode:
         session_id: str,
         available_tools: list[LlmBindableTool],
         tool_choice: str | dict[str, object] | None,
+        enable_thinking: bool | None,
         runtime_mcp_tools: list[McpRuntimeTool],
     ) -> tuple[LlmChatCompletionResult, list[ExecutedToolCall]]:
         """执行带工具的模型补全循环。"""
@@ -98,6 +100,7 @@ class ToolNode:
                 model_name=model_name,
                 tools=available_tools,
                 tool_choice=normalized_tool_choice,
+                enable_thinking=enable_thinking,
             )
             if not completion_result.tool_calls:
                 return completion_result, executed_tool_calls

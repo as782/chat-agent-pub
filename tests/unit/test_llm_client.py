@@ -93,6 +93,46 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
     assert FakeChatModel.last_init_kwargs["model_provider"] == "openai"
     assert FakeChatModel.last_init_kwargs["api_key"] == "unit-test-key"
     assert FakeChatModel.last_init_kwargs["base_url"] == "https://example.com/v1"
+    assert FakeChatModel.last_init_kwargs["extra_body"] is None
+
+
+@pytest.mark.asyncio
+async def test_llm_client_disables_qwen3_thinking_for_non_stream_calls(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """验证非流式调用 Qwen3 时会自动关闭 thinking 模式。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "qwen3-32b")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    await llm_client.create_chat_completion(
+        messages=[LlmInputMessage(role="user", content="你好")],
+        model_name="qwen3-32b",
+    )
+
+    assert FakeChatModel.last_init_kwargs["extra_body"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
+async def test_llm_client_keeps_qwen3_stream_without_default_thinking_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """验证流式 Qwen3 调用不会默认注入 enable_thinking=false。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "qwen3-32b")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    async for _ in llm_client.stream_chat_completion(
+        messages=[LlmInputMessage(role="user", content="你好")],
+        model_name="qwen3-32b",
+    ):
+        pass
+
+    assert FakeChatModel.last_init_kwargs["extra_body"] is None
 
 
 @pytest.mark.asyncio
