@@ -124,14 +124,20 @@ def test_context_builder_includes_answer_instruction_and_business_contexts() -> 
         memory_summary=None,
         need_session_memory=False,
         answer_instruction="请优先输出表格，再给出总结。",
+        executor_results_context="以下是执行节点返回的结构化结果：{report_count: 1}",
         traffic_context="以下是路况查询参数：{target: 杭金衢高速}",
         report_context="以下是路网报告任务参数：{scope: 全路网}",
     )
 
     assert prepared_context.answer_instruction == "请优先输出表格，再给出总结。"
+    assert (
+        prepared_context.executor_results_context
+        == "以下是执行节点返回的结构化结果：{report_count: 1}"
+    )
     assert prepared_context.traffic_context == "以下是路况查询参数：{target: 杭金衢高速}"
     assert prepared_context.report_context == "以下是路网报告任务参数：{scope: 全路网}"
     assert [message.role for message in prepared_context.messages] == [
+        "system",
         "system",
         "system",
         "system",

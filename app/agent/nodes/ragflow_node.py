@@ -8,7 +8,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.prompts import KNOWLEDGE_CONTEXT_PROMPT_PREFIX
-from app.agent.state import AgentState
+from app.agent.state import AgentState, ExecutorResult, merge_step_result, resolve_execution_step_id
 from app.knowledge.service import KnowledgeService
 from app.schemas.knowledge import KnowledgeSearchResult
 
@@ -29,15 +29,50 @@ class RagflowNode:
 
         normalized_query = self._normalize_query(str(state.get("latest_user_message", "")))
         knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)
+        step_id = resolve_execution_step_id(state, executor="rag", default_step_id="rag_1")
         if not knowledge_results:
+            executor_result = ExecutorResult(
+                step_id=step_id,
+                executor="rag",
+                is_success=True,
+                raw_result={"results": []},
+                normalized_result={"result_count": 0, "query": normalized_query},
+                summary="知识检索未命中结果。",
+            )
             return {
                 "knowledge_results": [],
                 "knowledge_context": None,
+                **merge_step_result(state, result=executor_result),
             }
 
+        executor_result = ExecutorResult(
+            step_id=step_id,
+            executor="rag",
+            is_success=True,
+            raw_result={
+                "results": [
+                    knowledge_result.model_dump(mode="json")
+                    for knowledge_result in knowledge_results
+                ]
+            },
+            normalized_result={
+                "query": normalized_query,
+                "result_count": len(knowledge_results),
+                "sources": [
+                    knowledge_result.source or knowledge_result.document_id
+                    for knowledge_result in knowledge_results
+                ],
+            },
+            summary=f"知识检索命中 {len(knowledge_results)} 条结果。",
+            sources=[
+                knowledge_result.source or knowledge_result.document_id
+                for knowledge_result in knowledge_results
+            ],
+        )
         return {
             "knowledge_results": knowledge_results,
             "knowledge_context": self._build_knowledge_context(knowledge_results),
+            **merge_step_result(state, result=executor_result),
         }
 
     @staticmethod

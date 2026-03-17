@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from json import dumps
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,13 @@ from app.agent.prompts import (
     ROUTE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
-from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult, PreparedContext
+from app.agent.state import (
+    AgentState,
+    ChatExecutionRequest,
+    ChatTurnResult,
+    ExecutorResult,
+    PreparedContext,
+)
 from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
 from app.core.exceptions import AppException
 from app.memory.manager import MemoryManager
@@ -73,6 +80,7 @@ class AnswerNode:
         execution_request: ChatExecutionRequest,
         *,
         answer_instruction: str | None = None,
+        step_results: dict[str, ExecutorResult] | None = None,
         knowledge_context: str | None = None,
         mcp_context: str | None = None,
         traffic_context: str | None = None,
@@ -99,6 +107,7 @@ class AnswerNode:
             memory_summary=memory_summary,
             need_session_memory=execution_request.need_session_memory,
             answer_instruction=answer_instruction,
+            executor_results_context=self._build_executor_results_context(step_results or {}),
             knowledge_context=knowledge_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
@@ -109,6 +118,7 @@ class AnswerNode:
         """从图状态中准备当前轮次上下文。"""
 
         execution_request = self._build_execution_request_from_state(state)
+        step_results = state.get("step_results", {})
         knowledge_context = (
             str(state["knowledge_context"])
             if isinstance(state.get("knowledge_context"), str)
@@ -126,6 +136,7 @@ class AnswerNode:
         prepared_context = await self.prepare_context(
             execution_request,
             answer_instruction=self._resolve_answer_instruction(state),
+            step_results=step_results,
             knowledge_context=knowledge_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
@@ -273,3 +284,31 @@ class AnswerNode:
         if primary_category == "network_report":
             return NETWORK_REPORT_SUMMARY_PROMPT
         return GENERAL_ANSWER_PROMPT
+
+    @staticmethod
+    def _build_executor_results_context(
+        step_results: dict[str, ExecutorResult] | object,
+    ) -> str | None:
+        """把统一 step_results 转成可注入回答节点的结构化上下文。"""
+
+        if not isinstance(step_results, dict) or not step_results:
+            return None
+
+        context_lines = ["以下是当前执行节点返回的结构化结果，请优先依据这些结果组织回答："]
+        for step_id in sorted(step_results):
+            executor_result = step_results[step_id]
+            if not isinstance(executor_result, ExecutorResult):
+                continue
+
+            context_lines.append(
+                f"[{step_id}] executor={executor_result.executor} "
+                f"success={executor_result.is_success}"
+            )
+            if executor_result.summary:
+                context_lines.append(f"summary={executor_result.summary}")
+            if executor_result.normalized_result:
+                context_lines.append(
+                    dumps(executor_result.normalized_result, ensure_ascii=False, indent=2)
+                )
+
+        return "\n".join(context_lines) if len(context_lines) > 1 else None

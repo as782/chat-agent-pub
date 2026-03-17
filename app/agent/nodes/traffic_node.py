@@ -9,7 +9,13 @@ from __future__ import annotations
 from json import dumps
 
 from app.agent.prompts import TRAFFIC_CONTEXT_PROMPT_PREFIX
-from app.agent.state import AgentState, ResolvedArguments
+from app.agent.state import (
+    AgentState,
+    ExecutorResult,
+    ResolvedArguments,
+    merge_step_result,
+    resolve_execution_step_id,
+)
 
 
 class TrafficNode:
@@ -22,8 +28,22 @@ class TrafficNode:
         if not isinstance(resolved_arguments, ResolvedArguments):
             return {"traffic_context": None}
 
+        step_id = resolve_execution_step_id(
+            state,
+            executor="traffic",
+            default_step_id="traffic_1",
+        )
+        executor_result = ExecutorResult(
+            step_id=step_id,
+            executor="traffic",
+            is_success=True,
+            raw_result=dict(resolved_arguments.arguments),
+            normalized_result=dict(resolved_arguments.arguments),
+            summary="已整理路况查询所需的结构化参数。",
+        )
         return {
             "traffic_context": self._build_traffic_context(resolved_arguments),
+            **merge_step_result(state, result=executor_result),
         }
 
     @staticmethod

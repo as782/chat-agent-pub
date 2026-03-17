@@ -60,6 +60,20 @@ class ResolvedArguments:
 
 
 @dataclass(slots=True)
+class ExecutorResult:
+    """单个执行节点的标准化结果。"""
+
+    step_id: str
+    executor: ExecutorType
+    is_success: bool
+    raw_result: dict[str, object] = field(default_factory=dict)
+    normalized_result: dict[str, object] = field(default_factory=dict)
+    summary: str | None = None
+    sources: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class ChatExecutionRequest:
     """内部聊天执行请求。"""
 
@@ -87,6 +101,7 @@ class PreparedContext:
     traffic_context: str | None = None
     report_context: str | None = None
     answer_instruction: str | None = None
+    executor_results_context: str | None = None
 
 
 @dataclass(slots=True)
@@ -120,6 +135,7 @@ class AgentState(TypedDict, total=False):
     primary_category: ProblemCategory
     execution_plan: ExecutionPlan
     resolved_arguments: ResolvedArguments
+    step_results: dict[str, ExecutorResult]
     need_clarification: bool
     clarification_question: str | None
     knowledge_results: list[KnowledgeSearchResult]
@@ -131,3 +147,33 @@ class AgentState(TypedDict, total=False):
     prepared_context: PreparedContext
     final_result: ChatTurnResult
     checkpoint_payload: dict[str, object] | None
+
+
+def resolve_execution_step_id(
+    state: AgentState,
+    *,
+    executor: ExecutorType,
+    default_step_id: str,
+) -> str:
+    """根据 execution_plan 为当前 executor 找到稳定的 step_id。"""
+
+    execution_plan = state.get("execution_plan")
+    if execution_plan is None:
+        return default_step_id
+
+    for step in execution_plan.steps:
+        if step.executor == executor:
+            return step.step_id
+    return default_step_id
+
+
+def merge_step_result(
+    state: AgentState,
+    *,
+    result: ExecutorResult,
+) -> dict[str, object]:
+    """把当前节点结果合并进统一 step_results。"""
+
+    step_results = dict(state.get("step_results", {}))
+    step_results[result.step_id] = result
+    return {"step_results": step_results}

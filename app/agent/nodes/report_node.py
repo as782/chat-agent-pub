@@ -9,7 +9,13 @@ from __future__ import annotations
 from json import dumps
 
 from app.agent.prompts import REPORT_CONTEXT_PROMPT_PREFIX
-from app.agent.state import AgentState, ResolvedArguments
+from app.agent.state import (
+    AgentState,
+    ExecutorResult,
+    ResolvedArguments,
+    merge_step_result,
+    resolve_execution_step_id,
+)
 
 
 class ReportNode:
@@ -22,8 +28,22 @@ class ReportNode:
         if not isinstance(resolved_arguments, ResolvedArguments):
             return {"report_context": None}
 
+        step_id = resolve_execution_step_id(
+            state,
+            executor="report",
+            default_step_id="report_1",
+        )
+        executor_result = ExecutorResult(
+            step_id=step_id,
+            executor="report",
+            is_success=True,
+            raw_result=dict(resolved_arguments.arguments),
+            normalized_result=dict(resolved_arguments.arguments),
+            summary="已整理路网报告任务的结构化参数。",
+        )
         return {
             "report_context": self._build_report_context(resolved_arguments),
+            **merge_step_result(state, result=executor_result),
         }
 
     @staticmethod

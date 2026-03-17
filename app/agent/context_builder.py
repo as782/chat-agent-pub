@@ -117,6 +117,7 @@ class ContextBuilder:
         memory_summary: str | None,
         need_session_memory: bool,
         answer_instruction: str | None = None,
+        executor_results_context: str | None = None,
         knowledge_context: str | None = None,
         mcp_context: str | None = None,
         traffic_context: str | None = None,
@@ -133,6 +134,10 @@ class ContextBuilder:
             context_messages: list[LlmInputMessage] = []
             if answer_instruction:
                 context_messages.append(LlmInputMessage(role="system", content=answer_instruction))
+            if executor_results_context:
+                context_messages.append(
+                    LlmInputMessage(role="system", content=executor_results_context)
+                )
             if knowledge_context:
                 context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
             if mcp_context:
@@ -151,11 +156,16 @@ class ContextBuilder:
                 traffic_context=traffic_context,
                 report_context=report_context,
                 answer_instruction=answer_instruction,
+                executor_results_context=executor_results_context,
             )
 
         context_messages: list[LlmInputMessage] = []
         if answer_instruction:
             context_messages.append(LlmInputMessage(role="system", content=answer_instruction))
+        if executor_results_context:
+            context_messages.append(
+                LlmInputMessage(role="system", content=executor_results_context)
+            )
         if memory_summary:
             context_messages.append(
                 LlmInputMessage(
@@ -188,6 +198,7 @@ class ContextBuilder:
             traffic_context=traffic_context,
             report_context=report_context,
             answer_instruction=answer_instruction,
+            executor_results_context=executor_results_context,
         )
 
     def _drop_overlapped_recent_suffix(

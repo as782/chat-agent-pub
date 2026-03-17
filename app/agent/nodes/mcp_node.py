@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from app.agent.state import AgentState
+from app.agent.state import AgentState, ExecutorResult, merge_step_result, resolve_execution_step_id
 from app.core.exceptions import AppException
 from app.mcp.manager import McpManager
 
@@ -19,7 +19,6 @@ class McpNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """执行 MCP 节点主逻辑。"""
 
-        del state
         runtime_tools = await self._mcp_manager.build_runtime_tools()
         if not runtime_tools:
             raise AppException(
@@ -27,7 +26,30 @@ class McpNode:
                 error_code="mcp_no_available_tools",
             )
 
+        step_id = resolve_execution_step_id(state, executor="mcp", default_step_id="mcp_1")
+        executor_result = ExecutorResult(
+            step_id=step_id,
+            executor="mcp",
+            is_success=True,
+            raw_result={
+                "tools": [
+                    {
+                        "registered_name": runtime_tool.registered_name,
+                        "remote_tool_name": runtime_tool.remote_tool_name,
+                        "server_name": runtime_tool.server_name,
+                    }
+                    for runtime_tool in runtime_tools
+                ]
+            },
+            normalized_result={
+                "tool_count": len(runtime_tools),
+                "tool_names": [runtime_tool.registered_name for runtime_tool in runtime_tools],
+            },
+            summary=f"已发现 {len(runtime_tools)} 个可调用的 MCP 工具。",
+            sources=list({runtime_tool.server_name for runtime_tool in runtime_tools}),
+        )
         return {
             "mcp_context": self._mcp_manager.build_agent_context(runtime_tools),
             "mcp_tools": runtime_tools,
+            **merge_step_result(state, result=executor_result),
         }
