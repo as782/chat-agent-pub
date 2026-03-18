@@ -221,6 +221,189 @@ def test_chat_api_uses_knowledge_route_when_requested(app_client: TestClient, mo
     )
 
 
+def test_chat_api_executes_multi_step_route_and_policy_plan(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证 route+policy 多步骤计划会先检索知识，再执行路线工具并最终汇总回答。"""
+    knowledge_queries: list[str] = []
+
+    async def fake_retrieve_for_agent(
+        self: object,
+        *,
+        query: str,
+        top_k: int = 4,
+    ) -> list[KnowledgeSearchResult]:
+        """返回稳定的政策检索结果。"""
+
+        del self, top_k
+        knowledge_queries.append(query)
+        assert "高速清障标准" in query
+        return [
+            KnowledgeSearchResult(
+                document_id="doc-policy-001",
+                chunk_id="chunk-policy-001",
+                score=0.97,
+                content="高速清障相关作业应优先保障通行效率和安全要求。",
+                source="高速清障标准",
+            )
+        ]
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的路线规划 MCP 工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__route_plan",
+                server_name="demo-mcp-http",
+                remote_tool_name="route_plan",
+                description="查询路线规划方案。",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "origin": {"type": "string"},
+                        "destination": {"type": "string"},
+                    },
+                    "required": ["origin", "destination"],
+                },
+            )
+        ]
+
+    async def fake_create_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> LlmChatCompletionResult:
+        """为 route+policy 多步骤场景返回稳定结果。"""
+
+        del self, tool_choice, enable_thinking
+        latest_user_message = ""
+        latest_tool_output = ""
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                if isinstance(function_payload, dict) and isinstance(
+                    function_payload.get("name"),
+                    str,
+                ):
+                    available_tool_names.append(str(function_payload["name"]))
+
+        for message in reversed(messages):
+            role = getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            if role == "tool" and not latest_tool_output:
+                latest_tool_output = content
+            if role == "user" and not latest_user_message:
+                latest_user_message = content
+            if latest_tool_output and latest_user_message:
+                break
+
+        route_tool_name = next(
+            (tool_name for tool_name in available_tool_names if "route_plan" in tool_name),
+            None,
+        )
+        if route_tool_name and not latest_tool_output:
+            return LlmChatCompletionResult(
+                content="",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    LlmToolCall(
+                        tool_call_id="call_route_plan",
+                        tool_name=route_tool_name,
+                        arguments={"origin": "杭州", "destination": "金华"},
+                    )
+                ],
+            )
+
+        if latest_tool_output and knowledge_queries:
+            return LlmChatCompletionResult(
+                content="测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+        return LlmChatCompletionResult(
+            content=f"测试模型回答：{latest_user_message}",
+            model_name=model_name or "test-model",
+            prompt_tokens=12,
+            completion_tokens=8,
+            total_tokens=20,
+            finish_reason="stop",
+        )
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的路线工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "route_plan"
+        assert arguments == {"origin": "杭州", "destination": "金华"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "杭州到金华推荐走高速，约 2 小时。"}],
+            structured_content={"origin": "杭州", "destination": "金华", "duration": "2h"},
+            is_error=False,
+            output_text="杭州到金华推荐走高速，约 2 小时。",
+        )
+
+    monkeypatch.setattr(
+        "app.agent.nodes.ragflow_node.KnowledgeService.retrieve_for_agent",
+        fake_retrieve_for_agent,
+    )
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "杭州到金华怎么走，并说明是否符合高速清障标准？",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert knowledge_queries
+    assert (
+        response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。"
+    )
+
+
 def test_chat_api_uses_misspelled_knowledge_prefix_when_requested(
     app_client: TestClient,
     monkeypatch,
@@ -815,6 +998,217 @@ def test_chat_api_stream_executes_mcp_tool_when_requested(
     ]
     assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__weather"
     assert history_payload["items"][3]["content"] == "测试模型回答：工具结果是 Hangzhou sunny, 26 C"
+
+
+def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证流式 route+policy 多步骤计划会先完成知识检索，再继续路线工具调用和最终续答。"""
+    knowledge_queries: list[str] = []
+
+    async def fake_retrieve_for_agent(
+        self: object,
+        *,
+        query: str,
+        top_k: int = 4,
+    ) -> list[KnowledgeSearchResult]:
+        """返回稳定的政策检索结果。"""
+
+        del self, top_k
+        knowledge_queries.append(query)
+        assert "高速清障标准" in query
+        return [
+            KnowledgeSearchResult(
+                document_id="doc-policy-001",
+                chunk_id="chunk-policy-001",
+                score=0.97,
+                content="高速清障相关作业应优先保障通行效率和安全要求。",
+                source="高速清障标准",
+            )
+        ]
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的路线规划 MCP 工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__route_plan",
+                server_name="demo-mcp-http",
+                remote_tool_name="route_plan",
+                description="查询路线规划方案。",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "origin": {"type": "string"},
+                        "destination": {"type": "string"},
+                    },
+                    "required": ["origin", "destination"],
+                },
+            )
+        ]
+
+    def fake_stream_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> AsyncIterator[LlmChatCompletionChunk]:
+        """为流式 route+policy 场景返回稳定的工具调用与续答结果。"""
+
+        del self, tool_choice, enable_thinking
+        latest_user_message = ""
+        latest_tool_output = ""
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+            function_payload = tool.get("function", {})
+            if isinstance(function_payload, dict) and isinstance(
+                function_payload.get("name"),
+                str,
+            ):
+                available_tool_names.append(str(function_payload["name"]))
+
+        for message in reversed(messages):
+            role = getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            if role == "tool" and not latest_tool_output:
+                latest_tool_output = content
+            if role == "user" and not latest_user_message:
+                latest_user_message = content
+            if latest_tool_output and latest_user_message:
+                break
+
+        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+            resolved_model_name = model_name or "test-model"
+            route_tool_name = next(
+                (tool_name for tool_name in available_tool_names if "route_plan" in tool_name),
+                None,
+            )
+            if route_tool_name and not latest_tool_output:
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    tool_call_chunks=[
+                        LlmToolCallChunk(
+                            index=0,
+                            tool_call_id="call_route_plan",
+                            tool_name=route_tool_name,
+                            arguments_chunk='{"origin":"杭州","destination":"金华"}',
+                        )
+                    ],
+                )
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="tool_calls",
+                )
+                return
+
+            if latest_tool_output and knowledge_queries:
+                full_text = "测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。"
+            else:
+                full_text = f"测试模型回答：{latest_user_message}"
+
+            split_index = max(1, len(full_text) // 2)
+            yield LlmChatCompletionChunk(
+                content_delta=full_text[:split_index],
+                model_name=resolved_model_name,
+            )
+            yield LlmChatCompletionChunk(
+                content_delta=full_text[split_index:],
+                model_name=resolved_model_name,
+            )
+            yield LlmChatCompletionChunk(
+                model_name=resolved_model_name,
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+        return iterator()
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的路线工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "route_plan"
+        assert arguments == {"origin": "杭州", "destination": "金华"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "杭州到金华推荐走高速，约 2 小时。"}],
+            structured_content={"origin": "杭州", "destination": "金华", "duration": "2h"},
+            is_error=False,
+            output_text="杭州到金华推荐走高速，约 2 小时。",
+        )
+
+    monkeypatch.setattr(
+        "app.agent.nodes.ragflow_node.KnowledgeService.retrieve_for_agent",
+        fake_retrieve_for_agent,
+    )
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_chat_completion,
+    )
+
+    with app_client.stream(
+        "POST",
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "杭州到金华怎么走，并说明是否符合高速清障标准？",
+                }
+            ],
+            "stream": True,
+        },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+        session_id = response.headers["X-Session-ID"]
+
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert knowledge_queries
+    assert '"tool_calls"' in response_body
+    assert "[DONE]" in response_body
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__route_plan"
+    assert (
+        history_payload["items"][3]["content"]
+        == "测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。"
+    )
 
 
 def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(

@@ -225,25 +225,36 @@ class ConversationGraph:
             **scheduled_state,
             **route_state,
         }
-        if merged_state.get("route") == "ragflow":
-            knowledge_state = await self._ragflow_node.run(merged_state)
-            merged_state = {**merged_state, **knowledge_state}
-        if merged_state.get("route") == "route":
-            route_state = await self._route_node.run(merged_state)
-            merged_state = {**merged_state, **route_state}
-            mcp_state = await self._mcp_node.run(merged_state)
-            merged_state = {**merged_state, **mcp_state}
-        if merged_state.get("route") == "mcp":
-            mcp_state = await self._mcp_node.run(merged_state)
-            merged_state = {**merged_state, **mcp_state}
-        if merged_state.get("route") == "traffic":
-            traffic_state = await self._traffic_node.run(merged_state)
-            merged_state = {**merged_state, **traffic_state}
-            mcp_state = await self._mcp_node.run(merged_state)
-            merged_state = {**merged_state, **mcp_state}
-        if merged_state.get("route") == "report":
-            report_state = await self._report_node.run(merged_state)
-            merged_state = {**merged_state, **report_state}
-            mcp_state = await self._mcp_node.run(merged_state)
-            merged_state = {**merged_state, **mcp_state}
-        return merged_state
+        while True:
+            route = merged_state.get("route")
+            if route == "ragflow":
+                knowledge_state = await self._ragflow_node.run(merged_state)
+                merged_state = {**merged_state, **knowledge_state}
+                merged_state = await self._reschedule_state(merged_state)
+                continue
+            if route == "route":
+                route_state = await self._route_node.run(merged_state)
+                merged_state = {**merged_state, **route_state}
+                mcp_state = await self._mcp_node.run(merged_state)
+                return {**merged_state, **mcp_state}
+            if route == "mcp":
+                mcp_state = await self._mcp_node.run(merged_state)
+                return {**merged_state, **mcp_state}
+            if route == "traffic":
+                traffic_state = await self._traffic_node.run(merged_state)
+                merged_state = {**merged_state, **traffic_state}
+                mcp_state = await self._mcp_node.run(merged_state)
+                return {**merged_state, **mcp_state}
+            if route == "report":
+                report_state = await self._report_node.run(merged_state)
+                merged_state = {**merged_state, **report_state}
+                mcp_state = await self._mcp_node.run(merged_state)
+                return {**merged_state, **mcp_state}
+            return merged_state
+
+    async def _reschedule_state(self, state: AgentState) -> AgentState:
+        """在流式前置执行若干非回答步骤后重新调度当前计划。"""
+
+        scheduled_state = await self._scheduler_node.run(state)
+        route_state = await self._router_node.run({**state, **scheduled_state})
+        return {**state, **scheduled_state, **route_state}
