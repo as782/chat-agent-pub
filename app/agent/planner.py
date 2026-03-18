@@ -18,7 +18,8 @@ from app.agent.state import (
     ExecutorType,
     ProblemCategory,
 )
-from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
+from langchain_core.messages import AIMessage
+from app.clients.llm_client import LlmClient, LlmInputMessage
 from app.core.config import Settings, get_settings
 from app.core.logger import get_logger
 
@@ -147,11 +148,13 @@ class PlannerService:
     def _parse_llm_plan(
         self,
         state: AgentState,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
     ) -> ExecutionPlan:
         """解析 LLM planner 的结构化结果。"""
 
-        payload = self._extract_json_payload(completion_result.content)
+        # completion_result.content 已经是字符串或经过 __str__ 处理
+        content = str(completion_result.content)
+        payload = self._extract_json_payload(content)
         requested_tool_names = state.get("requested_tool_names") or []
 
         primary_category = self._coerce_primary_category(payload.get("primary_category"))

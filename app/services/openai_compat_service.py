@@ -5,19 +5,19 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from json import dumps, loads
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, AIMessageChunk
 from app.clients.llm_client import (
-    LlmChatCompletionChunk,
     LlmClient,
     LlmInputMessage,
     LlmToolCall,
-    LlmToolCallChunk,
 )
 from app.core.exceptions import AppException
 from app.core.logger import get_logger
@@ -67,30 +67,41 @@ class _OpenAIStreamChunkBuilder:
 
     def consume_chunk(
         self,
-        chunk: LlmChatCompletionChunk,
+        chunk: AIMessageChunk,
         *,
         include_finish_reason: bool = True,
     ) -> list[str]:
-        """将统一增量结果转换为一个或多个 OpenAI 兼容 chunk。"""
+        """将 LangChain 增量块转换为一个或多个 OpenAI 兼容 chunk。"""
 
-        if chunk.model_name:
-            self.resolved_model_name = chunk.model_name
+        response_metadata = chunk.response_metadata or {}
+        model_name = response_metadata.get("model_name") or response_metadata.get("model")
+        if model_name:
+            self.resolved_model_name = model_name
 
         payloads: list[str] = []
-        if chunk.content_delta or chunk.tool_call_chunks:
+        # 提取内容增量
+        content_delta = ""
+        if isinstance(chunk.content, str):
+            content_delta = chunk.content
+        elif isinstance(chunk.content, list):
+            for part in chunk.content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    content_delta += part.get("text", "")
+
+        if content_delta or chunk.tool_call_chunks:
             delta: dict[str, object] = {}
             if not self.has_emitted_role:
                 delta["role"] = "assistant"
                 self.has_emitted_role = True
 
-            if chunk.content_delta:
-                delta["content"] = chunk.content_delta
+            if content_delta:
+                delta["content"] = content_delta
 
             if chunk.tool_call_chunks:
                 self.saw_tool_call_chunk = True
                 delta["tool_calls"] = [
-                    self._build_stream_tool_call_payload(tool_call_chunk)
-                    for tool_call_chunk in chunk.tool_call_chunks
+                    self._build_stream_tool_call_payload(index, tc_chunk)
+                    for index, tc_chunk in enumerate(chunk.tool_call_chunks)
                 ]
 
             payloads.append(
@@ -111,8 +122,12 @@ class _OpenAIStreamChunkBuilder:
                 )
             )
 
-        if include_finish_reason and chunk.finish_reason:
-            payloads.append(self._build_finish_payload(chunk.finish_reason))
+        finish_reason = response_metadata.get("finish_reason")
+        if finish_reason is None and chunk.tool_calls:
+             finish_reason = "tool_calls"
+
+        if include_finish_reason and finish_reason:
+            payloads.append(self._build_finish_payload(finish_reason))
 
         return payloads
 
@@ -150,19 +165,19 @@ class _OpenAIStreamChunkBuilder:
         )
 
     @staticmethod
-    def _build_stream_tool_call_payload(tool_call_chunk: LlmToolCallChunk) -> dict[str, object]:
+    def _build_stream_tool_call_payload(index: int, tool_call_chunk: dict[str, Any]) -> dict[str, object]:
         """构造单个流式工具调用片段。"""
 
         function_payload: dict[str, object] = {}
-        if tool_call_chunk.tool_name is not None:
-            function_payload["name"] = tool_call_chunk.tool_name
-        if tool_call_chunk.arguments_chunk or tool_call_chunk.tool_name is not None:
-            function_payload["arguments"] = tool_call_chunk.arguments_chunk
+        if tool_call_chunk.get("name") is not None:
+            function_payload["name"] = tool_call_chunk["name"]
+        if tool_call_chunk.get("args") is not None:
+            function_payload["arguments"] = tool_call_chunk["args"]
 
         return OpenAICompatService._remove_none_values(
             {
-                "index": tool_call_chunk.index,
-                "id": tool_call_chunk.tool_call_id,
+                "index": tool_call_chunk.get("index", index),
+                "id": tool_call_chunk.get("id"),
                 "type": "function",
                 "function": function_payload or None,
             }
@@ -231,34 +246,70 @@ class OpenAICompatService:
 
     def build_chat_completion_response(
         self,
-        completion_result: OpenAICompatibleResult,
+        completion_result: Any,
+        response_id: str | None = None,
+        created_at: int | None = None,
     ) -> OpenAIChatCompletionResponse:
-        """将统一补全结果转换为 OpenAI 兼容响应。"""
+        """将补全结果转换为 OpenAI 兼容响应。"""
 
-        response_id = f"chatcmpl-{uuid4().hex}"
-        created_at = int(datetime.now(UTC).timestamp())
+        response_id = response_id or f"chatcmpl-{uuid4()}"
+        created_at = created_at or int(time.time())
+
+        # 兼容 AIMessage (native LangChain) 和 ChatTurnResult (internal)
+        content = getattr(completion_result, "content", "")
+        tool_calls = getattr(completion_result, "tool_calls", [])
+        
+        response_metadata = getattr(completion_result, "response_metadata", {})
+        usage_metadata = getattr(completion_result, "usage_metadata", {})
+
+        resolved_model_name = str(
+            getattr(completion_result, "model_name", None)
+            or response_metadata.get("model_name")
+            or response_metadata.get("model")
+            or self._llm_client.default_model_name
+        )
+        finish_reason = str(
+            getattr(completion_result, "finish_reason", None)
+            or response_metadata.get("finish_reason")
+            or ("tool_calls" if tool_calls else "stop")
+        )
+        
+        prompt_tokens = int(
+            usage_metadata.get("input_tokens")
+            or getattr(completion_result, "prompt_tokens", 0)
+        )
+        completion_tokens = int(
+            usage_metadata.get("output_tokens")
+            or getattr(completion_result, "completion_tokens", 0)
+        )
+        total_tokens = int(
+            usage_metadata.get("total_tokens")
+            or getattr(completion_result, "total_tokens", 0)
+        )
 
         return OpenAIChatCompletionResponse(
             id=response_id,
             created=created_at,
-            model=str(completion_result.model_name),
+            model=resolved_model_name,
             choices=[
                 OpenAIChatCompletionChoice(
                     index=0,
                     message=OpenAIChatCompletionAssistantMessage(
-                        content=completion_result.content or None,
+                        content=str(content) or None,
                         tool_calls=(
-                            self._build_openai_tool_calls(list(completion_result.tool_calls))
+                            self._build_openai_tool_calls(
+                                LlmClient.extract_llm_tool_calls(completion_result)
+                            )
                             or None
                         ),
                     ),
-                    finish_reason=str(completion_result.finish_reason),
+                    finish_reason=finish_reason,
                 )
             ],
             usage=OpenAIChatCompletionUsage(
-                prompt_tokens=int(completion_result.prompt_tokens),
-                completion_tokens=int(completion_result.completion_tokens),
-                total_tokens=int(completion_result.total_tokens),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             ),
         )
 
@@ -284,7 +335,7 @@ class OpenAICompatService:
     async def _stream_llm_chunks_as_openai_sse(
         self,
         *,
-        llm_chunks: AsyncIterator[LlmChatCompletionChunk],
+        llm_chunks: AsyncIterator[AIMessageChunk],
         default_model_name: str,
     ) -> AsyncIterator[str]:
         """将统一流式增量实时转换为 OpenAI 兼容 SSE。"""

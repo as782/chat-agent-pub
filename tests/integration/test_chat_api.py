@@ -4,12 +4,8 @@ from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
 
-from app.clients.llm_client import (
-    LlmChatCompletionChunk,
-    LlmChatCompletionResult,
-    LlmToolCall,
-    LlmToolCallChunk,
-)
+from langchain_core.messages import AIMessage, AIMessageChunk
+from app.clients.llm_client import LlmToolCall
 from app.core.exceptions import UpstreamServiceException
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
@@ -277,7 +273,7 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> LlmChatCompletionResult:
+    ) -> AIMessage:
         """为 route+policy 多步骤场景返回稳定结果。"""
 
         del self, tool_choice, enable_thinking
@@ -312,61 +308,46 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
         
         is_planner = any("生成分类与执行计划" in message for message in all_message_contents)
         if is_planner:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content='{"primary_category": "route_planning", "steps": [{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}',
-                model_name=model_name or "test-model",
-                prompt_tokens=10,
-                completion_tokens=10,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
             )
 
         if route_tool_name and not latest_tool_output:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="tool_calls",
+                response_metadata={"finish_reason": "tool_calls"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 tool_calls=[
-                    LlmToolCall(
-                        tool_call_id="call_route_plan",
-                        tool_name=route_tool_name,
-                        arguments={"origin": "杭州", "destination": "金华"},
-                    )
+                    {
+                        "name": route_tool_name,
+                        "args": {"origin": "杭州", "destination": "金华"},
+                        "id": "call_route_plan",
+                    }
                 ],
             )
 
         if knowledge_queries and any(
             "以下是当前执行节点返回的结构化结果" in message for message in all_message_contents
         ):
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
         if latest_tool_output and knowledge_queries:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
-        return LlmChatCompletionResult(
+        return AIMessage(
             content=f"测试模型回答：{latest_user_message}",
-            model_name=model_name or "test-model",
-            prompt_tokens=12,
-            completion_tokens=8,
-            total_tokens=20,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
 
     async def fake_call_tool(
@@ -584,7 +565,7 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> LlmChatCompletionResult:
+    ) -> AIMessage:
         """为 traffic 场景返回稳定的工具调用结果。"""
 
         del self, tool_choice, enable_thinking
@@ -618,49 +599,37 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
         
         is_planner = any("生成分类与执行计划" in str(getattr(m, "content", "")) for m in messages)
         if is_planner:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content='{"primary_category": "traffic_status", "steps": [{"executor": "traffic"}, {"executor": "answer"}]}',
-                model_name=model_name or "test-model",
-                prompt_tokens=10,
-                completion_tokens=10,
                 total_tokens=20,
                 finish_reason="stop",
             )
 
         if traffic_tool_name and not latest_tool_output and "路况" in latest_user_message:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="tool_calls",
+                response_metadata={"finish_reason": "tool_calls"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 tool_calls=[
-                    LlmToolCall(
-                        tool_call_id="call_mcp_traffic",
-                        tool_name=traffic_tool_name,
-                        arguments={"target": "杭州"},
-                    )
+                    {
+                        "name": traffic_tool_name,
+                        "args": {"target": "杭州"},
+                        "id": "call_mcp_traffic",
+                    }
                 ],
             )
 
         if latest_tool_output:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content=f"测试模型回答：工具结果是 {latest_tool_output}",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
-        return LlmChatCompletionResult(
+        return AIMessage(
             content=f"测试模型回答：{latest_user_message}",
-            model_name=model_name or "test-model",
-            prompt_tokens=12,
-            completion_tokens=8,
-            total_tokens=20,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
 
     async def fake_call_tool(
@@ -754,7 +723,7 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> LlmChatCompletionResult:
+    ) -> AIMessage:
         """为 report 场景返回稳定的工具调用结果。"""
 
         del self, tool_choice, enable_thinking
@@ -788,49 +757,37 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
         
         is_planner = any("生成分类与执行计划" in str(getattr(m, "content", "")) for m in messages)
         if is_planner:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content='{"primary_category": "report_generation", "steps": [{"executor": "report"}, {"executor": "answer"}]}',
-                model_name=model_name or "test-model",
-                prompt_tokens=10,
-                completion_tokens=10,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
             )
 
         if report_tool_name and not latest_tool_output and "全路网" in latest_user_message:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="tool_calls",
+                response_metadata={"finish_reason": "tool_calls"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 tool_calls=[
-                    LlmToolCall(
-                        tool_call_id="call_mcp_report",
-                        tool_name=report_tool_name,
-                        arguments={"scope": "全路网"},
-                    )
+                    {
+                        "name": report_tool_name,
+                        "args": {"scope": "全路网"},
+                        "id": "call_mcp_report",
+                    }
                 ],
             )
 
         if latest_tool_output:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content=f"测试模型回答：工具结果是 {latest_tool_output}",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
-        return LlmChatCompletionResult(
+        return AIMessage(
             content=f"测试模型回答：{latest_user_message}",
-            model_name=model_name or "test-model",
-            prompt_tokens=12,
-            completion_tokens=8,
-            total_tokens=20,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
 
     async def fake_call_tool(
@@ -1105,7 +1062,7 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """为流式 route+policy 场景返回稳定的工具调用与续答结果。"""
 
         del self, tool_choice, enable_thinking
@@ -1136,30 +1093,28 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
             if latest_tool_output and latest_user_message:
                 break
 
-        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+        async def iterator() -> AsyncIterator[AIMessageChunk]:
             resolved_model_name = model_name or "test-model"
             route_tool_name = next(
                 (tool_name for tool_name in available_tool_names if "route_plan" in tool_name),
                 None,
             )
             if route_tool_name and not latest_tool_output:
-                yield LlmChatCompletionChunk(
-                    model_name=resolved_model_name,
+                yield AIMessageChunk(
+                    content="",
                     tool_call_chunks=[
-                        LlmToolCallChunk(
-                            index=0,
-                            tool_call_id="call_route_plan",
-                            tool_name=route_tool_name,
-                            arguments_chunk='{"origin":"杭州","destination":"金华"}',
-                        )
+                        {
+                            "index": 0,
+                            "id": "call_route_plan",
+                            "name": route_tool_name,
+                            "args": '{"origin":"杭州","destination":"金华"}',
+                        }
                     ],
                 )
-                yield LlmChatCompletionChunk(
-                    model_name=resolved_model_name,
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="tool_calls",
+                yield AIMessageChunk(
+                    content="",
+                    response_metadata={"finish_reason": "tool_calls"},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
                 return
 
@@ -1171,20 +1126,16 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
                 full_text = f"测试模型回答：{latest_user_message}"
 
             split_index = max(1, len(full_text) // 2)
-            yield LlmChatCompletionChunk(
-                content_delta=full_text[:split_index],
-                model_name=resolved_model_name,
+            yield AIMessageChunk(
+                content=full_text[:split_index],
             )
-            yield LlmChatCompletionChunk(
-                content_delta=full_text[split_index:],
-                model_name=resolved_model_name,
+            yield AIMessageChunk(
+                content=full_text[split_index:],
             )
-            yield LlmChatCompletionChunk(
-                model_name=resolved_model_name,
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+            yield AIMessageChunk(
+                content="",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
         return iterator()
@@ -1296,7 +1247,7 @@ def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """为流式 traffic 场景返回稳定的工具调用与续答结果。"""
 
         del self, tool_choice, enable_thinking
@@ -1323,49 +1274,43 @@ def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(
             if latest_tool_output and latest_user_message:
                 break
 
-        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+        async def iterator() -> AsyncIterator[AIMessageChunk]:
             resolved_model_name = model_name or "test-model"
             traffic_tool_name = next(
                 (tool_name for tool_name in available_tool_names if "traffic_status" in tool_name),
                 None,
             )
             if traffic_tool_name and not latest_tool_output and "路况" in latest_user_message:
-                yield LlmChatCompletionChunk(
-                    model_name=resolved_model_name,
+                yield AIMessageChunk(
+                    content="",
                     tool_call_chunks=[
-                        LlmToolCallChunk(
-                            index=0,
-                            tool_call_id="call_mcp_traffic",
-                            tool_name=traffic_tool_name,
-                            arguments_chunk='{"target":"杭州"}',
-                        )
+                        {
+                            "index": 0,
+                            "id": "call_mcp_traffic",
+                            "name": traffic_tool_name,
+                            "args": '{"target":"杭州"}',
+                        }
                     ],
                 )
-                yield LlmChatCompletionChunk(
-                    model_name=resolved_model_name,
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="tool_calls",
+                yield AIMessageChunk(
+                    content="",
+                    response_metadata={"finish_reason": "tool_calls"},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
                 return
 
             full_text = f"测试模型回答：工具结果是 {latest_tool_output}"
             split_index = max(1, len(full_text) // 2)
-            yield LlmChatCompletionChunk(
-                content_delta=full_text[:split_index],
-                model_name=resolved_model_name,
+            yield AIMessageChunk(
+                content=full_text[:split_index],
             )
-            yield LlmChatCompletionChunk(
-                content_delta=full_text[split_index:],
-                model_name=resolved_model_name,
+            yield AIMessageChunk(
+                content=full_text[split_index:],
             )
-            yield LlmChatCompletionChunk(
-                model_name=resolved_model_name,
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+            yield AIMessageChunk(
+                content="",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
         return iterator()
@@ -1465,18 +1410,18 @@ def test_chat_api_stream_returns_json_error_when_first_chunk_fails(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """模拟首个流式块生成前发生限流错误。"""
 
         del self, messages, model_name, tools, tool_choice, enable_thinking
 
-        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+        async def iterator() -> AsyncIterator[AIMessageChunk]:
             raise UpstreamServiceException(
                 "LLM 提供方触发限流，请稍后重试。",
                 error_code="llm_rate_limited",
                 status_code=429,
             )
-            yield LlmChatCompletionChunk()
+            yield AIMessageChunk(content="")
 
         return iterator()
 

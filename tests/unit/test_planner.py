@@ -2,7 +2,7 @@
 
 from app.agent.planner import PlannerService
 from app.agent.state import AgentState
-from app.clients.llm_client import LlmChatCompletionResult
+from langchain_core.messages import AIMessage
 
 
 class _FakePlannerLlmClient:
@@ -11,16 +11,13 @@ class _FakePlannerLlmClient:
     def __init__(self, content: str) -> None:
         self._content = content
 
-    async def create_chat_completion(self, **_: object) -> LlmChatCompletionResult:
+    async def create_chat_completion(self, **_: object) -> AIMessage:
         if self._content == "error":
             raise RuntimeError("LLM Error")
-        return LlmChatCompletionResult(
+        return AIMessage(
             content=self._content,
-            model_name="test-planner-model",
-            prompt_tokens=10,
-            completion_tokens=20,
-            total_tokens=30,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
         )
 
 

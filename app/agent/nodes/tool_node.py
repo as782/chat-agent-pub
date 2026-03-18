@@ -19,10 +19,11 @@ from app.agent.state import (
 )
 from app.clients.llm_client import (
     LlmBindableTool,
-    LlmChatCompletionResult,
     LlmClient,
     LlmInputMessage,
+    LlmToolCall,
 )
+from langchain_core.messages import AIMessage
 from app.core.exceptions import AppException
 from app.mcp.manager import McpManager
 from app.mcp.models import McpRuntimeTool
@@ -101,7 +102,7 @@ class ToolNode:
         self,
         *,
         state: AgentState,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
         executed_tool_calls: list[ExecutedToolCall],
     ) -> dict[str, object]:
         """瀵瑰鏆撮湶宸ュ叿姝ラ缁撴灉鍚堝苟锛屼緵娴佸紡璺緞鍦ㄥ唴閮ㄥ惊鐜悗閲嶆柊璋冨害銆?"""
@@ -116,7 +117,7 @@ class ToolNode:
         self,
         *,
         session_id: str,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
         runtime_mcp_tools: list[McpRuntimeTool],
     ) -> list[ExecutedToolCall]:
         """执行模型请求的工具，并将 tool 消息持久化。"""
@@ -141,7 +142,7 @@ class ToolNode:
         tool_choice: str | dict[str, object] | None,
         enable_thinking: bool | None,
         runtime_mcp_tools: list[McpRuntimeTool],
-    ) -> tuple[LlmChatCompletionResult, list[ExecutedToolCall]]:
+    ) -> tuple[AIMessage, list[ExecutedToolCall]]:
         """执行带工具的模型补全循环。"""
 
         conversation_messages = list(messages)
@@ -163,11 +164,21 @@ class ToolNode:
                 session_id=session_id,
                 completion_result=completion_result,
             )
+
+            content = ""
+            if isinstance(completion_result.content, str):
+                content = completion_result.content
+            elif isinstance(completion_result.content, list):
+                for part in completion_result.content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        content += part.get("text", "")
+
+            requested_tool_calls = LlmClient.extract_llm_tool_calls(completion_result)
             conversation_messages.append(
                 LlmInputMessage(
                     role="assistant",
-                    content=completion_result.content,
-                    tool_calls=completion_result.tool_calls,
+                    content=content,
+                    tool_calls=requested_tool_calls,
                 )
             )
             current_tool_results = await self._execute_requested_tools(
@@ -228,7 +239,7 @@ class ToolNode:
         self,
         *,
         state: AgentState,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
         executed_tool_calls: list[ExecutedToolCall],
     ) -> dict[str, object]:
         """把当前轮次的工具执行结果合并进统一 step_results。"""
@@ -256,12 +267,12 @@ class ToolNode:
                     }
                     for tool_call in executed_tool_calls
                 ],
-                "finish_reason": completion_result.finish_reason,
+                "finish_reason": (completion_result.response_metadata or {}).get("finish_reason"),
             },
             normalized_result={
                 "executed_tool_count": len(executed_tool_calls),
                 "tool_names": [tool_call.tool_name for tool_call in executed_tool_calls],
-                "finish_reason": completion_result.finish_reason,
+                "finish_reason": (completion_result.response_metadata or {}).get("finish_reason"),
             },
             summary=(
                 f"已完成 {len(executed_tool_calls)} 次工具调用并获得最终结果。"
@@ -275,7 +286,7 @@ class ToolNode:
     async def _execute_requested_tools(
         self,
         *,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
         runtime_mcp_tools: list[McpRuntimeTool],
     ) -> list[ExecutedToolCall]:
         """执行模型本轮返回的全部工具调用。"""
@@ -286,7 +297,8 @@ class ToolNode:
         builtin_tool_calls: list[dict[str, object]] = []
         executed_tool_calls: list[ExecutedToolCall] = []
 
-        for tool_call in completion_result.tool_calls:
+        requested_tool_calls = LlmClient.extract_llm_tool_calls(completion_result)
+        for tool_call in requested_tool_calls:
             runtime_mcp_tool = mcp_tool_map.get(tool_call.tool_name)
             if runtime_mcp_tool is None:
                 builtin_tool_calls.append(

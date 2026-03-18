@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
 
-from app.clients.llm_client import LlmChatCompletionChunk
+from langchain_core.messages import AIMessageChunk
 from app.core.exceptions import UpstreamServiceException
 
 
@@ -135,18 +135,18 @@ def test_openai_compat_stream_returns_json_error_when_first_chunk_fails(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """模拟在第一个流式块之前就发生上游限流错误。"""
 
         del self, messages, model_name, tools, tool_choice, enable_thinking
 
-        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+        async def iterator() -> AsyncIterator[AIMessageChunk]:
             raise UpstreamServiceException(
                 "LLM 提供方触发限流，请稍后重试。",
                 error_code="llm_rate_limited",
                 status_code=429,
             )
-            yield LlmChatCompletionChunk()
+            yield AIMessageChunk(content="")
 
         return iterator()
 

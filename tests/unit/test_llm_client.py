@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from openai import PermissionDeniedError
 from pytest import MonkeyPatch
 
-from app.clients.llm_client import LlmChatCompletionChunk, LlmClient, LlmInputMessage
+from app.clients.llm_client import LlmClient, LlmInputMessage
 from app.core.exceptions import ConfigurationException, UpstreamServiceException
 
 
@@ -152,17 +152,11 @@ async def test_llm_client_streams_chunks(monkeypatch: MonkeyPatch) -> None:
         )
     ]
 
-    assert streamed_chunks == [
-        LlmChatCompletionChunk(content_delta="模拟", model_name="unit-test-model"),
-        LlmChatCompletionChunk(content_delta="流式回答", model_name="unit-test-model"),
-        LlmChatCompletionChunk(
-            model_name="unit-test-model",
-            prompt_tokens=2,
-            completion_tokens=4,
-            total_tokens=6,
-            finish_reason="stop",
-        ),
-    ]
+    assert len(streamed_chunks) == 3
+    assert streamed_chunks[0].content == "模拟"
+    assert streamed_chunks[1].content == "流式回答"
+    assert streamed_chunks[2].response_metadata["finish_reason"] == "stop"
+    assert streamed_chunks[2].usage_metadata == {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6}
 
 
 @pytest.mark.asyncio

@@ -10,16 +10,15 @@ import json
 import sys
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any, Protocol
 
 import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
+from langchain_core.messages import AIMessage, AIMessageChunk
 from app.clients.llm_client import (
-    LlmChatCompletionChunk,
-    LlmChatCompletionResult,
     LlmToolCall,
-    LlmToolCallChunk,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -145,49 +144,54 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             elif "1+1" in latest_user_message or "计算" in latest_user_message or "时间" in latest_user_message or "几点" in latest_user_message:
                 plan_json = '{"primary_category": "general", "steps": [{"executor": "tool"}, {"executor": "answer"}]}'
             
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content=plan_json,
-                model_name=model_name or "test-model",
-                prompt_tokens=10,
-                completion_tokens=10,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                usage_metadata={
+                    "input_tokens": 10,
+                    "output_tokens": 10,
+                    "total_tokens": 20,
+                },
             )
 
 
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
         if tools and not latest_tool_output and need_calculator_tool:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="tool_calls",
+                response_metadata={"finish_reason": "tool_calls", "model_name": model_name or "test-model"},
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                },
                 tool_calls=[
-                    LlmToolCall(
-                        tool_call_id="call_calculator",
-                        tool_name="calculator",
-                        arguments={"expression": "1+1"},
-                    )
+                    {
+                        "id": "call_calculator",
+                        "name": "calculator",
+                        "args": {"expression": "1+1"},
+                        "type": "tool_call",
+                    }
                 ],
             )
 
         need_datetime_tool = "时间" in latest_user_message or "几点" in latest_user_message
         if tools and not latest_tool_output and need_datetime_tool:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="tool_calls",
+                response_metadata={"finish_reason": "tool_calls", "model_name": model_name or "test-model"},
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                },
                 tool_calls=[
-                    LlmToolCall(
-                        tool_call_id="call_datetime",
-                        tool_name="current_datetime",
-                        arguments={"timezone_name": "Asia/Shanghai"},
-                    )
+                    {
+                        "id": "call_datetime",
+                        "name": "current_datetime",
+                        "args": {"timezone_name": "Asia/Shanghai"},
+                        "type": "tool_call",
+                    }
                 ],
             )
 
@@ -200,78 +204,66 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             None,
         )
         if mcp_weather_tool_name and not latest_tool_output and "天气" in latest_user_message:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="tool_calls",
+                response_metadata={"finish_reason": "tool_calls", "model_name": model_name or "test-model"},
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                },
                 tool_calls=[
-                    LlmToolCall(
-                        tool_call_id="call_mcp_weather",
-                        tool_name=mcp_weather_tool_name,
-                        arguments={"city": "杭州"},
-                    )
+                    {
+                        "id": "call_mcp_weather",
+                        "name": mcp_weather_tool_name,
+                        "args": {"city": "杭州"},
+                        "type": "tool_call",
+                    }
                 ],
             )
 
         if latest_tool_output:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content=f"测试模型回答：工具结果是 {latest_tool_output}",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                },
             )
 
         if "我刚刚告诉你的名字是什么" in latest_user_message:
             if history_contains_name:
-                return LlmChatCompletionResult(
+                return AIMessage(
                     content="测试模型回答：你刚刚说你叫小王",
-                    model_name=model_name or "test-model",
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="stop",
+                    response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
             if explicit_force_no_memory:
-                return LlmChatCompletionResult(
+                return AIMessage(
                     content="测试模型回答：不知道",
-                    model_name=model_name or "test-model",
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="stop",
+                    response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
 
         if has_knowledge_context and "西湖" in latest_user_message:
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="测试模型回答：根据知识库，西湖位于杭州。",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
         if has_mcp_context and "MCP" in latest_user_message.upper():
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="测试模型回答：当前已配置 MCP 服务骨架。",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
-        return LlmChatCompletionResult(
+        return AIMessage(
             content=f"测试模型回答：{latest_user_message}",
-            model_name=model_name or "test-model",
-            prompt_tokens=12,
-            completion_tokens=8,
-            total_tokens=20,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+            usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
 
     def fake_stream_chat_completion(
@@ -281,7 +273,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """为流式集成测试返回稳定的增量结果。"""
 
         del self, tool_choice, enable_thinking
@@ -319,29 +311,27 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             if role == "user":
                 user_messages.append(content)
 
-        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+        async def iterator() -> AsyncIterator[AIMessageChunk]:
             resolved_model_name = model_name or "test-model"
 
             if latest_tool_output:
                 full_text = f"测试模型回答：工具结果是 {latest_tool_output}"
             elif tools and ("1+1" in latest_user_message or "计算" in latest_user_message):
-                yield LlmChatCompletionChunk(
-                    model_name=resolved_model_name,
+                yield AIMessageChunk(
+                    content="",
                     tool_call_chunks=[
-                        LlmToolCallChunk(
-                            index=0,
-                            tool_call_id="call_calculator",
-                            tool_name="calculator",
-                            arguments_chunk='{"expression":"1+1"}',
-                        )
+                        {
+                            "index": 0,
+                            "id": "call_calculator",
+                            "name": "calculator",
+                            "args": '{"expression":"1+1"}',
+                        }
                     ],
                 )
-                yield LlmChatCompletionChunk(
-                    model_name=resolved_model_name,
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="tool_calls",
+                yield AIMessageChunk(
+                    content="",
+                    response_metadata={"finish_reason": "tool_calls", "model_name": resolved_model_name},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
                 return
             else:
@@ -354,23 +344,21 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                     None,
                 )
                 if mcp_weather_tool_name:
-                    yield LlmChatCompletionChunk(
-                        model_name=resolved_model_name,
+                    yield AIMessageChunk(
+                        content="",
                         tool_call_chunks=[
-                            LlmToolCallChunk(
-                                index=0,
-                                tool_call_id="call_mcp_weather",
-                                tool_name=mcp_weather_tool_name,
-                                arguments_chunk='{"city":"杭州"}',
-                            )
+                            {
+                                "index": 0,
+                                "id": "call_mcp_weather",
+                                "name": mcp_weather_tool_name,
+                                "args": '{"city":"杭州"}',
+                            }
                         ],
                     )
-                    yield LlmChatCompletionChunk(
-                        model_name=resolved_model_name,
-                        prompt_tokens=12,
-                        completion_tokens=8,
-                        total_tokens=20,
-                        finish_reason="tool_calls",
+                    yield AIMessageChunk(
+                        content="",
+                        response_metadata={"finish_reason": "tool_calls", "model_name": resolved_model_name},
+                        usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                     )
                     return
 
@@ -397,20 +385,18 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                     full_text = f"测试模型回答：{latest_user_message}"
 
             split_index = max(1, len(full_text) // 2)
-            yield LlmChatCompletionChunk(
-                content_delta=full_text[:split_index],
-                model_name=resolved_model_name,
+            yield AIMessageChunk(
+                content=full_text[:split_index],
+                response_metadata={"model_name": resolved_model_name},
             )
-            yield LlmChatCompletionChunk(
-                content_delta=full_text[split_index:],
-                model_name=resolved_model_name,
+            yield AIMessageChunk(
+                content=full_text[split_index:],
+                response_metadata={"model_name": resolved_model_name},
             )
-            yield LlmChatCompletionChunk(
-                model_name=resolved_model_name,
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+            yield AIMessageChunk(
+                content="",
+                response_metadata={"finish_reason": "stop", "model_name": resolved_model_name},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
         return iterator()

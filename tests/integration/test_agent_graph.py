@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.agent.graph import ConversationGraph
 from app.agent.state import ChatExecutionRequest
-from app.clients.llm_client import LlmChatCompletionResult, LlmInputMessage
+from langchain_core.messages import AIMessage
+from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
 from app.persistence.memory_repo import MemoryRepository
 from app.persistence.message_repo import MessageRepository
@@ -29,7 +30,7 @@ async def test_conversation_graph_reuses_session_history(
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> LlmChatCompletionResult:
+    ) -> AIMessage:
         """根据上下文中的历史用户消息生成稳定回答。"""
 
         del self, tools, tool_choice, enable_thinking
@@ -43,22 +44,16 @@ async def test_conversation_graph_reuses_session_history(
         if "我刚刚告诉你的名字是什么" in latest_user_message and any(
             "我叫小王" in message for message in user_messages[:-1]
         ):
-            return LlmChatCompletionResult(
+            return AIMessage(
                 content="测试模型回答：你刚刚说你叫小王",
-                model_name=model_name or "test-model",
-                prompt_tokens=12,
-                completion_tokens=8,
-                total_tokens=20,
-                finish_reason="stop",
+                response_metadata={"finish_reason": "stop"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
-        return LlmChatCompletionResult(
+        return AIMessage(
             content=f"测试模型回答：{latest_user_message}",
-            model_name=model_name or "test-model",
-            prompt_tokens=12,
-            completion_tokens=8,
-            total_tokens=20,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
 
     async def fake_load_checkpoint(self: object, session_id: str) -> dict[str, object] | None:

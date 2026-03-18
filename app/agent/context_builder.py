@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.agent.prompts import MEMORY_SUMMARY_PROMPT_PREFIX
+from langchain_core.messages import AIMessage
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity

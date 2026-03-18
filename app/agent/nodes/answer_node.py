@@ -27,7 +27,8 @@ from app.agent.state import (
     PreparedContext,
     get_execution_step,
 )
-from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
+from app.clients.llm_client import LlmClient, LlmInputMessage
+from langchain_core.messages import AIMessage
 from app.core.exceptions import AppException
 from app.memory.manager import MemoryManager
 from app.persistence.message_repo import MessageRepository
@@ -71,7 +72,7 @@ class AnswerNode:
         existing_tool_completion_result = completion_result
         should_reuse_existing_completion = isinstance(
             completion_result,
-            LlmChatCompletionResult,
+            AIMessage,
         ) and not self.should_generate_summary(state)
 
         if not should_reuse_existing_completion:
@@ -81,7 +82,7 @@ class AnswerNode:
                 model_name=execution_request.model_name,
                 enable_thinking=execution_request.enable_thinking,
             )
-            if not isinstance(existing_tool_completion_result, LlmChatCompletionResult):
+            if not isinstance(existing_tool_completion_result, AIMessage):
                 executed_tool_calls = []
 
         final_result = await self.persist_completion_result(
@@ -174,7 +175,7 @@ class AnswerNode:
         self,
         *,
         session_id: str,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
         used_session_memory: bool,
     ) -> ChatTurnResult:
         """持久化流式路径最终得到的模型输出。"""
@@ -190,7 +191,7 @@ class AnswerNode:
         self,
         *,
         session_id: str,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
         executed_tool_calls: list[ExecutedToolCall],
         used_session_memory: bool,
     ) -> ChatTurnResult:
@@ -202,25 +203,44 @@ class AnswerNode:
                 completion_result=completion_result,
             )
         else:
+            content = ""
+            if isinstance(completion_result.content, str):
+                content = completion_result.content
+            elif isinstance(completion_result.content, list):
+                for part in completion_result.content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        content += part.get("text", "")
+
             await self._message_repository.create(
                 message_id=self._generate_identifier(),
                 session_id=session_id,
                 role="assistant",
-                content=completion_result.content,
+                content=content,
                 message_metadata={
-                    "finish_reason": completion_result.finish_reason,
-                    "model_name": completion_result.model_name,
+                    "finish_reason": (completion_result.response_metadata or {}).get("finish_reason"),
+                    "model_name": (completion_result.response_metadata or {}).get("model_name"),
                 },
             )
 
+        content = ""
+        if isinstance(completion_result.content, str):
+            content = completion_result.content
+        elif isinstance(completion_result.content, list):
+            for part in completion_result.content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    content += part.get("text", "")
+
+        response_metadata = completion_result.response_metadata or {}
+        usage_metadata = completion_result.usage_metadata or {}
+
         return ChatTurnResult(
             session_id=session_id,
-            content=completion_result.content,
-            model_name=completion_result.model_name,
-            prompt_tokens=completion_result.prompt_tokens,
-            completion_tokens=completion_result.completion_tokens,
-            total_tokens=completion_result.total_tokens,
-            finish_reason=completion_result.finish_reason,
+            content=content,
+            model_name=str(response_metadata.get("model_name", "")),
+            prompt_tokens=int(usage_metadata.get("input_tokens", 0)),
+            completion_tokens=int(usage_metadata.get("output_tokens", 0)),
+            total_tokens=int(usage_metadata.get("total_tokens", 0)),
+            finish_reason=str(response_metadata.get("finish_reason", "stop")),
             tool_calls=executed_tool_calls,
             used_session_memory=used_session_memory,
         )
@@ -245,7 +265,7 @@ class AnswerNode:
         self,
         *,
         session_id: str,
-        completion_result: LlmChatCompletionResult,
+        completion_result: AIMessage,
     ) -> None:
         """持久化模型返回的工具调用请求。"""
 
@@ -255,13 +275,13 @@ class AnswerNode:
             role="assistant",
             content=completion_result.content,
             message_metadata={
-                "finish_reason": completion_result.finish_reason,
-                "model_name": completion_result.model_name,
+                "finish_reason": (completion_result.response_metadata or {}).get("finish_reason"),
+                "model_name": (completion_result.response_metadata or {}).get("model_name"),
                 "tool_calls": [
                     {
-                        "tool_call_id": tool_call.tool_call_id,
-                        "tool_name": tool_call.tool_name,
-                        "arguments": tool_call.arguments,
+                        "tool_call_id": tool_call.get("id"),
+                        "tool_name": tool_call.get("name"),
+                        "arguments": tool_call.get("args"),
                     }
                     for tool_call in completion_result.tool_calls
                 ],

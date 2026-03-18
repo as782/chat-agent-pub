@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.nodes.answer_node import AnswerNode
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
-from app.clients.llm_client import LlmChatCompletionResult, LlmInputMessage
+from langchain_core.messages import AIMessage
+from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall
@@ -74,13 +75,10 @@ async def test_answer_node_reuses_tool_completion_result_without_new_llm_call(
                     messages=[],
                     used_session_memory=False,
                 ),
-                "tool_completion_result": LlmChatCompletionResult(
+                "tool_completion_result": AIMessage(
                     content="测试模型回答：工具结果是 2",
-                    model_name="test-model",
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="stop",
+                    response_metadata={"finish_reason": "stop"},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 ),
                 "executed_tool_calls": [
                     ExecutedToolCall(
@@ -110,17 +108,14 @@ async def test_answer_node_regenerates_summary_for_multi_step_answer(
 ) -> None:
     """多步骤计划进入 answer 步时，应基于累计结果重新总结，而不是复用上一轮工具补全。"""
 
-    async def fake_create_chat_completion(*args, **kwargs) -> LlmChatCompletionResult:
+    async def fake_create_chat_completion(*args, **kwargs) -> AIMessage:
         """返回稳定的总结结果。"""
 
         del args, kwargs
-        return LlmChatCompletionResult(
+        return AIMessage(
             content="测试模型回答：根据政策和路线结果生成统一总结。",
-            model_name="test-model",
-            prompt_tokens=16,
-            completion_tokens=12,
-            total_tokens=28,
-            finish_reason="stop",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 16, "output_tokens": 12, "total_tokens": 28},
         )
 
     monkeypatch.setattr(
@@ -182,13 +177,10 @@ async def test_answer_node_regenerates_summary_for_multi_step_answer(
                     messages=[LlmInputMessage(role="system", content="请总结前置结果。")],
                     used_session_memory=False,
                 ),
-                "tool_completion_result": LlmChatCompletionResult(
+                "tool_completion_result": AIMessage(
                     content="测试模型回答：工具阶段临时结果。",
-                    model_name="test-model",
-                    prompt_tokens=12,
-                    completion_tokens=8,
-                    total_tokens=20,
-                    finish_reason="stop",
+                    response_metadata={"finish_reason": "stop"},
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 ),
                 "executed_tool_calls": [
                     ExecutedToolCall(

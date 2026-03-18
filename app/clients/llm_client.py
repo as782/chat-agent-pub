@@ -74,141 +74,6 @@ class LlmInputMessage:
     tool_calls: list[LlmToolCall] = field(default_factory=list)
 
 
-@dataclass(slots=True)
-class LlmChatCompletionChunk:
-    """统一的流式增量结果。"""
-
-    content_delta: str = ""
-    model_name: str | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
-    finish_reason: str | None = None
-    tool_call_chunks: list[LlmToolCallChunk] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class LlmChatCompletionResult:
-    """大模型对话结果。"""
-
-    content: str
-    model_name: str
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    finish_reason: str
-    tool_calls: list[LlmToolCall] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class _ToolCallAccumulator:
-    """工具调用累加器。"""
-
-    index: int
-    tool_call_id: str = ""
-    tool_name: str = ""
-    argument_chunks: list[str] = field(default_factory=list)
-
-
-class LlmChatCompletionAccumulator:
-    """流式补全结果累加器。"""
-
-    def __init__(self, *, requested_model_name: str | None, default_model_name: str) -> None:
-        self._requested_model_name = requested_model_name
-        self._default_model_name = default_model_name
-        # 保存逐块到达的文本片段，避免 service 层重复实现拼接逻辑。
-        self._content_chunks: list[str] = []
-        # 保存流式工具调用分片，便于在最终阶段还原成完整 JSON 参数。
-        self._tool_call_accumulators: dict[int, _ToolCallAccumulator] = {}
-        self._resolved_model_name: str | None = None
-        self._prompt_tokens = 0
-        self._completion_tokens = 0
-        self._total_tokens = 0
-        self._finish_reason: str | None = None
-
-    def append_chunk(self, chunk: LlmChatCompletionChunk) -> None:
-        """累加一段流式输出。"""
-
-        if chunk.content_delta:
-            self._content_chunks.append(chunk.content_delta)
-        if chunk.model_name:
-            self._resolved_model_name = chunk.model_name
-        if chunk.prompt_tokens is not None:
-            self._prompt_tokens = chunk.prompt_tokens
-        if chunk.completion_tokens is not None:
-            self._completion_tokens = chunk.completion_tokens
-        if chunk.total_tokens is not None:
-            self._total_tokens = chunk.total_tokens
-        if chunk.finish_reason:
-            self._finish_reason = chunk.finish_reason
-
-        for tool_call_chunk in chunk.tool_call_chunks:
-            tool_call_accumulator = self._tool_call_accumulators.setdefault(
-                tool_call_chunk.index,
-                _ToolCallAccumulator(index=tool_call_chunk.index),
-            )
-            if tool_call_chunk.tool_call_id:
-                tool_call_accumulator.tool_call_id = tool_call_chunk.tool_call_id
-            if tool_call_chunk.tool_name:
-                tool_call_accumulator.tool_name = tool_call_chunk.tool_name
-            if tool_call_chunk.arguments_chunk:
-                tool_call_accumulator.argument_chunks.append(tool_call_chunk.arguments_chunk)
-
-    def build_result(self) -> LlmChatCompletionResult:
-        """构造完整补全结果。"""
-
-        tool_calls = self._build_tool_calls()
-        finish_reason = self._finish_reason or ("tool_calls" if tool_calls else "stop")
-        total_tokens = self._total_tokens or (self._prompt_tokens + self._completion_tokens)
-        resolved_model_name = (
-            self._resolved_model_name or self._requested_model_name or self._default_model_name
-        )
-
-        return LlmChatCompletionResult(
-            content="".join(self._content_chunks).strip(),
-            model_name=resolved_model_name,
-            prompt_tokens=self._prompt_tokens,
-            completion_tokens=self._completion_tokens,
-            total_tokens=total_tokens,
-            finish_reason=finish_reason,
-            tool_calls=tool_calls,
-        )
-
-    def _build_tool_calls(self) -> list[LlmToolCall]:
-        """将流式工具调用片段还原为完整工具调用列表。"""
-
-        tool_calls: list[LlmToolCall] = []
-        for tool_call_index in sorted(self._tool_call_accumulators):
-            tool_call_accumulator = self._tool_call_accumulators[tool_call_index]
-            arguments_text = "".join(tool_call_accumulator.argument_chunks).strip() or "{}"
-
-            try:
-                parsed_arguments = loads(arguments_text)
-            except ValueError as exception:
-                raise AppException(
-                    "模型返回的工具参数不是合法 JSON。",
-                    error_code="invalid_llm_response",
-                    details={"tool_call_id": tool_call_accumulator.tool_call_id},
-                ) from exception
-
-            if not isinstance(parsed_arguments, dict):
-                raise AppException(
-                    "模型返回的工具参数必须是 JSON 对象。",
-                    error_code="invalid_llm_response",
-                    details={"tool_call_id": tool_call_accumulator.tool_call_id},
-                )
-
-            tool_calls.append(
-                LlmToolCall(
-                    tool_call_id=tool_call_accumulator.tool_call_id,
-                    tool_name=tool_call_accumulator.tool_name,
-                    arguments=parsed_arguments,
-                )
-            )
-
-        return tool_calls
-
-
 class LlmClient:
     """基础大模型客户端。"""
 
@@ -238,7 +103,24 @@ class LlmClient:
             ],
             model_name=model_name,
         )
-        return completion_result.content
+        # AIMessage.content 可能是字符串或 ContentBlock 列表
+        if isinstance(completion_result.content, str):
+            return completion_result.content
+        return str(completion_result.content)
+
+    @staticmethod
+    def extract_llm_tool_calls(message: AIMessage) -> list[LlmToolCall]:
+        """从 AIMessage 中提取标准化的 LlmToolCall 列表。"""
+        if not message.tool_calls:
+            return []
+        return [
+            LlmToolCall(
+                tool_call_id=str(tc.get("id", "")),
+                tool_name=str(tc.get("name", "")),
+                arguments=dict(tc.get("args", {})),
+            )
+            for tc in message.tool_calls
+        ]
 
     async def create_chat_completion(
         self,
@@ -247,7 +129,7 @@ class LlmClient:
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
-    ) -> LlmChatCompletionResult:
+    ) -> AIMessage:
         """使用统一消息结构创建一次聊天补全。"""
 
         request_start_time = perf_counter()
@@ -283,22 +165,14 @@ class LlmClient:
         ) as exception:
             raise self._convert_openai_exception(exception) from exception
 
-        completion_result = self._build_completion_result(
-            llm_response=llm_response,
-            requested_model_name=model_name,
-        )
+        completion_result = llm_response
         LOGGER.info(
             (
                 "LLM 请求完成：mode=non_stream model=%s duration_ms=%.2f "
-                "finish_reason=%s prompt_tokens=%s completion_tokens=%s "
-                "total_tokens=%s tool_call_count=%s"
+                "tool_call_count=%d"
             ),
-            completion_result.model_name,
+            model_name or self._settings.openai_model,
             (perf_counter() - request_start_time) * 1000,
-            completion_result.finish_reason,
-            completion_result.prompt_tokens,
-            completion_result.completion_tokens,
-            completion_result.total_tokens,
             len(completion_result.tool_calls),
         )
         return completion_result
@@ -310,7 +184,7 @@ class LlmClient:
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """以真实流式方式输出聊天补全增量。"""
 
         self._log_chat_request(
@@ -340,7 +214,7 @@ class LlmClient:
         runnable: Any,
         llm_messages: list[BaseMessage],
         requested_model_name: str | None,
-    ) -> AsyncIterator[LlmChatCompletionChunk]:
+    ) -> AsyncIterator[AIMessageChunk]:
         """遍历 LangChain 流式输出并转换为统一增量结构。"""
 
         request_start_time = perf_counter()
@@ -354,23 +228,12 @@ class LlmClient:
 
         try:
             async for llm_chunk in runnable.astream(llm_messages):
-                normalized_chunk = self._build_completion_chunk(
-                    llm_chunk=llm_chunk,
-                    requested_model_name=requested_model_name,
-                )
+                if not isinstance(llm_chunk, AIMessageChunk):
+                    continue
                 chunk_count += 1
-                resolved_model_name = normalized_chunk.model_name or resolved_model_name
                 if first_chunk_duration_ms is None:
                     first_chunk_duration_ms = (perf_counter() - request_start_time) * 1000
-                if normalized_chunk.finish_reason is not None:
-                    final_finish_reason = normalized_chunk.finish_reason
-                if normalized_chunk.prompt_tokens is not None:
-                    final_prompt_tokens = normalized_chunk.prompt_tokens
-                if normalized_chunk.completion_tokens is not None:
-                    final_completion_tokens = normalized_chunk.completion_tokens
-                if normalized_chunk.total_tokens is not None:
-                    final_total_tokens = normalized_chunk.total_tokens
-                yield normalized_chunk
+                yield llm_chunk
             LOGGER.info(
                 (
                     "LLM 请求完成：mode=stream model=%s first_chunk_ms=%s "
@@ -550,191 +413,33 @@ class LlmClient:
 
         return langchain_messages
 
-    def _build_completion_result(
-        self,
-        *,
-        llm_response: AIMessage,
-        requested_model_name: str | None,
-    ) -> LlmChatCompletionResult:
-        """将一次性响应转换为统一补全结果。"""
-
-        response_text = self._extract_text_from_content(llm_response.content)
-        prompt_tokens, completion_tokens, total_tokens = self._extract_usage_metadata(
-            llm_response.usage_metadata
-        )
-        resolved_model_name = self._resolve_model_name(
-            response_metadata=llm_response.response_metadata or {},
-            requested_model_name=requested_model_name,
-        )
-        finish_reason = str(
-            (llm_response.response_metadata or {}).get("finish_reason")
-            or ("tool_calls" if llm_response.tool_calls else "stop")
-        )
-
-        return LlmChatCompletionResult(
-            content=response_text,
-            model_name=resolved_model_name,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            finish_reason=finish_reason,
-            tool_calls=self._extract_tool_calls(llm_response),
-        )
-
-    def _build_completion_chunk(
-        self,
-        *,
-        llm_chunk: AIMessageChunk,
-        requested_model_name: str | None,
-    ) -> LlmChatCompletionChunk:
-        """将 LangChain 流式消息块转换为统一增量结构。"""
-
-        prompt_tokens, completion_tokens, total_tokens = self._extract_usage_metadata(
-            llm_chunk.usage_metadata
-        )
-
-        return LlmChatCompletionChunk(
-            content_delta=self._extract_text_from_content(llm_chunk.content),
-            model_name=self._resolve_model_name(
-                response_metadata=llm_chunk.response_metadata or {},
-                requested_model_name=requested_model_name,
-            ),
-            prompt_tokens=prompt_tokens if total_tokens > 0 else None,
-            completion_tokens=completion_tokens if total_tokens > 0 else None,
-            total_tokens=total_tokens if total_tokens > 0 else None,
-            finish_reason=self._extract_finish_reason(llm_chunk),
-            tool_call_chunks=self._extract_tool_call_chunks(llm_chunk),
-        )
-
-    def _resolve_model_name(
-        self,
-        *,
-        response_metadata: dict[str, Any],
-        requested_model_name: str | None,
-    ) -> str:
-        """解析模型名，确保流式和非流式路径使用一致兜底规则。"""
-
-        return str(
-            response_metadata.get("model_name")
-            or response_metadata.get("model")
-            or requested_model_name
-            or self._settings.openai_model
-        )
-
     @staticmethod
-    def _extract_usage_metadata(
-        usage_metadata: dict[str, Any] | None,
-    ) -> tuple[int, int, int]:
-        """提取 token 使用量。"""
-
-        normalized_usage = usage_metadata or {}
-        prompt_tokens = int(normalized_usage.get("input_tokens", 0))
-        completion_tokens = int(normalized_usage.get("output_tokens", 0))
-        total_tokens = int(normalized_usage.get("total_tokens", prompt_tokens + completion_tokens))
-        return prompt_tokens, completion_tokens, total_tokens
-
-    @staticmethod
-    def _extract_finish_reason(llm_chunk: AIMessageChunk) -> str | None:
-        """提取流式块中的完成原因。"""
-
-        response_metadata = llm_chunk.response_metadata or {}
-        finish_reason = response_metadata.get("finish_reason")
-        if finish_reason is not None:
-            return str(finish_reason)
-
-        if llm_chunk.tool_calls:
-            return "tool_calls"
-
-        return None
-
-    @staticmethod
-    def _extract_text_from_content(response_content: object) -> str:
-        """从模型响应内容中提取纯文本。"""
-
-        if isinstance(response_content, str):
-            return response_content
-
-        if isinstance(response_content, list):
-            text_parts: list[str] = []
-            for content_block in response_content:
-                if isinstance(content_block, str) and content_block:
-                    text_parts.append(content_block)
-                    continue
-                if isinstance(content_block, dict) and content_block.get("type") == "text":
-                    text_value = content_block.get("text", "")
-                    if isinstance(text_value, str) and text_value:
-                        text_parts.append(text_value)
-            return "".join(text_parts)
-
-        if response_content is None:
-            return ""
-
-        return str(response_content)
-
-    @staticmethod
-    def _extract_tool_calls(llm_response: AIMessage) -> list[LlmToolCall]:
-        """从模型响应中提取工具调用列表。"""
+    def extract_llm_tool_calls(llm_response: Any) -> list[LlmToolCall]:
+        """从模型响应中提取统一工具调用列表。"""
 
         tool_calls: list[LlmToolCall] = []
-        for tool_call in llm_response.tool_calls:
-            tool_arguments = tool_call.get("args", {})
-            tool_calls.append(
-                LlmToolCall(
-                    tool_call_id=str(tool_call.get("id", "")),
-                    tool_name=str(tool_call.get("name", "")),
-                    arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
+        raw_tool_calls = getattr(llm_response, "tool_calls", []) or []
+        
+        for tc in raw_tool_calls:
+            if isinstance(tc, dict):
+                # Native LangChain tool call dict
+                tool_calls.append(
+                    LlmToolCall(
+                        tool_call_id=str(tc.get("id", "")),
+                        tool_name=str(tc.get("name", "")),
+                        arguments=tc.get("args", {}) if isinstance(tc.get("args"), dict) else {},
+                    )
                 )
-            )
+            else:
+                # Internal ExecutedToolCall or similar object
+                tool_calls.append(
+                    LlmToolCall(
+                        tool_call_id=str(getattr(tc, "tool_call_id", getattr(tc, "id", ""))),
+                        tool_name=str(getattr(tc, "tool_name", getattr(tc, "name", ""))),
+                        arguments=getattr(tc, "arguments", getattr(tc, "args", {})),
+                    )
+                )
         return tool_calls
-
-    @staticmethod
-    def _extract_tool_call_chunks(llm_chunk: AIMessageChunk) -> list[LlmToolCallChunk]:
-        """从流式消息块中提取工具调用增量。"""
-
-        tool_call_chunks: list[LlmToolCallChunk] = []
-        for fallback_index, tool_call_chunk in enumerate(llm_chunk.tool_call_chunks):
-            if not isinstance(tool_call_chunk, dict):
-                continue
-
-            tool_call_chunks.append(
-                LlmToolCallChunk(
-                    index=int(tool_call_chunk.get("index", fallback_index)),
-                    tool_call_id=(
-                        str(tool_call_chunk["id"])
-                        if tool_call_chunk.get("id") is not None
-                        else None
-                    ),
-                    tool_name=(
-                        str(tool_call_chunk["name"])
-                        if tool_call_chunk.get("name") is not None
-                        else None
-                    ),
-                    arguments_chunk=(
-                        str(tool_call_chunk.get("args", ""))
-                        if tool_call_chunk.get("args") is not None
-                        else ""
-                    ),
-                )
-            )
-
-        if tool_call_chunks:
-            return tool_call_chunks
-
-        # 某些兼容提供方不会返回 tool_call_chunks，而是直接在最终块给出完整 tool_calls。
-        for fallback_index, tool_call in enumerate(llm_chunk.tool_calls):
-            tool_arguments = tool_call.get("args", {})
-            if not isinstance(tool_arguments, dict):
-                tool_arguments = {}
-            tool_call_chunks.append(
-                LlmToolCallChunk(
-                    index=fallback_index,
-                    tool_call_id=str(tool_call.get("id", "")),
-                    tool_name=str(tool_call.get("name", "")),
-                    arguments_chunk=dumps(tool_arguments, ensure_ascii=False),
-                )
-            )
-
-        return tool_call_chunks
 
     def _convert_openai_exception(self, exception: Exception) -> UpstreamServiceException:
         """将 OpenAI 客户端异常映射为统一业务异常。"""

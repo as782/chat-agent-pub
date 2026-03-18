@@ -8,7 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
-from app.clients.llm_client import LlmChatCompletionResult, LlmInputMessage
+from langchain_core.messages import AIMessage
+from app.clients.llm_client import LlmInputMessage
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
 from app.tools.registry import ExecutedToolCall
@@ -153,7 +154,7 @@ class AgentState(TypedDict, total=False):
     report_context: str | None
     mcp_tools: list[McpRuntimeTool]
     prepared_context: PreparedContext
-    tool_completion_result: LlmChatCompletionResult
+    tool_completion_result: AIMessage
     executed_tool_calls: list[ExecutedToolCall]
     final_result: ChatTurnResult
     checkpoint_payload: dict[str, object] | None
@@ -168,7 +169,7 @@ def resolve_execution_step_id(
     """根据 execution_plan 为当前 executor 找到稳定的 step_id。"""
 
     execution_plan = state.get("execution_plan")
-    if execution_plan is None:
+    if not isinstance(execution_plan, ExecutionPlan):
         return default_step_id
 
     for step in execution_plan.steps:
@@ -186,7 +187,7 @@ def get_execution_step(
     """从 execution_plan 中按 step_id 或 executor 查找执行步骤。"""
 
     execution_plan = state.get("execution_plan")
-    if execution_plan is None:
+    if not isinstance(execution_plan, ExecutionPlan):
         return None
 
     for step in execution_plan.steps:

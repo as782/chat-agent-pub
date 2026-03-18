@@ -14,8 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import ConversationGraph
 from app.agent.nodes.tool_node import MAX_TOOL_CALL_ROUNDS
-from app.agent.state import AgentState, ChatExecutionRequest, get_execution_step
-from app.clients.llm_client import LlmChatCompletionAccumulator, LlmClient, LlmInputMessage
+from app.agent.state import (
+    AgentRoute,
+    AgentState,
+    ChatExecutionRequest,
+    ChatTurnResult,
+    ExecutorResult,
+    ProblemCategory,
+    get_execution_step,
+)
+from app.clients.llm_client import LlmClient, LlmInputMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
@@ -216,14 +225,12 @@ class ChatService:
         request_route = str(prepared_state["route"])
         current_route = request_route
         working_state = prepared_state
+        has_emitted_payload = False
+        final_completion_result: AIMessage | None = None
+        final_used_session_memory = prepared_state["prepared_context"].used_session_memory
         chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
             default_model_name=execution_request.model_name or self._llm_client.default_model_name
         )
-        answer_node = self._conversation_graph.get_answer_node()
-        tool_node = self._conversation_graph.get_tool_node()
-        has_emitted_payload = False
-        final_completion_result = None
-        final_used_session_memory = prepared_state["prepared_context"].used_session_memory
         first_payload_duration_ms: float | None = None
         tool_execution_duration_ms = 0.0
         persist_duration_ms = 0.0
@@ -238,7 +245,10 @@ class ChatService:
                 final_used_session_memory = prepared_context.used_session_memory
 
                 if self._is_tool_route(current_route):
-                    runtime_mcp_tools = tool_node.extract_runtime_mcp_tools(working_state)
+                    tool_node = self._conversation_graph.get_tool_node()
+                    runtime_mcp_tools = tool_node.extract_runtime_mcp_tools(
+                        working_state
+                    )
                     available_tools = tool_node.build_available_tools(
                         route=current_route,
                         requested_tool_names=execution_request.requested_tool_names,
@@ -248,15 +258,12 @@ class ChatService:
                     normalized_tool_choice = execution_request.tool_choice
                     suppress_step_content = self._should_defer_stream_step_content(working_state)
                     executed_tool_calls = []
-                    completion_result = None
+                    completion_result: AIMessage | None = None
 
                     for tool_round in range(MAX_TOOL_CALL_ROUNDS):
                         round_index = tool_round + 1
                         llm_round_start_time = perf_counter()
-                        accumulator = LlmChatCompletionAccumulator(
-                            requested_model_name=execution_request.model_name,
-                            default_model_name=self._llm_client.default_model_name,
-                        )
+                        current_completion_chunk: AIMessageChunk | None = None
                         async for llm_chunk in self._llm_client.stream_chat_completion(
                             messages=conversation_messages,
                             model_name=execution_request.model_name,
@@ -264,15 +271,15 @@ class ChatService:
                             tool_choice=normalized_tool_choice,
                             enable_thinking=execution_request.enable_thinking,
                         ):
-                            accumulator.append_chunk(llm_chunk)
-                            if suppress_step_content and not llm_chunk.tool_call_chunks:
+                            if current_completion_chunk is None:
+                                current_completion_chunk = llm_chunk
+                            else:
+                                current_completion_chunk += llm_chunk
+
+                            if suppress_step_content and not llm_chunk.tool_calls:
                                 continue
 
-                            should_emit_finish_reason = llm_chunk.finish_reason != "tool_calls"
-                            for payload in chunk_builder.consume_chunk(
-                                llm_chunk,
-                                include_finish_reason=should_emit_finish_reason,
-                            ):
+                            for payload in chunk_builder.consume_chunk(llm_chunk):
                                 first_payload_duration_ms = self._mark_first_stream_payload(
                                     request_id=request_id,
                                     route=request_route,
@@ -282,7 +289,16 @@ class ChatService:
                                 has_emitted_payload = True
                                 yield payload
 
-                        completion_result = accumulator.build_result()
+                        if current_completion_chunk is None:
+                            raise AppException(
+                                "LLM did not return a final response.",
+                                error_code="invalid_llm_response",
+                            )
+                        completion_result = AIMessage(
+                            content=current_completion_chunk.content,
+                            tool_calls=current_completion_chunk.tool_calls,
+                            response_metadata=current_completion_chunk.response_metadata,
+                        )
                         LOGGER.info(
                             (
                                 "聊天流式轮次完成：request_id=%s route=%s round=%s "
@@ -292,13 +308,13 @@ class ChatService:
                             current_route,
                             round_index,
                             (perf_counter() - llm_round_start_time) * 1000,
-                            completion_result.finish_reason,
+                            completion_result.response_metadata.get("finish_reason"),
                             len(completion_result.tool_calls),
                         )
                         if not completion_result.tool_calls:
                             break
 
-                        await answer_node.persist_assistant_tool_calls(
+                        await self._conversation_graph.get_answer_node().persist_assistant_tool_calls(
                             session_id=str(execution_request.session_id),
                             completion_result=completion_result,
                         )
@@ -311,7 +327,7 @@ class ChatService:
                         )
 
                         tool_execute_start_time = perf_counter()
-                        current_tool_results = await tool_node.execute_requested_tools_and_persist(
+                        current_tool_results = await self._conversation_graph.get_tool_node().execute_requested_tools_and_persist(
                             session_id=str(execution_request.session_id),
                             completion_result=completion_result,
                             runtime_mcp_tools=runtime_mcp_tools,
@@ -358,7 +374,7 @@ class ChatService:
                         **working_state,
                         "tool_completion_result": completion_result,
                         "executed_tool_calls": executed_tool_calls,
-                        **tool_node.build_step_result_update(
+                        **self._conversation_graph.get_tool_node().build_step_result_update(
                             state=working_state,
                             completion_result=completion_result,
                             executed_tool_calls=executed_tool_calls,
@@ -369,7 +385,9 @@ class ChatService:
                     )
                     if str(
                         advanced_state["route"]
-                    ) == "answer" and not answer_node.should_generate_summary(advanced_state):
+                    ) == "answer" and not self._conversation_graph.get_answer_node().should_generate_summary(
+                        advanced_state
+                    ):
                         working_state = advanced_state
                         final_used_session_memory = advanced_state[
                             "prepared_context"
@@ -381,16 +399,17 @@ class ChatService:
                     continue
 
                 llm_round_start_time = perf_counter()
-                accumulator = LlmChatCompletionAccumulator(
-                    requested_model_name=execution_request.model_name,
-                    default_model_name=self._llm_client.default_model_name,
-                )
+                current_completion_chunk: AIMessageChunk | None = None
                 async for llm_chunk in self._llm_client.stream_chat_completion(
                     messages=prepared_context.messages,
                     model_name=execution_request.model_name,
                     enable_thinking=execution_request.enable_thinking,
                 ):
-                    accumulator.append_chunk(llm_chunk)
+                    if current_completion_chunk is None:
+                        current_completion_chunk = llm_chunk
+                    else:
+                        current_completion_chunk += llm_chunk
+
                     for payload in chunk_builder.consume_chunk(llm_chunk):
                         first_payload_duration_ms = self._mark_first_stream_payload(
                             request_id=request_id,
@@ -401,7 +420,16 @@ class ChatService:
                         has_emitted_payload = True
                         yield payload
 
-                final_completion_result = accumulator.build_result()
+                if current_completion_chunk is None:
+                    raise AppException(
+                        "LLM did not return a final response.",
+                        error_code="invalid_llm_response",
+                    )
+                final_completion_result = AIMessage(
+                    content=current_completion_chunk.content,
+                    tool_calls=current_completion_chunk.tool_calls,
+                    response_metadata=current_completion_chunk.response_metadata,
+                )
                 LOGGER.info(
                     (
                         "聊天流式轮次完成：request_id=%s route=%s round=%s "
@@ -411,7 +439,7 @@ class ChatService:
                     current_route,
                     1,
                     (perf_counter() - llm_round_start_time) * 1000,
-                    final_completion_result.finish_reason,
+                    final_completion_result.response_metadata.get("finish_reason"),
                     len(final_completion_result.tool_calls),
                 )
                 break
@@ -423,7 +451,7 @@ class ChatService:
                 )
 
             persist_start_time = perf_counter()
-            await answer_node.persist_stream_result(
+            await self._conversation_graph.get_answer_node().persist_stream_result(
                 session_id=str(execution_request.session_id),
                 completion_result=final_completion_result,
                 used_session_memory=final_used_session_memory,
@@ -446,7 +474,9 @@ class ChatService:
             await self._save_checkpoint_safely(checkpoint_payload)
             checkpoint_duration_ms = (perf_counter() - checkpoint_start_time) * 1000
 
-            for payload in chunk_builder.finalize(final_completion_result.finish_reason):
+            for payload in chunk_builder.finalize(
+                final_completion_result.response_metadata.get("finish_reason")
+            ):
                 first_payload_duration_ms = self._mark_first_stream_payload(
                     request_id=request_id,
                     route=request_route,
@@ -475,7 +505,7 @@ class ChatService:
                 commit_duration_ms,
                 checkpoint_duration_ms,
                 (perf_counter() - request_start_time) * 1000,
-                final_completion_result.finish_reason,
+                final_completion_result.response_metadata.get("finish_reason"),
             )
         except AppException as exception:
             await self._db_session.rollback()
@@ -574,7 +604,7 @@ class ChatService:
         if session_id is None:
             session_entity = await self._session_repository.create(
                 session_id=self._generate_identifier(),
-                title=user_message[:20],
+                title=str(user_message)[:20],
                 user_id=user_id,
             )
             return session_entity.session_id
