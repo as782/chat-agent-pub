@@ -39,7 +39,7 @@ class ConversationGraph:
     ) -> None:
         shared_llm_client = llm_client or LlmClient()
         shared_tool_registry = tool_registry or ToolRegistry()
-        self._planner_node = PlannerNode()
+        self._planner_node = PlannerNode(llm_client=shared_llm_client)
         self._argument_node = ArgumentNode()
         self._scheduler_node = SchedulerNode()
         self._router_node = RouterNode()
@@ -86,9 +86,11 @@ class ConversationGraph:
         """为流式路径准备与主图一致的预处理状态。"""
 
         initial_state = self._build_initial_state(execution_request)
-        merged_state = await self._prepare_route_state(initial_state)
-        context_state = await self._answer_node.prepare_context_state(merged_state)
-        return {**merged_state, **context_state}
+        planned_state = await self._planner_node.run(initial_state)
+        argument_state = await self._argument_node.run({**initial_state, **planned_state})
+        return await self._prepare_stream_execution_state(
+            {**initial_state, **planned_state, **argument_state}
+        )
 
     async def prepare_stream_context(
         self,
@@ -99,6 +101,11 @@ class ConversationGraph:
         prepared_state = await self.prepare_stream_state(execution_request)
         prepared_context = prepared_state["prepared_context"]
         return str(prepared_state["route"]), prepared_context
+
+    async def advance_stream_state(self, state: AgentState) -> AgentState:
+        """鍦ㄦ祦寮忚矾寰勪腑褰撴煇涓?step 瀹屾垚鍚庨噸鏂拌皟搴﹀苟鍑嗗涓嬩竴涓彲鎵ц鐘舵€併€?"""
+
+        return await self._prepare_stream_execution_state(state)
 
     async def refresh_memory(
         self,
@@ -258,3 +265,41 @@ class ConversationGraph:
         scheduled_state = await self._scheduler_node.run(state)
         route_state = await self._router_node.run({**state, **scheduled_state})
         return {**state, **scheduled_state, **route_state}
+
+    async def _prepare_stream_execution_state(self, state: AgentState) -> AgentState:
+        """鎸夌湡瀹炶矾鐢遍『搴忔墽琛屽墠缃妭鐐癸紝骞朵负娴佸紡杈撳嚭鍑嗗濂藉綋鍓嶈疆娆′笂涓嬫枃銆?"""
+
+        merged_state = await self._reschedule_state(state)
+        while True:
+            route = merged_state.get("route")
+            if route == "ragflow":
+                knowledge_state = await self._ragflow_node.run(merged_state)
+                merged_state = {**merged_state, **knowledge_state}
+                merged_state = await self._reschedule_state(merged_state)
+                continue
+            if route == "route":
+                route_state = await self._route_node.run(merged_state)
+                merged_state = {**merged_state, **route_state}
+                mcp_state = await self._mcp_node.run(merged_state)
+                merged_state = {**merged_state, **mcp_state}
+                break
+            if route == "mcp":
+                mcp_state = await self._mcp_node.run(merged_state)
+                merged_state = {**merged_state, **mcp_state}
+                break
+            if route == "traffic":
+                traffic_state = await self._traffic_node.run(merged_state)
+                merged_state = {**merged_state, **traffic_state}
+                mcp_state = await self._mcp_node.run(merged_state)
+                merged_state = {**merged_state, **mcp_state}
+                break
+            if route == "report":
+                report_state = await self._report_node.run(merged_state)
+                merged_state = {**merged_state, **report_state}
+                mcp_state = await self._mcp_node.run(merged_state)
+                merged_state = {**merged_state, **mcp_state}
+                break
+            break
+
+        context_state = await self._answer_node.prepare_context_state(merged_state)
+        return {**merged_state, **context_state}

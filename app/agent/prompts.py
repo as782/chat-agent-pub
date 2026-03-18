@@ -49,6 +49,23 @@ PLANNER_PROMPT = """你是交通问答系统的任务规划器。
 4. 不直接生成最终用户答案。
 """
 
+PLANNER_JSON_OUTPUT_PROMPT = """请只输出一个 JSON 对象，不要输出额外解释。
+
+JSON 字段要求：
+- primary_category: policy | route_planning | traffic_status | network_report | general
+- need_clarification: boolean
+- clarification_question: string | null
+- steps: array
+
+steps 中每个元素字段：
+- step_id: string
+- executor: answer | rag | mcp | tool | route | traffic | report
+- goal: string
+- depends_on: string[]
+- can_run_in_parallel: boolean
+- metadata: object
+"""
+
 POLICY_SUMMARY_PROMPT = "请基于政策和知识库结果回答，优先给出结论，再说明依据、适用范围和不确定项。"
 
 ROUTE_SUMMARY_PROMPT = (

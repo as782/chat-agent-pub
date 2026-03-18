@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import ConversationGraph
 from app.agent.nodes.tool_node import MAX_TOOL_CALL_ROUNDS
-from app.agent.state import AgentState, ChatExecutionRequest
+from app.agent.state import AgentState, ChatExecutionRequest, get_execution_step
 from app.clients.llm_client import LlmChatCompletionAccumulator, LlmClient, LlmInputMessage
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.core.logger import get_logger
@@ -164,7 +164,7 @@ class ChatService:
         )
         return (
             resolved_session_id,
-            self._stream_graph_turn(
+            self._stream_planned_graph_turn(
                 execution_request=execution_request,
                 prepared_state=prepared_state,
                 request_id=request_id,
@@ -203,7 +203,7 @@ class ChatService:
             user_id=chat_request.user,
         )
 
-    async def _stream_graph_turn(
+    async def _stream_planned_graph_turn(
         self,
         *,
         execution_request: ChatExecutionRequest,
@@ -211,30 +211,19 @@ class ChatService:
         request_id: str,
         request_start_time: float,
     ) -> AsyncIterator[str]:
-        """在流式路径中执行完整图逻辑，并支持工具与 MCP 的二阶段续答。"""
+        """鎵ц鏀寔澶?step 璋冨害鐨勬祦寮忓璇濅富閫昏緫銆?"""
 
-        route = str(prepared_state["route"])
-        prepared_context = prepared_state["prepared_context"]
+        request_route = str(prepared_state["route"])
+        current_route = request_route
+        working_state = prepared_state
         chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
             default_model_name=execution_request.model_name or self._llm_client.default_model_name
         )
         answer_node = self._conversation_graph.get_answer_node()
         tool_node = self._conversation_graph.get_tool_node()
-        runtime_mcp_tools = tool_node.extract_runtime_mcp_tools(prepared_state)
-        available_tools = (
-            tool_node.build_available_tools(
-                route=route,
-                requested_tool_names=execution_request.requested_tool_names,
-                runtime_mcp_tools=runtime_mcp_tools,
-            )
-            if route in {"tool", "route", "mcp", "traffic", "report"}
-            else None
-        )
-        # 这份上下文会在工具执行后持续追加 tool 消息，供下一轮补全复用。
-        conversation_messages = list(prepared_context.messages)
-        normalized_tool_choice = execution_request.tool_choice
         has_emitted_payload = False
-        completion_result = None
+        final_completion_result = None
+        final_used_session_memory = prepared_state["prepared_context"].used_session_memory
         first_payload_duration_ms: float | None = None
         tool_execution_duration_ms = 0.0
         persist_duration_ms = 0.0
@@ -243,132 +232,208 @@ class ChatService:
         checkpoint_duration_ms = 0.0
 
         try:
-            for tool_round in range(MAX_TOOL_CALL_ROUNDS):
-                round_index = tool_round + 1
+            while True:
+                current_route = str(working_state["route"])
+                prepared_context = working_state["prepared_context"]
+                final_used_session_memory = prepared_context.used_session_memory
+
+                if self._is_tool_route(current_route):
+                    runtime_mcp_tools = tool_node.extract_runtime_mcp_tools(working_state)
+                    available_tools = tool_node.build_available_tools(
+                        route=current_route,
+                        requested_tool_names=execution_request.requested_tool_names,
+                        runtime_mcp_tools=runtime_mcp_tools,
+                    )
+                    conversation_messages = list(prepared_context.messages)
+                    normalized_tool_choice = execution_request.tool_choice
+                    suppress_step_content = self._should_defer_stream_step_content(working_state)
+                    executed_tool_calls = []
+                    completion_result = None
+
+                    for tool_round in range(MAX_TOOL_CALL_ROUNDS):
+                        round_index = tool_round + 1
+                        llm_round_start_time = perf_counter()
+                        accumulator = LlmChatCompletionAccumulator(
+                            requested_model_name=execution_request.model_name,
+                            default_model_name=self._llm_client.default_model_name,
+                        )
+                        async for llm_chunk in self._llm_client.stream_chat_completion(
+                            messages=conversation_messages,
+                            model_name=execution_request.model_name,
+                            tools=available_tools,
+                            tool_choice=normalized_tool_choice,
+                            enable_thinking=execution_request.enable_thinking,
+                        ):
+                            accumulator.append_chunk(llm_chunk)
+                            if suppress_step_content and not llm_chunk.tool_call_chunks:
+                                continue
+
+                            should_emit_finish_reason = llm_chunk.finish_reason != "tool_calls"
+                            for payload in chunk_builder.consume_chunk(
+                                llm_chunk,
+                                include_finish_reason=should_emit_finish_reason,
+                            ):
+                                first_payload_duration_ms = self._mark_first_stream_payload(
+                                    request_id=request_id,
+                                    route=request_route,
+                                    request_start_time=request_start_time,
+                                    current_first_payload_duration_ms=first_payload_duration_ms,
+                                )
+                                has_emitted_payload = True
+                                yield payload
+
+                        completion_result = accumulator.build_result()
+                        LOGGER.info(
+                            (
+                                "鑱婂ぉ娴佸紡杞瀹屾垚锛歳equest_id=%s route=%s round=%s "
+                                "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
+                            ),
+                            request_id,
+                            current_route,
+                            round_index,
+                            (perf_counter() - llm_round_start_time) * 1000,
+                            completion_result.finish_reason,
+                            len(completion_result.tool_calls),
+                        )
+                        if not completion_result.tool_calls:
+                            break
+
+                        await answer_node.persist_assistant_tool_calls(
+                            session_id=str(execution_request.session_id),
+                            completion_result=completion_result,
+                        )
+                        conversation_messages.append(
+                            LlmInputMessage(
+                                role="assistant",
+                                content=completion_result.content,
+                                tool_calls=completion_result.tool_calls,
+                            )
+                        )
+
+                        tool_execute_start_time = perf_counter()
+                        current_tool_results = await tool_node.execute_requested_tools_and_persist(
+                            session_id=str(execution_request.session_id),
+                            completion_result=completion_result,
+                            runtime_mcp_tools=runtime_mcp_tools,
+                        )
+                        current_tool_execution_duration_ms = (
+                            perf_counter() - tool_execute_start_time
+                        ) * 1000
+                        tool_execution_duration_ms += current_tool_execution_duration_ms
+                        LOGGER.info(
+                            (
+                                "鑱婂ぉ娴佸紡宸ュ叿鎵ц瀹屾垚锛歳equest_id=%s route=%s round=%s "
+                                "tool_exec_ms=%.2f executed_tool_count=%s"
+                            ),
+                            request_id,
+                            current_route,
+                            round_index,
+                            current_tool_execution_duration_ms,
+                            len(current_tool_results),
+                        )
+                        executed_tool_calls.extend(current_tool_results)
+                        for executed_tool_call in current_tool_results:
+                            conversation_messages.append(
+                                LlmInputMessage(
+                                    role="tool",
+                                    content=executed_tool_call.output,
+                                    tool_call_id=executed_tool_call.tool_call_id,
+                                )
+                            )
+
+                        normalized_tool_choice = "auto"
+                        if round_index >= MAX_TOOL_CALL_ROUNDS:
+                            raise AppException(
+                                "Tool call rounds exceeded the current limit.",
+                                error_code="tool_call_limit_exceeded",
+                            )
+
+                    if completion_result is None:
+                        raise AppException(
+                            "LLM did not return a final response.",
+                            error_code="invalid_llm_response",
+                        )
+
+                    working_state = {
+                        **working_state,
+                        "tool_completion_result": completion_result,
+                        "executed_tool_calls": executed_tool_calls,
+                        **tool_node.build_step_result_update(
+                            state=working_state,
+                            completion_result=completion_result,
+                            executed_tool_calls=executed_tool_calls,
+                        ),
+                    }
+                    advanced_state = await self._conversation_graph.advance_stream_state(
+                        working_state
+                    )
+                    if str(
+                        advanced_state["route"]
+                    ) == "answer" and not answer_node.should_generate_summary(advanced_state):
+                        working_state = advanced_state
+                        final_used_session_memory = advanced_state[
+                            "prepared_context"
+                        ].used_session_memory
+                        final_completion_result = completion_result
+                        break
+
+                    working_state = advanced_state
+                    continue
+
                 llm_round_start_time = perf_counter()
                 accumulator = LlmChatCompletionAccumulator(
                     requested_model_name=execution_request.model_name,
                     default_model_name=self._llm_client.default_model_name,
                 )
                 async for llm_chunk in self._llm_client.stream_chat_completion(
-                    messages=conversation_messages,
+                    messages=prepared_context.messages,
                     model_name=execution_request.model_name,
-                    tools=available_tools,
-                    tool_choice=normalized_tool_choice,
                     enable_thinking=execution_request.enable_thinking,
                 ):
                     accumulator.append_chunk(llm_chunk)
-                    # 中间轮如果模型要求调用工具，不立刻输出 finish 事件，而是继续执行工具后续答。
-                    should_emit_finish_reason = not (
-                        available_tools is not None and llm_chunk.finish_reason == "tool_calls"
-                    )
-                    for payload in chunk_builder.consume_chunk(
-                        llm_chunk,
-                        include_finish_reason=should_emit_finish_reason,
-                    ):
-                        if first_payload_duration_ms is None:
-                            first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
-                            LOGGER.info(
-                                (
-                                    "聊天请求首个流式事件已发出：request_id=%s "
-                                    "route=%s first_payload_ms=%.2f"
-                                ),
-                                request_id,
-                                route,
-                                first_payload_duration_ms,
-                            )
+                    for payload in chunk_builder.consume_chunk(llm_chunk):
+                        first_payload_duration_ms = self._mark_first_stream_payload(
+                            request_id=request_id,
+                            route=request_route,
+                            request_start_time=request_start_time,
+                            current_first_payload_duration_ms=first_payload_duration_ms,
+                        )
                         has_emitted_payload = True
                         yield payload
 
-                completion_result = accumulator.build_result()
+                final_completion_result = accumulator.build_result()
                 LOGGER.info(
                     (
-                        "聊天流式轮次完成：request_id=%s route=%s round=%s "
+                        "鑱婂ぉ娴佸紡杞瀹屾垚锛歳equest_id=%s route=%s round=%s "
                         "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
                     ),
                     request_id,
-                    route,
-                    round_index,
+                    current_route,
+                    1,
                     (perf_counter() - llm_round_start_time) * 1000,
-                    completion_result.finish_reason,
-                    len(completion_result.tool_calls),
+                    final_completion_result.finish_reason,
+                    len(final_completion_result.tool_calls),
                 )
-                if not completion_result.tool_calls:
-                    break
+                break
 
-                if available_tools is None:
-                    raise AppException(
-                        "模型返回了工具调用，但当前请求未开放任何工具。",
-                        error_code="invalid_llm_response",
-                    )
-
-                await answer_node.persist_assistant_tool_calls(
-                    session_id=str(execution_request.session_id),
-                    completion_result=completion_result,
-                )
-                conversation_messages.append(
-                    LlmInputMessage(
-                        role="assistant",
-                        content=completion_result.content,
-                        tool_calls=completion_result.tool_calls,
-                    )
-                )
-
-                tool_execute_start_time = perf_counter()
-                executed_tool_calls = await tool_node.execute_requested_tools_and_persist(
-                    session_id=str(execution_request.session_id),
-                    completion_result=completion_result,
-                    runtime_mcp_tools=runtime_mcp_tools,
-                )
-                current_tool_execution_duration_ms = (
-                    perf_counter() - tool_execute_start_time
-                ) * 1000
-                tool_execution_duration_ms += current_tool_execution_duration_ms
-                LOGGER.info(
-                    (
-                        "聊天流式工具执行完成：request_id=%s route=%s round=%s "
-                        "tool_exec_ms=%.2f executed_tool_count=%s"
-                    ),
-                    request_id,
-                    route,
-                    round_index,
-                    current_tool_execution_duration_ms,
-                    len(executed_tool_calls),
-                )
-                for executed_tool_call in executed_tool_calls:
-                    conversation_messages.append(
-                        LlmInputMessage(
-                            role="tool",
-                            content=executed_tool_call.output,
-                            tool_call_id=executed_tool_call.tool_call_id,
-                        )
-                    )
-
-                normalized_tool_choice = "auto"
-                if round_index >= MAX_TOOL_CALL_ROUNDS:
-                    raise AppException(
-                        "工具调用轮次超过当前上限。",
-                        error_code="tool_call_limit_exceeded",
-                    )
-
-            if completion_result is None:
+            if final_completion_result is None:
                 raise AppException(
-                    "模型未返回最终回答。",
+                    "LLM did not return a final response.",
                     error_code="invalid_llm_response",
                 )
 
             persist_start_time = perf_counter()
             await answer_node.persist_stream_result(
                 session_id=str(execution_request.session_id),
-                completion_result=completion_result,
-                used_session_memory=prepared_context.used_session_memory,
+                completion_result=final_completion_result,
+                used_session_memory=final_used_session_memory,
             )
             persist_duration_ms = (perf_counter() - persist_start_time) * 1000
 
             memory_refresh_start_time = perf_counter()
             checkpoint_payload = await self._conversation_graph.refresh_memory(
                 session_id=str(execution_request.session_id),
-                route=route,
+                route=request_route,
             )
             memory_refresh_duration_ms = (perf_counter() - memory_refresh_start_time) * 1000
 
@@ -381,31 +446,26 @@ class ChatService:
             await self._save_checkpoint_safely(checkpoint_payload)
             checkpoint_duration_ms = (perf_counter() - checkpoint_start_time) * 1000
 
-            for payload in chunk_builder.finalize(completion_result.finish_reason):
-                if first_payload_duration_ms is None:
-                    first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
-                    LOGGER.info(
-                        (
-                            "聊天请求首个流式事件已发出：request_id=%s "
-                            "route=%s first_payload_ms=%.2f"
-                        ),
-                        request_id,
-                        route,
-                        first_payload_duration_ms,
-                    )
+            for payload in chunk_builder.finalize(final_completion_result.finish_reason):
+                first_payload_duration_ms = self._mark_first_stream_payload(
+                    request_id=request_id,
+                    route=request_route,
+                    request_start_time=request_start_time,
+                    current_first_payload_duration_ms=first_payload_duration_ms,
+                )
                 has_emitted_payload = True
                 yield payload
 
             LOGGER.info(
                 (
-                    "聊天请求完成：request_id=%s mode=stream session_id=%s route=%s "
+                    "鑱婂ぉ璇锋眰瀹屾垚锛歳equest_id=%s mode=stream session_id=%s route=%s "
                     "first_payload_ms=%s tool_exec_ms=%.2f persist_ms=%.2f "
                     "memory_refresh_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
                     "total_ms=%.2f finish_reason=%s"
                 ),
                 request_id,
                 execution_request.session_id,
-                route,
+                request_route,
                 f"{first_payload_duration_ms:.2f}"
                 if first_payload_duration_ms is not None
                 else "none",
@@ -415,7 +475,7 @@ class ChatService:
                 commit_duration_ms,
                 checkpoint_duration_ms,
                 (perf_counter() - request_start_time) * 1000,
-                completion_result.finish_reason,
+                final_completion_result.finish_reason,
             )
         except AppException as exception:
             await self._db_session.rollback()
@@ -424,12 +484,12 @@ class ChatService:
 
             LOGGER.warning(
                 (
-                    "聊天请求失败：request_id=%s mode=stream session_id=%s route=%s "
+                    "鑱婂ぉ璇锋眰澶辫触锛歳equest_id=%s mode=stream session_id=%s route=%s "
                     "total_ms=%.2f error_code=%s"
                 ),
                 request_id,
                 execution_request.session_id,
-                route,
+                request_route,
                 (perf_counter() - request_start_time) * 1000,
                 exception.error_code,
             )
@@ -441,18 +501,66 @@ class ChatService:
                 raise
 
             LOGGER.exception(
-                "内部聊天流式输出过程中发生未处理异常：request_id=%s route=%s",
+                "鍐呴儴鑱婂ぉ娴佸紡杈撳嚭杩囩▼涓彂鐢熸湭澶勭悊寮傚父锛歳equest_id=%s route=%s",
                 request_id,
-                route,
+                current_route,
                 exc_info=exception,
             )
             yield self._openai_compat_service.build_stream_error_payload(
                 AppException(
-                    "流式输出过程中发生内部异常。",
+                    "Internal stream error.",
                     error_code="stream_error",
                 )
             )
             yield "data: [DONE]\n\n"
+
+    @staticmethod
+    def _is_tool_route(route: str) -> bool:
+        """鍒ゆ柇褰撳墠璺敱鏄惁闇€瑕佽繘鍏ュ伐鍏?MCP 鍙栨暟鍚堝苟鍥炵瓟鐨勬妧鏈垎鏀€?"""
+
+        return route in {"tool", "route", "mcp", "traffic", "report"}
+
+    @staticmethod
+    def _should_defer_stream_step_content(state: AgentState) -> bool:
+        """Suppress intermediate natural-language output for multi-step executor plans."""
+
+        execution_plan = state.get("execution_plan")
+        current_step = get_execution_step(
+            state,
+            step_id=(
+                str(state["current_step_id"]) if state.get("current_step_id") is not None else None
+            ),
+        )
+        if execution_plan is None or current_step is None or current_step.executor == "answer":
+            return False
+
+        non_answer_step_count = sum(1 for step in execution_plan.steps if step.executor != "answer")
+        return non_answer_step_count > 1
+
+    def _mark_first_stream_payload(
+        self,
+        *,
+        request_id: str,
+        route: str,
+        request_start_time: float,
+        current_first_payload_duration_ms: float | None,
+    ) -> float:
+        """鍦ㄩ涓?SSE 浜嬩欢杈撳嚭鏃惰褰曡€楁椂锛岄伩鍏嶅娆￠噸澶嶆墦鐐广€?"""
+
+        if current_first_payload_duration_ms is not None:
+            return current_first_payload_duration_ms
+
+        first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
+        LOGGER.info(
+            (
+                "鑱婂ぉ璇锋眰棣栦釜娴佸紡浜嬩欢宸插彂鍑猴細request_id=%s "
+                "route=%s first_payload_ms=%.2f"
+            ),
+            request_id,
+            route,
+            first_payload_duration_ms,
+        )
+        return first_payload_duration_ms
 
     async def _ensure_session(
         self,

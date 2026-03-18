@@ -97,6 +97,21 @@ class ToolNode:
             runtime_mcp_tools=runtime_mcp_tools,
         )
 
+    def build_step_result_update(
+        self,
+        *,
+        state: AgentState,
+        completion_result: LlmChatCompletionResult,
+        executed_tool_calls: list[ExecutedToolCall],
+    ) -> dict[str, object]:
+        """瀵瑰鏆撮湶宸ュ叿姝ラ缁撴灉鍚堝苟锛屼緵娴佸紡璺緞鍦ㄥ唴閮ㄥ惊鐜悗閲嶆柊璋冨害銆?"""
+
+        return self._build_tool_step_result(
+            state=state,
+            completion_result=completion_result,
+            executed_tool_calls=executed_tool_calls,
+        )
+
     async def execute_requested_tools_and_persist(
         self,
         *,

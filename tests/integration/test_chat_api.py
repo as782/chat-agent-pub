@@ -1075,6 +1075,7 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
         del self, tool_choice, enable_thinking
         latest_user_message = ""
         latest_tool_output = ""
+        has_executor_results_context = False
         available_tool_names: list[str] = []
 
         for tool in tools or []:
@@ -1090,6 +1091,8 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
         for message in reversed(messages):
             role = getattr(message, "role", "")
             content = str(getattr(message, "content", ""))
+            if "以下是当前执行节点返回的结构化结果" in content:
+                has_executor_results_context = True
             if role == "tool" and not latest_tool_output:
                 latest_tool_output = content
             if role == "user" and not latest_user_message:
@@ -1124,7 +1127,9 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
                 )
                 return
 
-            if latest_tool_output and knowledge_queries:
+            if has_executor_results_context and knowledge_queries:
+                full_text = "测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。"
+            elif latest_tool_output and knowledge_queries:
                 full_text = "测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。"
             else:
                 full_text = f"测试模型回答：{latest_user_message}"

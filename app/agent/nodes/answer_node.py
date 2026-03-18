@@ -72,7 +72,7 @@ class AnswerNode:
         should_reuse_existing_completion = isinstance(
             completion_result,
             LlmChatCompletionResult,
-        ) and not self._should_generate_summary(state)
+        ) and not self.should_generate_summary(state)
 
         if not should_reuse_existing_completion:
             execution_request = self.build_execution_request_from_state(state)
@@ -375,3 +375,9 @@ class AnswerNode:
             if isinstance(executor_result, ExecutorResult) and executor_result.executor != "answer"
         )
         return completed_non_answer_step_count > 1
+
+    @staticmethod
+    def should_generate_summary(state: AgentState) -> bool:
+        """瀵瑰鏆撮湶 answer 姝ユ槸鍚﹂渶瑕佸仛鏈€缁堟眹鎬荤殑鍒ゆ柇锛屼緵娴佸紡璺緞澶嶇敤銆?"""
+
+        return AnswerNode._should_generate_summary(state)
