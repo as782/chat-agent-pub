@@ -500,7 +500,7 @@ class LlmClient:
             "tools": serialized_tool_names,
             "messages": serialized_messages,
         }
-        LOGGER.info("向 LLM 发起请求：\n %s", dumps(request_payload, ensure_ascii=False))
+        # LOGGER.info("向 LLM 发起请求：\n %s", dumps(request_payload, ensure_ascii=False))
 
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""

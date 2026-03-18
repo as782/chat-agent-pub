@@ -66,17 +66,75 @@ class PlannerService:
     async def build_plan_async(self, state: AgentState) -> ExecutionPlan:
         """根据当前状态生成分类与执行计划。"""
 
+        latest_user_message = str(state.get("latest_user_message", ""))[:200]
+        LOGGER.info(
+            (
+                "========== 意图识别开始 ==========\n"
+                "用户问题：%s\n"
+                "是否使用 LLM Planner: %s"
+            ),
+            latest_user_message,
+            self._should_use_llm_planner(state),
+        )
+
         if not self._should_use_llm_planner(state):
-            return self.build_plan(state)
+            plan = self.build_plan(state)
+            LOGGER.info(
+                (
+                    "========== 意图识别完成（规则模式） ==========\n"
+                    "主分类：%s\n"
+                    "推荐路由：%s\n"
+                    "执行模式：%s\n"
+                    "步骤数量：%s"
+                ),
+                plan.primary_category,
+                plan.recommended_route,
+                plan.execution_mode,
+                len(plan.steps),
+            )
+            for idx, step in enumerate(plan.steps, 1):
+                LOGGER.info("  步骤 %s: executor=%s, goal=%s, depends_on=%s", 
+                           idx, step.executor, step.goal, step.depends_on)
+            LOGGER.info("========================================\n")
+            return plan
 
         try:
-            return await self._build_plan_with_llm(state)
+            plan = await self._build_plan_with_llm(state)
+            LOGGER.info(
+                (
+                    "========== 意图识别完成（LLM 模式） ==========\n"
+                    "主分类：%s\n"
+                    "推荐路由：%s\n"
+                    "执行模式：%s\n"
+                    "是否需要澄清：%s\n"
+                    "澄清问题：%s\n"
+                    "步骤数量：%s"
+                ),
+                plan.primary_category,
+                plan.recommended_route,
+                plan.execution_mode,
+                plan.need_clarification,
+                plan.clarification_question,
+                len(plan.steps),
+            )
+            for idx, step in enumerate(plan.steps, 1):
+                LOGGER.info("  步骤 %s: executor=%s, goal=%s, depends_on=%s, parallel=%s", 
+                           idx, step.executor, step.goal, step.depends_on, step.can_run_in_parallel)
+            LOGGER.info("========================================\n")
+            return plan
         except Exception as exception:  # noqa: BLE001
             LOGGER.warning(
                 "LLM planner 规划失败，已回退到规则规划：error=%s",
                 str(exception),
             )
-            return self.build_plan(state)
+            plan = self.build_plan(state)
+            LOGGER.info(
+                "回退后的规划结果：primary_category=%s, recommended_route=%s, steps_count=%s",
+                plan.primary_category,
+                plan.recommended_route,
+                len(plan.steps),
+            )
+            return plan
 
     def build_plan(self, state: AgentState) -> ExecutionPlan:
         """使用规则逻辑生成分类与执行计划。"""
@@ -325,27 +383,53 @@ class PlannerService:
     ) -> ProblemCategory:
         """识别当前问题的主业务分类。"""
 
+        # 检测各类别匹配情况
         has_route_request = normalized_message.startswith("mcp:") or any(
             keyword in latest_user_message for keyword in ROUTE_KEYWORDS
         )
-        if (
+        has_knowledge_request = (
             latest_user_message.startswith("知识库:")
             or normalized_message.startswith(("knowledge:", "konwledge:"))
             or "#knowledge" in normalized_message
-        ):
+        )
+        has_network_report = any(keyword in latest_user_message for keyword in NETWORK_REPORT_KEYWORDS)
+        has_mcp_request = normalized_message.startswith("mcp:") or "#mcp" in normalized_message
+        has_traffic_request = any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS)
+        has_policy_request = any(keyword in latest_user_message for keyword in POLICY_KEYWORDS)
+
+        LOGGER.debug(
+            (
+                "类别检测详情："
+                "has_knowledge=%s, has_network_report=%s, has_mcp=%s, "
+                "has_route=%s, has_traffic=%s, has_policy=%s, has_tools=%s"
+            ),
+            has_knowledge_request, has_network_report, has_mcp_request,
+            has_route_request, has_traffic_request, has_policy_request, has_requested_tools,
+        )
+
+        if has_knowledge_request:
+            LOGGER.info("意图识别结果：policy（显式知识库请求）")
             return "policy"
-        if any(keyword in latest_user_message for keyword in NETWORK_REPORT_KEYWORDS):
+        if has_network_report:
+            LOGGER.info("意图识别结果：network_report（路网报告关键词）")
             return "network_report"
-        if normalized_message.startswith("mcp:") or "#mcp" in normalized_message:
+        if has_mcp_request:
+            LOGGER.info("意图识别结果：route_planning（MCP 请求）")
             return "route_planning"
         if has_route_request:
+            LOGGER.info("意图识别结果：route_planning（路线规划关键词）")
             return "route_planning"
-        if any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS):
+        if has_traffic_request:
+            LOGGER.info("意图识别结果：traffic_status（路况关键词）")
             return "traffic_status"
-        if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
+        if has_policy_request:
+            LOGGER.info("意图识别结果：policy（政策标准关键词）")
             return "policy"
         if has_requested_tools:
+            LOGGER.info("意图识别结果：general（显式工具请求）")
             return "general"
+        
+        LOGGER.info("意图识别结果：general（默认）")
         return "general"
 
     @staticmethod
@@ -357,15 +441,22 @@ class PlannerService:
         """给出当前计划建议的技术路由。"""
 
         if has_requested_tools:
+            LOGGER.info("路由决策：tool（用户显式请求工具）")
             return "tool"
         if primary_category == "policy":
+            LOGGER.info("路由决策：ragflow（政策类问题）")
             return "ragflow"
         if primary_category == "route_planning":
+            LOGGER.info("路由决策：route（路线规划类问题）")
             return "route"
         if primary_category == "traffic_status":
+            LOGGER.info("路由决策：traffic（路况类问题）")
             return "traffic"
         if primary_category == "network_report":
+            LOGGER.info("路由决策：report（路网报告类问题）")
             return "report"
+        
+        LOGGER.info("路由决策：answer（通用问答）")
         return "answer"
 
     def _derive_recommended_route(
