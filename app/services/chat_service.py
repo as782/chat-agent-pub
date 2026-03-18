@@ -211,7 +211,7 @@ class ChatService:
         request_id: str,
         request_start_time: float,
     ) -> AsyncIterator[str]:
-        """鎵ц鏀寔澶?step 璋冨害鐨勬祦寮忓璇濅富閫昏緫銆?"""
+        """执行支持多 step 调度的流式对话主逻辑。"""
 
         request_route = str(prepared_state["route"])
         current_route = request_route
@@ -285,7 +285,7 @@ class ChatService:
                         completion_result = accumulator.build_result()
                         LOGGER.info(
                             (
-                                "鑱婂ぉ娴佸紡杞瀹屾垚锛歳equest_id=%s route=%s round=%s "
+                                "聊天流式轮次完成：request_id=%s route=%s round=%s "
                                 "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
                             ),
                             request_id,
@@ -322,7 +322,7 @@ class ChatService:
                         tool_execution_duration_ms += current_tool_execution_duration_ms
                         LOGGER.info(
                             (
-                                "鑱婂ぉ娴佸紡宸ュ叿鎵ц瀹屾垚锛歳equest_id=%s route=%s round=%s "
+                                "聊天流式工具执行完成：request_id=%s route=%s round=%s "
                                 "tool_exec_ms=%.2f executed_tool_count=%s"
                             ),
                             request_id,
@@ -404,7 +404,7 @@ class ChatService:
                 final_completion_result = accumulator.build_result()
                 LOGGER.info(
                     (
-                        "鑱婂ぉ娴佸紡杞瀹屾垚锛歳equest_id=%s route=%s round=%s "
+                        "聊天流式轮次完成：request_id=%s route=%s round=%s "
                         "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
                     ),
                     request_id,
@@ -458,7 +458,7 @@ class ChatService:
 
             LOGGER.info(
                 (
-                    "鑱婂ぉ璇锋眰瀹屾垚锛歳equest_id=%s mode=stream session_id=%s route=%s "
+                    "聊天请求完成：request_id=%s mode=stream session_id=%s route=%s "
                     "first_payload_ms=%s tool_exec_ms=%.2f persist_ms=%.2f "
                     "memory_refresh_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
                     "total_ms=%.2f finish_reason=%s"
@@ -484,7 +484,7 @@ class ChatService:
 
             LOGGER.warning(
                 (
-                    "鑱婂ぉ璇锋眰澶辫触锛歳equest_id=%s mode=stream session_id=%s route=%s "
+                    "聊天请求失败：request_id=%s mode=stream session_id=%s route=%s "
                     "total_ms=%.2f error_code=%s"
                 ),
                 request_id,
@@ -501,7 +501,7 @@ class ChatService:
                 raise
 
             LOGGER.exception(
-                "鍐呴儴鑱婂ぉ娴佸紡杈撳嚭杩囩▼涓彂鐢熸湭澶勭悊寮傚父锛歳equest_id=%s route=%s",
+                "内部聊天流式输出过程中发生未处理异常：request_id=%s route=%s",
                 request_id,
                 current_route,
                 exc_info=exception,
@@ -516,7 +516,7 @@ class ChatService:
 
     @staticmethod
     def _is_tool_route(route: str) -> bool:
-        """鍒ゆ柇褰撳墠璺敱鏄惁闇€瑕佽繘鍏ュ伐鍏?MCP 鍙栨暟鍚堝苟鍥炵瓟鐨勬妧鏈垎鏀€?"""
+        """判断当前路由是否需要进入工具/MCP 取数合并回答的技术分支。"""
 
         return route in {"tool", "route", "mcp", "traffic", "report"}
 
@@ -545,7 +545,7 @@ class ChatService:
         request_start_time: float,
         current_first_payload_duration_ms: float | None,
     ) -> float:
-        """鍦ㄩ涓?SSE 浜嬩欢杈撳嚭鏃惰褰曡€楁椂锛岄伩鍏嶅娆￠噸澶嶆墦鐐广€?"""
+        """记录第一次 SSE 输出的时间戳，用于后续日志记录。"""
 
         if current_first_payload_duration_ms is not None:
             return current_first_payload_duration_ms
@@ -553,7 +553,7 @@ class ChatService:
         first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
         LOGGER.info(
             (
-                "鑱婂ぉ璇锋眰棣栦釜娴佸紡浜嬩欢宸插彂鍑猴細request_id=%s "
+                "聊天请求第一次输出：request_id=%s "
                 "route=%s first_payload_ms=%.2f"
             ),
             request_id,
