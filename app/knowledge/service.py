@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.knowledge.ragflow.chat import RagflowChatClient
 from app.knowledge.ragflow.datasets import RagflowDatasetClient
@@ -229,6 +230,12 @@ class KnowledgeService:
         if preferred_dataset_ids:
             return preferred_dataset_ids
 
+        # 如果配置了默认数据集，直接使用（避免混用不同 embedding model）
+        settings = get_settings()
+        if settings.default_knowledge_dataset_id:
+            return [settings.default_knowledge_dataset_id]
+
+        # 未配置默认数据集时，使用所有启用的数据集（保持向后兼容）
         enabled_datasets = await self._ragflow_repository.list_datasets(is_enabled=True, limit=100)
         dataset_ids = [dataset.dataset_id for dataset in enabled_datasets]
         if dataset_ids or not require_available:

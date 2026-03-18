@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-4.1-mini", validation_alias="OPENAI_MODEL")
     planner_use_llm: bool = Field(default=False, validation_alias="PLANNER_USE_LLM")
     planner_model: str | None = Field(default=None, validation_alias="PLANNER_MODEL")
+    
+    # 知识库相关配置
+    default_knowledge_dataset_id: str | None = Field(
+        default=None,
+        validation_alias="DEFAULT_KNOWLEDGE_DATASET_ID",
+    )
 
     @property
     def database_url(self) -> str:

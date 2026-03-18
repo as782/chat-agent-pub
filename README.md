@@ -3,6 +3,7 @@
 最小可用的 Agent 问答系统后端项目。
 
 当前仓库已经完成：
+
 - FastAPI 服务骨架
 - PostgreSQL 会话与消息持久化
 - Redis/内存短期状态支撑
@@ -84,6 +85,7 @@ docs/
 ```
 
 目录职责：
+
 - `app/api/v1/`：HTTP 路由层，只做参数解析、调用 service、返回响应。
 - `app/services/`：业务编排层。
 - `app/persistence/`：数据访问层，不做业务决策。
@@ -116,6 +118,7 @@ docker compose up -d postgres redis
 ```
 
 默认宿主机端口：
+
 - PostgreSQL：`localhost:55432`
 - Redis：`localhost:6379`
 
@@ -144,9 +147,20 @@ POSTGRES_PASSWORD=postgres
 
 REDIS_URL=redis://localhost:6379/0
 
+RAGFLOW_BASE_URL=http://xxx:8008
+RAGFLOW_API_KEY=xxxx
+DEFAULT_KNOWLEDGE_DATASET_ID=xxxxx
+
+
 OPENAI_API_KEY=replace-me
 OPENAI_MODEL=qwen-plus
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+
+PLANNER_USE_LLM=true
+PLANNER_MODEL=qwen-plus
+
+MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/sse?key=xxx"}}}]
+
 ```
 
 如果使用 Qwen3 一类兼容模型，项目会在非流式场景下自动补 `enable_thinking=false`，避免常见兼容网关报错。
@@ -154,6 +168,7 @@ OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 ## MCP 配置
 
 项目当前支持外部标准 MCP 服务配置，支持：
+
 - `http`
 - `streamable_http`
 - `sse`
