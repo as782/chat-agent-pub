@@ -283,6 +283,7 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
         del self, tool_choice, enable_thinking
         latest_user_message = ""
         latest_tool_output = ""
+        all_message_contents = [str(getattr(message, "content", "")) for message in messages]
         available_tool_names: list[str] = []
 
         for tool in tools or []:
@@ -323,6 +324,18 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
                         arguments={"origin": "杭州", "destination": "金华"},
                     )
                 ],
+            )
+
+        if knowledge_queries and any(
+            "以下是当前执行节点返回的结构化结果" in message for message in all_message_contents
+        ):
+            return LlmChatCompletionResult(
+                content="测试模型回答：根据政策和路线结果，推荐杭州到金华高速方案。",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
             )
 
         if latest_tool_output and knowledge_queries:

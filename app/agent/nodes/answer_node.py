@@ -25,6 +25,7 @@ from app.agent.state import (
     ChatTurnResult,
     ExecutorResult,
     PreparedContext,
+    get_execution_step,
 )
 from app.clients.llm_client import LlmChatCompletionResult, LlmClient, LlmInputMessage
 from app.core.exceptions import AppException
@@ -67,14 +68,21 @@ class AnswerNode:
 
         completion_result = state.get("tool_completion_result")
         executed_tool_calls = self._extract_executed_tool_calls(state)
-        if not isinstance(completion_result, LlmChatCompletionResult):
+        existing_tool_completion_result = completion_result
+        should_reuse_existing_completion = isinstance(
+            completion_result,
+            LlmChatCompletionResult,
+        ) and not self._should_generate_summary(state)
+
+        if not should_reuse_existing_completion:
             execution_request = self.build_execution_request_from_state(state)
             completion_result = await self._llm_client.create_chat_completion(
                 messages=prepared_context.messages,
                 model_name=execution_request.model_name,
                 enable_thinking=execution_request.enable_thinking,
             )
-            executed_tool_calls = []
+            if not isinstance(existing_tool_completion_result, LlmChatCompletionResult):
+                executed_tool_calls = []
 
         final_result = await self.persist_completion_result(
             session_id=str(state["session_id"]),
@@ -343,3 +351,27 @@ class AnswerNode:
             for executed_tool_call in raw_executed_tool_calls
             if isinstance(executed_tool_call, ExecutedToolCall)
         ]
+
+    @staticmethod
+    def _should_generate_summary(state: AgentState) -> bool:
+        """判断当前 answer 步是否需要基于累计 step_results 再做一次最终总结。"""
+
+        current_step = get_execution_step(
+            state,
+            step_id=(
+                str(state["current_step_id"]) if state.get("current_step_id") is not None else None
+            ),
+        )
+        if current_step is None or current_step.executor != "answer":
+            return False
+
+        raw_step_results = state.get("step_results", {})
+        if not isinstance(raw_step_results, dict):
+            return False
+
+        completed_non_answer_step_count = sum(
+            1
+            for executor_result in raw_step_results.values()
+            if isinstance(executor_result, ExecutorResult) and executor_result.executor != "answer"
+        )
+        return completed_non_answer_step_count > 1

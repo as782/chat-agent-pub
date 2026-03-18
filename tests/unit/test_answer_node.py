@@ -7,8 +7,8 @@ from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.nodes.answer_node import AnswerNode
-from app.agent.state import ExecutorResult, PreparedContext
-from app.clients.llm_client import LlmChatCompletionResult
+from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
+from app.clients.llm_client import LlmChatCompletionResult, LlmInputMessage
 from app.persistence.base import Base
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall
@@ -99,5 +99,113 @@ async def test_answer_node_reuses_tool_completion_result_without_new_llm_call(
         assert result["final_result"].tool_calls[0].tool_name == "calculator"
         assert [message.role for message in persisted_messages] == ["assistant"]
         assert persisted_messages[0].content == "测试模型回答：工具结果是 2"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_answer_node_regenerates_summary_for_multi_step_answer(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """多步骤计划进入 answer 步时，应基于累计结果重新总结，而不是复用上一轮工具补全。"""
+
+    async def fake_create_chat_completion(*args, **kwargs) -> LlmChatCompletionResult:
+        """返回稳定的总结结果。"""
+
+        del args, kwargs
+        return LlmChatCompletionResult(
+            content="测试模型回答：根据政策和路线结果生成统一总结。",
+            model_name="test-model",
+            prompt_tokens=16,
+            completion_tokens=12,
+            total_tokens=28,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{(tmp_path / 'answer-node-summary.db').as_posix()}"
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with session_factory() as db_session:
+        answer_node = AnswerNode(db_session)
+        result = await answer_node.run(
+            {
+                "session_id": "session-002",
+                "current_step_id": "answer_1",
+                "execution_plan": ExecutionPlan(
+                    primary_category="route_planning",
+                    execution_mode="multi_step",
+                    recommended_route="route",
+                    steps=[
+                        ExecutionStep(
+                            step_id="rag_1",
+                            executor="rag",
+                            goal="检索政策标准",
+                        ),
+                        ExecutionStep(
+                            step_id="route_1",
+                            executor="route",
+                            goal="查询路线方案",
+                        ),
+                        ExecutionStep(
+                            step_id="answer_1",
+                            executor="answer",
+                            goal="汇总前置结果",
+                            depends_on=["rag_1", "route_1"],
+                        ),
+                    ],
+                ),
+                "step_results": {
+                    "rag_1": ExecutorResult(
+                        step_id="rag_1",
+                        executor="rag",
+                        is_success=True,
+                        normalized_result={"sources": ["policy-doc"]},
+                    ),
+                    "route_1": ExecutorResult(
+                        step_id="route_1",
+                        executor="route",
+                        is_success=True,
+                        normalized_result={"origin": "杭州", "destination": "金华"},
+                    ),
+                },
+                "prepared_context": PreparedContext(
+                    messages=[LlmInputMessage(role="system", content="请总结前置结果。")],
+                    used_session_memory=False,
+                ),
+                "tool_completion_result": LlmChatCompletionResult(
+                    content="测试模型回答：工具阶段临时结果。",
+                    model_name="test-model",
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="stop",
+                ),
+                "executed_tool_calls": [
+                    ExecutedToolCall(
+                        tool_call_id="call_route_plan",
+                        tool_name="mcp_demo_http__route_plan",
+                        arguments={"origin": "杭州", "destination": "金华"},
+                        output="杭州到金华推荐走高速。",
+                    )
+                ],
+            }
+        )
+
+        persisted_messages = await MessageRepository(db_session).list_by_session("session-002")
+
+        assert result["final_result"].content == "测试模型回答：根据政策和路线结果生成统一总结。"
+        assert result["final_result"].tool_calls[0].tool_name == "mcp_demo_http__route_plan"
+        assert [message.role for message in persisted_messages] == ["assistant"]
+        assert persisted_messages[0].content == "测试模型回答：根据政策和路线结果生成统一总结。"
 
     await engine.dispose()
