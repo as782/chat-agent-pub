@@ -18,7 +18,6 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
-    monkeypatch.setenv("PLANNER_USE_LLM", "true")
     monkeypatch.setenv("PLANNER_MODEL", "test-planner-model")
     monkeypatch.setenv(
         "MCP_SERVERS_JSON",
@@ -33,7 +32,6 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.redis_url.endswith("/1")
     assert settings.openai_base_url == "https://example.com/v1"
     assert settings.openai_model == "test-chat-model"
-    assert settings.planner_use_llm is True
     assert settings.planner_model == "test-planner-model"
     assert settings.mcp_servers_json is not None
     assert settings.is_debug is True

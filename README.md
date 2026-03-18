@@ -156,7 +156,6 @@ OPENAI_API_KEY=replace-me
 OPENAI_MODEL=qwen-plus
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 
-PLANNER_USE_LLM=true
 PLANNER_MODEL=qwen-plus
 
 MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/sse?key=xxx"}}}]

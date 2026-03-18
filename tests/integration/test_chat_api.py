@@ -309,6 +309,18 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
             (tool_name for tool_name in available_tool_names if "route_plan" in tool_name),
             None,
         )
+        
+        is_planner = any("生成分类与执行计划" in message for message in all_message_contents)
+        if is_planner:
+            return LlmChatCompletionResult(
+                content='{"primary_category": "route_planning", "steps": [{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}',
+                model_name=model_name or "test-model",
+                prompt_tokens=10,
+                completion_tokens=10,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
         if route_tool_name and not latest_tool_output:
             return LlmChatCompletionResult(
                 content="",
@@ -603,6 +615,18 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
             (tool_name for tool_name in available_tool_names if "traffic_status" in tool_name),
             None,
         )
+        
+        is_planner = any("生成分类与执行计划" in str(getattr(m, "content", "")) for m in messages)
+        if is_planner:
+            return LlmChatCompletionResult(
+                content='{"primary_category": "traffic_status", "steps": [{"executor": "traffic"}, {"executor": "answer"}]}',
+                model_name=model_name or "test-model",
+                prompt_tokens=10,
+                completion_tokens=10,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
         if traffic_tool_name and not latest_tool_output and "路况" in latest_user_message:
             return LlmChatCompletionResult(
                 content="",
@@ -761,6 +785,18 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
             (tool_name for tool_name in available_tool_names if "network_report" in tool_name),
             None,
         )
+        
+        is_planner = any("生成分类与执行计划" in str(getattr(m, "content", "")) for m in messages)
+        if is_planner:
+            return LlmChatCompletionResult(
+                content='{"primary_category": "report_generation", "steps": [{"executor": "report"}, {"executor": "answer"}]}',
+                model_name=model_name or "test-model",
+                prompt_tokens=10,
+                completion_tokens=10,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
         if report_tool_name and not latest_tool_output and "全路网" in latest_user_message:
             return LlmChatCompletionResult(
                 content="",

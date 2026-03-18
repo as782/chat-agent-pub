@@ -36,7 +36,6 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
-      PLANNER_USE_LLM: ${PLANNER_USE_LLM:-true}
       PLANNER_MODEL: ${PLANNER_MODEL:-qwen-plus}
     # 等待 PostgreSQL 与 Redis 可用后再启动应用。
     depends_on:

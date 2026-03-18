@@ -94,8 +94,20 @@ def test_knowledge_api_retrieves_chunks(app_client: TestClient, monkeypatch) -> 
     assert response_payload["results"][0]["content"] == "西湖位于浙江省杭州市。"
 
 
-def test_knowledge_api_returns_400_when_dataset_not_configured(app_client: TestClient) -> None:
+def test_knowledge_api_returns_400_when_dataset_not_configured(app_client: TestClient, monkeypatch) -> None:
     """验证未配置任何知识库数据集时会返回明确错误。"""
+
+    async def fake_resolve_dataset_ids(self: object, **kwargs: object) -> list[str]:
+        from app.core.exceptions import AppException
+        raise AppException(
+            "当前未配置任何可用知识库数据集，请先同步并启用数据集。",
+            error_code="knowledge_dataset_not_configured",
+        )
+
+    monkeypatch.setattr(
+        "app.knowledge.service.KnowledgeService._resolve_dataset_ids",
+        fake_resolve_dataset_ids,
+    )
 
     response = app_client.post(
         "/api/v1/knowledge/retrieval",

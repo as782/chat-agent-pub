@@ -492,15 +492,14 @@ class LlmClient:
             else:
                 serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
 
-        request_payload = {
+        LOGGER.info("向 LLM 发起请求：\n %s", dumps({
             "mode": "stream" if is_stream else "non_stream",
             "model": model_name or self._settings.openai_model,
             "tool_choice": tool_choice,
             "enable_thinking": enable_thinking,
             "tools": serialized_tool_names,
             "messages": serialized_messages,
-        }
-        # LOGGER.info("向 LLM 发起请求：\n %s", dumps(request_payload, ensure_ascii=False))
+        }, ensure_ascii=False))
 
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""

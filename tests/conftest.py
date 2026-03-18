@@ -129,6 +129,32 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             for message in all_message_contents
         )
 
+        is_planner = any("生成分类与执行计划" in message for message in all_message_contents)
+        if is_planner:
+            plan_json = '{"primary_category": "general", "steps": [{"executor": "answer"}]}'
+            if "西湖" in latest_user_message or "知识库" in latest_user_message:
+                plan_json = '{"primary_category": "knowledge_retrieval", "steps": [{"executor": "rag"}, {"executor": "answer"}]}'
+            elif "天气" in latest_user_message or "mcp" in latest_user_message.lower():
+                plan_json = '{"primary_category": "mcp_tool_execution", "steps": [{"executor": "mcp"}, {"executor": "answer"}]}'
+            elif "路况" in latest_user_message:
+                plan_json = '{"primary_category": "traffic_status", "steps": [{"executor": "traffic"}, {"executor": "answer"}]}'
+            elif "怎么走" in latest_user_message:
+                plan_json = '{"primary_category": "route_planning", "steps": [{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}'
+            elif "路网" in latest_user_message or "数据" in latest_user_message:
+                plan_json = '{"primary_category": "report_generation", "steps": [{"executor": "report"}, {"executor": "answer"}]}'
+            elif "1+1" in latest_user_message or "计算" in latest_user_message or "时间" in latest_user_message or "几点" in latest_user_message:
+                plan_json = '{"primary_category": "general", "steps": [{"executor": "tool"}, {"executor": "answer"}]}'
+            
+            return LlmChatCompletionResult(
+                content=plan_json,
+                model_name=model_name or "test-model",
+                prompt_tokens=10,
+                completion_tokens=10,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
         if tools and not latest_tool_output and need_calculator_tool:
             return LlmChatCompletionResult(
