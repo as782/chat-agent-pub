@@ -4,7 +4,12 @@ from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
 
-from app.clients.llm_client import LlmChatCompletionChunk
+from app.clients.llm_client import (
+    LlmChatCompletionChunk,
+    LlmChatCompletionResult,
+    LlmToolCall,
+    LlmToolCallChunk,
+)
 from app.core.exceptions import UpstreamServiceException
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
@@ -340,6 +345,322 @@ def test_chat_api_executes_mcp_tool_when_requested(
     assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__weather"
 
 
+def test_chat_api_executes_traffic_executor_via_mcp_tools(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证 traffic 业务分支也会接入 MCP 工具执行闭环。"""
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的路况 MCP 工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__traffic_status",
+                server_name="demo-mcp-http",
+                remote_tool_name="traffic_status",
+                description="查询道路实时路况。",
+                input_schema={
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}},
+                    "required": ["target"],
+                },
+            )
+        ]
+
+    async def fake_create_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> LlmChatCompletionResult:
+        """为 traffic 场景返回稳定的工具调用结果。"""
+
+        del self, tool_choice, enable_thinking
+        latest_user_message = ""
+        latest_tool_output = ""
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                if isinstance(function_payload, dict) and isinstance(
+                    function_payload.get("name"),
+                    str,
+                ):
+                    available_tool_names.append(str(function_payload["name"]))
+
+        for message in reversed(messages):
+            role = getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            if role == "tool" and not latest_tool_output:
+                latest_tool_output = content
+            if role == "user" and not latest_user_message:
+                latest_user_message = content
+            if latest_tool_output and latest_user_message:
+                break
+
+        traffic_tool_name = next(
+            (tool_name for tool_name in available_tool_names if "traffic_status" in tool_name),
+            None,
+        )
+        if traffic_tool_name and not latest_tool_output and "路况" in latest_user_message:
+            return LlmChatCompletionResult(
+                content="",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    LlmToolCall(
+                        tool_call_id="call_mcp_traffic",
+                        tool_name=traffic_tool_name,
+                        arguments={"target": "杭州"},
+                    )
+                ],
+            )
+
+        if latest_tool_output:
+            return LlmChatCompletionResult(
+                content=f"测试模型回答：工具结果是 {latest_tool_output}",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+        return LlmChatCompletionResult(
+            content=f"测试模型回答：{latest_user_message}",
+            model_name=model_name or "test-model",
+            prompt_tokens=12,
+            completion_tokens=8,
+            total_tokens=20,
+            finish_reason="stop",
+        )
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的路况工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "traffic_status"
+        assert arguments == {"target": "杭州"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "杭州当前整体缓行，部分高架拥堵。"}],
+            structured_content={"target": "杭州", "status": "缓行"},
+            is_error=False,
+            output_text="杭州当前整体缓行，部分高架拥堵。",
+        )
+
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "当前杭州路况怎么样？"}],
+        },
+    )
+    response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert response_payload["choices"][0]["message"]["content"] == (
+        "测试模型回答：工具结果是 杭州当前整体缓行，部分高架拥堵。"
+    )
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__traffic_status"
+
+
+def test_chat_api_executes_report_executor_via_mcp_tools(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证 report 业务分支也会接入 MCP 工具执行闭环。"""
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的路网报告 MCP 工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__network_report",
+                server_name="demo-mcp-http",
+                remote_tool_name="network_report",
+                description="查询全路网汇总数据。",
+                input_schema={
+                    "type": "object",
+                    "properties": {"scope": {"type": "string"}},
+                    "required": ["scope"],
+                },
+            )
+        ]
+
+    async def fake_create_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> LlmChatCompletionResult:
+        """为 report 场景返回稳定的工具调用结果。"""
+
+        del self, tool_choice, enable_thinking
+        latest_user_message = ""
+        latest_tool_output = ""
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                if isinstance(function_payload, dict) and isinstance(
+                    function_payload.get("name"),
+                    str,
+                ):
+                    available_tool_names.append(str(function_payload["name"]))
+
+        for message in reversed(messages):
+            role = getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            if role == "tool" and not latest_tool_output:
+                latest_tool_output = content
+            if role == "user" and not latest_user_message:
+                latest_user_message = content
+            if latest_tool_output and latest_user_message:
+                break
+
+        report_tool_name = next(
+            (tool_name for tool_name in available_tool_names if "network_report" in tool_name),
+            None,
+        )
+        if report_tool_name and not latest_tool_output and "全路网" in latest_user_message:
+            return LlmChatCompletionResult(
+                content="",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="tool_calls",
+                tool_calls=[
+                    LlmToolCall(
+                        tool_call_id="call_mcp_report",
+                        tool_name=report_tool_name,
+                        arguments={"scope": "全路网"},
+                    )
+                ],
+            )
+
+        if latest_tool_output:
+            return LlmChatCompletionResult(
+                content=f"测试模型回答：工具结果是 {latest_tool_output}",
+                model_name=model_name or "test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+        return LlmChatCompletionResult(
+            content=f"测试模型回答：{latest_user_message}",
+            model_name=model_name or "test-model",
+            prompt_tokens=12,
+            completion_tokens=8,
+            total_tokens=20,
+            finish_reason="stop",
+        )
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的路网报告工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "network_report"
+        assert arguments == {"scope": "全路网"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "全路网整体运行平稳，北向略有缓行。"}],
+            structured_content={"scope": "全路网", "summary": "整体平稳"},
+            is_error=False,
+            output_text="全路网整体运行平稳，北向略有缓行。",
+        )
+
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "请生成今天全路网路况对比表格"}],
+        },
+    )
+    response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert response_payload["choices"][0]["message"]["content"] == (
+        "测试模型回答：工具结果是 全路网整体运行平稳，北向略有缓行。"
+    )
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__network_report"
+
+
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:
     """验证内部聊天接口在 stream=true 时返回 OpenAI 兼容 SSE 数据。"""
 
@@ -494,6 +815,177 @@ def test_chat_api_stream_executes_mcp_tool_when_requested(
     ]
     assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__weather"
     assert history_payload["items"][3]["content"] == "测试模型回答：工具结果是 Hangzhou sunny, 26 C"
+
+
+def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证流式 traffic 业务分支会在同一条 SSE 中完成 MCP 取数后二阶段续答。"""
+
+    async def fake_build_runtime_tools(self: object, *, server_names=None) -> list[McpRuntimeTool]:
+        """返回稳定的路况 MCP 工具集合。"""
+
+        del self, server_names
+        return [
+            McpRuntimeTool(
+                registered_name="mcp_demo_http__traffic_status",
+                server_name="demo-mcp-http",
+                remote_tool_name="traffic_status",
+                description="查询道路实时路况。",
+                input_schema={
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}},
+                    "required": ["target"],
+                },
+            )
+        ]
+
+    def fake_stream_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> AsyncIterator[LlmChatCompletionChunk]:
+        """为流式 traffic 场景返回稳定的工具调用与续答结果。"""
+
+        del self, tool_choice, enable_thinking
+        latest_user_message = ""
+        latest_tool_output = ""
+        available_tool_names: list[str] = []
+
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                if isinstance(function_payload, dict) and isinstance(
+                    function_payload.get("name"),
+                    str,
+                ):
+                    available_tool_names.append(str(function_payload["name"]))
+
+        for message in reversed(messages):
+            role = getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            if role == "tool" and not latest_tool_output:
+                latest_tool_output = content
+            if role == "user" and not latest_user_message:
+                latest_user_message = content
+            if latest_tool_output and latest_user_message:
+                break
+
+        async def iterator() -> AsyncIterator[LlmChatCompletionChunk]:
+            resolved_model_name = model_name or "test-model"
+            traffic_tool_name = next(
+                (tool_name for tool_name in available_tool_names if "traffic_status" in tool_name),
+                None,
+            )
+            if traffic_tool_name and not latest_tool_output and "路况" in latest_user_message:
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    tool_call_chunks=[
+                        LlmToolCallChunk(
+                            index=0,
+                            tool_call_id="call_mcp_traffic",
+                            tool_name=traffic_tool_name,
+                            arguments_chunk='{"target":"杭州"}',
+                        )
+                    ],
+                )
+                yield LlmChatCompletionChunk(
+                    model_name=resolved_model_name,
+                    prompt_tokens=12,
+                    completion_tokens=8,
+                    total_tokens=20,
+                    finish_reason="tool_calls",
+                )
+                return
+
+            full_text = f"测试模型回答：工具结果是 {latest_tool_output}"
+            split_index = max(1, len(full_text) // 2)
+            yield LlmChatCompletionChunk(
+                content_delta=full_text[:split_index],
+                model_name=resolved_model_name,
+            )
+            yield LlmChatCompletionChunk(
+                content_delta=full_text[split_index:],
+                model_name=resolved_model_name,
+            )
+            yield LlmChatCompletionChunk(
+                model_name=resolved_model_name,
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+            )
+
+        return iterator()
+
+    async def fake_call_tool(
+        self: object,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+    ):
+        """返回稳定的路况工具调用结果。"""
+
+        del self
+        assert server_name == "demo-mcp-http"
+        assert tool_name == "traffic_status"
+        assert arguments == {"target": "杭州"}
+        from app.schemas.mcp import McpToolCallResponse
+
+        return McpToolCallResponse(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            content=[{"type": "text", "text": "杭州当前整体缓行，部分高架拥堵。"}],
+            structured_content={"target": "杭州", "status": "缓行"},
+            is_error=False,
+            output_text="杭州当前整体缓行，部分高架拥堵。",
+        )
+
+    monkeypatch.setattr(
+        "app.mcp.manager.McpManager.build_runtime_tools",
+        fake_build_runtime_tools,
+    )
+    monkeypatch.setattr("app.mcp.manager.McpManager.call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_chat_completion,
+    )
+
+    with app_client.stream(
+        "POST",
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "当前杭州路况怎么样？"}],
+            "stream": True,
+        },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+        session_id = response.headers["X-Session-ID"]
+
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
+
+    assert response.status_code == 200
+    assert '"tool_calls"' in response_body
+    assert "[DONE]" in response_body
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["metadata"]["tool_name"] == "mcp_demo_http__traffic_status"
+    assert (
+        history_payload["items"][3]["content"]
+        == "测试模型回答：工具结果是 杭州当前整体缓行，部分高架拥堵。"
+    )
 
 
 def test_chat_api_returns_404_when_session_not_found(app_client: TestClient) -> None:

@@ -160,11 +160,11 @@ class ConversationGraph:
             },
         )
         graph_builder.add_edge("route_node", "mcp_node")
+        graph_builder.add_edge("traffic_node", "mcp_node")
+        graph_builder.add_edge("report_node", "mcp_node")
         graph_builder.add_edge("tool_node", "scheduler_node")
         graph_builder.add_edge("ragflow_node", "scheduler_node")
         graph_builder.add_edge("mcp_node", "tool_node")
-        graph_builder.add_edge("traffic_node", "scheduler_node")
-        graph_builder.add_edge("report_node", "scheduler_node")
         graph_builder.add_edge("answer_node", "memory_node")
         graph_builder.add_edge("memory_node", END)
         return graph_builder.compile()
@@ -239,7 +239,11 @@ class ConversationGraph:
         if merged_state.get("route") == "traffic":
             traffic_state = await self._traffic_node.run(merged_state)
             merged_state = {**merged_state, **traffic_state}
+            mcp_state = await self._mcp_node.run(merged_state)
+            merged_state = {**merged_state, **mcp_state}
         if merged_state.get("route") == "report":
             report_state = await self._report_node.run(merged_state)
             merged_state = {**merged_state, **report_state}
+            mcp_state = await self._mcp_node.run(merged_state)
+            merged_state = {**merged_state, **mcp_state}
         return merged_state

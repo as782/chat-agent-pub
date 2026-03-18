@@ -227,7 +227,7 @@ class ChatService:
                 requested_tool_names=execution_request.requested_tool_names,
                 runtime_mcp_tools=runtime_mcp_tools,
             )
-            if route in {"tool", "route", "mcp"}
+            if route in {"tool", "route", "mcp", "traffic", "report"}
             else None
         )
         # 这份上下文会在工具执行后持续追加 tool 消息，供下一轮补全复用。
