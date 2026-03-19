@@ -1,6 +1,6 @@
 """Agent 规划器模块。
 负责根据用户问题给出业务分类和最小执行计划。
-当前强制使用 LLM planner，并统一输出 ExecutionPlan。
+当前同时支持规则式规划和可选的 LLM planner，并统一输出 ExecutionPlan。
 """
 
 from __future__ import annotations
@@ -18,12 +18,16 @@ from app.agent.state import (
     ExecutorType,
     ProblemCategory,
 )
-from langchain_core.messages import AIMessage
 from app.clients.llm_client import LlmClient, LlmInputMessage
 from app.core.config import Settings, get_settings
 from app.core.logger import get_logger
 
 LOGGER = get_logger(__name__)
+
+POLICY_KEYWORDS = ("政策", "标准", "规范", "制度", "规定", "依据", "口径")
+ROUTE_KEYWORDS = ("怎么走", "路线", "导航", "到", "路径", "方案")
+TRAFFIC_KEYWORDS = ("路况", "拥堵", "封闭", "施工", "事故", "缓行", "通行")
+NETWORK_REPORT_KEYWORDS = ("全路网", "日报", "周报", "月报", "汇总", "表格", "对比", "分析")
 
 _VALID_PROBLEM_CATEGORIES: set[ProblemCategory] = {
     "policy",
@@ -46,7 +50,8 @@ _VALID_EXECUTORS: set[ExecutorType] = {
 class PlannerService:
     """规划器服务。
 
-    强制使用 LLM planner 生成计划。如果出现异常，返回基于 general 的保底分类计划。
+    默认使用规则式规划，只有在显式开启配置时才调用 LLM planner。
+    这样可以先接入更强的规划能力，同时保留当前稳定行为。
     """
 
     def __init__(
@@ -59,64 +64,72 @@ class PlannerService:
         self._settings = settings or get_settings()
 
     async def build_plan_async(self, state: AgentState) -> ExecutionPlan:
-        """调用 LLM 生成分类与执行计划。"""
+        """根据当前状态生成分类与执行计划。"""
 
-        latest_user_message = str(state.get("latest_user_message", ""))[:200]
-        LOGGER.info(
-            (
-                "========== 意图识别开始 ==========\n"
-                "用户问题：%s\n"
-                "使用模式：LLM Planner"
-            ),
-            latest_user_message,
-        )
+        if not self._should_use_llm_planner(state):
+            return self.build_plan(state)
 
         try:
-            if self._llm_client is None:
-                raise RuntimeError("LLM planner 未注入 llm_client。")
-
-            completion_result = await self._llm_client.create_chat_completion(
-                messages=self._build_planner_messages(state),
-                model_name=self._settings.planner_model or state.get("model_name"),
-                enable_thinking=False,
-            )
-            plan = self._parse_llm_plan(state, completion_result)
-            
-            LOGGER.info(
-                (
-                    "========== 意图识别完成（LLM 模式） ==========\n"
-                    "主分类：%s\n"
-                    "推荐路由：%s\n"
-                    "执行模式：%s\n"
-                    "是否需要澄清：%s\n"
-                    "澄清问题：%s\n"
-                    "步骤数量：%s"
-                ),
-                plan.primary_category,
-                plan.recommended_route,
-                plan.execution_mode,
-                plan.need_clarification,
-                plan.clarification_question,
-                len(plan.steps),
-            )
-            for idx, step in enumerate(plan.steps, 1):
-                LOGGER.info("  步骤 %s: executor=%s, goal=%s, depends_on=%s, parallel=%s", 
-                           idx, step.executor, step.goal, step.depends_on, step.can_run_in_parallel)
-            LOGGER.info("========================================\n")
-            return plan
+            return await self._build_plan_with_llm(state)
         except Exception as exception:  # noqa: BLE001
             LOGGER.warning(
-                "LLM planner 规划失败，已使用保底规划：error=%s",
+                "LLM planner 规划失败，已回退到规则规划：error=%s",
                 str(exception),
             )
-            plan = self._build_fallback_plan(state)
-            LOGGER.info(
-                "兜底规划结果：primary_category=%s, recommended_route=%s, steps_count=%s",
-                plan.primary_category,
-                plan.recommended_route,
-                len(plan.steps),
-            )
-            return plan
+            return self.build_plan(state)
+
+    def build_plan(self, state: AgentState) -> ExecutionPlan:
+        """使用规则逻辑生成分类与执行计划。"""
+
+        latest_user_message = str(state.get("latest_user_message", ""))
+        normalized_message = latest_user_message.lower()
+        requested_tool_names = state.get("requested_tool_names") or []
+
+        primary_category = self._detect_primary_category(
+            latest_user_message=latest_user_message,
+            normalized_message=normalized_message,
+            has_requested_tools=bool(requested_tool_names),
+        )
+        recommended_route = self._build_recommended_route(
+            primary_category=primary_category,
+            has_requested_tools=bool(requested_tool_names),
+        )
+        steps = self._build_steps(
+            primary_category=primary_category,
+            has_requested_tools=bool(requested_tool_names),
+            latest_user_message=latest_user_message,
+            normalized_message=normalized_message,
+        )
+        execution_mode = self._resolve_execution_mode(steps)
+
+        return ExecutionPlan(
+            primary_category=primary_category,
+            execution_mode=execution_mode,
+            recommended_route=recommended_route,
+            steps=steps,
+        )
+
+    def _should_use_llm_planner(self, state: AgentState) -> bool:
+        """判断是否启用 LLM planner。"""
+
+        if state.get("requested_tool_names"):
+            return False
+        if not self._settings.planner_use_llm:
+            return False
+        return self._llm_client is not None
+
+    async def _build_plan_with_llm(self, state: AgentState) -> ExecutionPlan:
+        """调用 LLM 生成规划结果。"""
+
+        if self._llm_client is None:
+            raise RuntimeError("LLM planner 未注入 llm_client。")
+
+        completion_result = await self._llm_client.create_chat_completion(
+            messages=self._build_planner_messages(state),
+            model_name=self._settings.planner_model or state.get("model_name"),
+            enable_thinking=False,
+        )
+        return self._parse_llm_plan(state, completion_result)
 
     def _build_planner_messages(self, state: AgentState) -> list[LlmInputMessage]:
         """构造 planner LLM 的输入消息。"""
@@ -148,24 +161,33 @@ class PlannerService:
     def _parse_llm_plan(
         self,
         state: AgentState,
-        completion_result: AIMessage,
+        completion_result: LlmChatCompletionResult,
     ) -> ExecutionPlan:
         """解析 LLM planner 的结构化结果。"""
 
-        # completion_result.content 已经是字符串或经过 __str__ 处理
-        content = str(completion_result.content)
-        payload = self._extract_json_payload(content)
+        payload = self._extract_json_payload(completion_result.content)
         requested_tool_names = state.get("requested_tool_names") or []
+        latest_user_message = str(state.get("latest_user_message", ""))
+        normalized_message = latest_user_message.lower()
 
         primary_category = self._coerce_primary_category(payload.get("primary_category"))
         if primary_category is None:
-            primary_category = "general"
+            primary_category = self._detect_primary_category(
+                latest_user_message=latest_user_message,
+                normalized_message=normalized_message,
+                has_requested_tools=bool(requested_tool_names),
+            )
 
-        fallback_steps = self._build_fallback_steps(has_requested_tools=bool(requested_tool_names))
+        fallback_steps = self._build_steps(
+            primary_category=primary_category,
+            has_requested_tools=bool(requested_tool_names),
+            latest_user_message=latest_user_message,
+            normalized_message=normalized_message,
+        )
         steps = self._coerce_steps(payload.get("steps"), fallback_steps=fallback_steps)
-        
         recommended_route = self._derive_recommended_route(
             steps=steps,
+            primary_category=primary_category,
             has_requested_tools=bool(requested_tool_names),
         )
 
@@ -179,22 +201,6 @@ class PlannerService:
             recommended_route=recommended_route,
             need_clarification=self._coerce_bool(payload.get("need_clarification")),
             clarification_question=clarification_question,
-            steps=steps,
-        )
-
-    def _build_fallback_plan(self, state: AgentState) -> ExecutionPlan:
-        """构造基础兜底执行计划。"""
-        
-        requested_tool_names = state.get("requested_tool_names") or []
-        steps = self._build_fallback_steps(has_requested_tools=bool(requested_tool_names))
-        recommended_route = self._derive_recommended_route(
-            steps=steps,
-            has_requested_tools=bool(requested_tool_names),
-        )
-        return ExecutionPlan(
-            primary_category="general",
-            execution_mode=self._resolve_execution_mode(steps),
-            recommended_route=recommended_route,
             steps=steps,
         )
 
@@ -310,10 +316,63 @@ class PlannerService:
             return value.strip().lower() in {"true", "1", "yes"}
         return False
 
+    def _detect_primary_category(
+        self,
+        *,
+        latest_user_message: str,
+        normalized_message: str,
+        has_requested_tools: bool,
+    ) -> ProblemCategory:
+        """识别当前问题的主业务分类。"""
+
+        has_route_request = normalized_message.startswith("mcp:") or any(
+            keyword in latest_user_message for keyword in ROUTE_KEYWORDS
+        )
+        if (
+            latest_user_message.startswith("知识库:")
+            or normalized_message.startswith(("knowledge:", "konwledge:"))
+            or "#knowledge" in normalized_message
+        ):
+            return "policy"
+        if any(keyword in latest_user_message for keyword in NETWORK_REPORT_KEYWORDS):
+            return "network_report"
+        if normalized_message.startswith("mcp:") or "#mcp" in normalized_message:
+            return "route_planning"
+        if has_route_request:
+            return "route_planning"
+        if any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS):
+            return "traffic_status"
+        if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
+            return "policy"
+        if has_requested_tools:
+            return "general"
+        return "general"
+
     @staticmethod
+    def _build_recommended_route(
+        *,
+        primary_category: ProblemCategory,
+        has_requested_tools: bool,
+    ) -> AgentRoute:
+        """给出当前计划建议的技术路由。"""
+
+        if has_requested_tools:
+            return "tool"
+        if primary_category == "policy":
+            return "ragflow"
+        if primary_category == "route_planning":
+            return "route"
+        if primary_category == "traffic_status":
+            return "traffic"
+        if primary_category == "network_report":
+            return "report"
+        return "answer"
+
     def _derive_recommended_route(
+        self,
         *,
         steps: list[ExecutionStep],
+        primary_category: ProblemCategory,
         has_requested_tools: bool,
     ) -> AgentRoute:
         """根据首个非 answer 步骤推导推荐路由。"""
@@ -328,8 +387,10 @@ class PlannerService:
                 return "ragflow"
             if step.executor in {"route", "traffic", "report", "tool", "mcp"}:
                 return step.executor
-        
-        return "answer"
+        return self._build_recommended_route(
+            primary_category=primary_category,
+            has_requested_tools=has_requested_tools,
+        )
 
     @staticmethod
     def _resolve_execution_mode(steps: list[ExecutionStep]) -> str:
@@ -341,9 +402,15 @@ class PlannerService:
         return execution_mode
 
     @staticmethod
-    def _build_fallback_steps(*, has_requested_tools: bool) -> list[ExecutionStep]:
-        """构造默认的稳底步骤组合。"""
-        
+    def _build_steps(
+        *,
+        primary_category: ProblemCategory,
+        has_requested_tools: bool,
+        latest_user_message: str,
+        normalized_message: str,
+    ) -> list[ExecutionStep]:
+        """根据主分类生成最小可执行步骤。"""
+
         if has_requested_tools:
             return [
                 ExecutionStep(
@@ -358,7 +425,162 @@ class PlannerService:
                     depends_on=["tool_1"],
                 ),
             ]
-        
+
+        if primary_category == "policy":
+            return [
+                ExecutionStep(
+                    step_id="rag_1",
+                    executor="rag",
+                    goal="检索政策和标准相关知识",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结政策检索结果并回答用户",
+                    depends_on=["rag_1"],
+                ),
+            ]
+
+        if primary_category == "route_planning":
+            need_policy_support = _needs_policy_support_for_route(
+                latest_user_message=latest_user_message,
+                normalized_message=normalized_message,
+            )
+            need_traffic_support = _needs_traffic_support_for_route(
+                latest_user_message=latest_user_message,
+            )
+            route_dependency_step_ids: list[str] = []
+            route_steps: list[ExecutionStep] = []
+
+            if need_policy_support:
+                route_steps.append(
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路线相关政策和标准要求",
+                        can_run_in_parallel=True,
+                    )
+                )
+                route_dependency_step_ids.append("rag_1")
+
+            route_steps.append(
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询路线规划相关数据",
+                    can_run_in_parallel=True,
+                )
+            )
+            route_dependency_step_ids.append("route_1")
+
+            if need_traffic_support:
+                route_steps.append(
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路线相关路况信息",
+                        can_run_in_parallel=True,
+                    )
+                )
+                route_dependency_step_ids.append("traffic_1")
+
+            if len(route_dependency_step_ids) > 1:
+                route_steps.append(
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路线、路况和政策结果生成最终回答",
+                        depends_on=route_dependency_step_ids,
+                    )
+                )
+                return route_steps
+            return [
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询路线规划相关数据",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路线结果并回答用户",
+                    depends_on=["route_1"],
+                ),
+            ]
+
+        if primary_category == "traffic_status":
+            if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
+                return [
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路况研判相关政策和标准要求",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路况或实时交通数据",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路况结果与政策要求生成最终回答",
+                        depends_on=["rag_1", "traffic_1"],
+                    ),
+                ]
+            return [
+                ExecutionStep(
+                    step_id="traffic_1",
+                    executor="traffic",
+                    goal="查询路况或实时交通数据",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路况结果并回答用户",
+                    depends_on=["traffic_1"],
+                ),
+            ]
+
+        if primary_category == "network_report":
+            if any(keyword in latest_user_message for keyword in POLICY_KEYWORDS):
+                return [
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索路网报告相关政策和标准要求",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="report_1",
+                        executor="report",
+                        goal="汇总多个区域或多个接口的路网数据",
+                        can_run_in_parallel=True,
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路网数据与政策要求输出报告、对比结论和表格",
+                        depends_on=["rag_1", "report_1"],
+                    ),
+                ]
+            return [
+                ExecutionStep(
+                    step_id="report_1",
+                    executor="report",
+                    goal="汇总多个区域或多个接口的路网数据",
+                    can_run_in_parallel=True,
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="输出路网报告、对比结论和表格",
+                    depends_on=["report_1"],
+                ),
+            ]
+
         return [
             ExecutionStep(
                 step_id="answer_1",
@@ -366,3 +588,24 @@ class PlannerService:
                 goal="直接回答用户问题",
             )
         ]
+
+
+def _needs_policy_support_for_route(
+    *,
+    latest_user_message: str,
+    normalized_message: str,
+) -> bool:
+    """判断路线类问题是否同时需要补充政策标准检索。"""
+
+    return (
+        any(keyword in latest_user_message for keyword in POLICY_KEYWORDS)
+        or latest_user_message.startswith("知识库:")
+        or normalized_message.startswith(("knowledge:", "konwledge:"))
+        or "#knowledge" in normalized_message
+    )
+
+
+def _needs_traffic_support_for_route(*, latest_user_message: str) -> bool:
+    """判断路线类问题是否同时需要补充路况信息。"""
+
+    return any(keyword in latest_user_message for keyword in TRAFFIC_KEYWORDS)

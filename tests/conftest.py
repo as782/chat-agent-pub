@@ -16,7 +16,10 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.outputs import ChatGenerationChunk, ChatResult, ChatGeneration
 from app.clients.llm_client import (
     LlmToolCall,
 )
@@ -74,6 +77,18 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         ),
     )
 
+    def _resolve_msg_type(message: object) -> str:
+        """统一获取消息类型，兼容 LlmInputMessage(.role) 和 BaseMessage(.type)。"""
+        msg_type = getattr(message, "type", None)
+        if msg_type:
+            return str(msg_type)
+        role = getattr(message, "role", "")
+        if role == "user":
+            return "human"
+        if role == "assistant":
+            return "ai"
+        return str(role)
+
     async def fake_create_chat_completion(
         self: object,
         messages: list[object],
@@ -103,14 +118,15 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 available_tool_names.append(str(getattr(tool, "name", "")))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = _resolve_msg_type(message)
             content = str(getattr(message, "content", ""))
             all_message_contents.append(content)
-            if role == "tool" and not latest_tool_output:
+            
+            if msg_type in ("tool", "function") and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
-            if role == "user":
+            if msg_type == "human":
                 user_messages.append(content)
 
         history_contains_name = any("我叫小王" in message for message in user_messages[1:])
@@ -295,20 +311,20 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 available_tool_names.append(str(getattr(tool, "name", "")))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = _resolve_msg_type(message)
             content = str(getattr(message, "content", ""))
-            if role == "tool" and not latest_tool_output:
+            if msg_type in ("tool", "function") and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
             if latest_tool_output and latest_user_message:
                 break
 
         for message in messages:
-            role = getattr(message, "role", "")
+            msg_type = _resolve_msg_type(message)
             content = str(getattr(message, "content", ""))
             all_message_contents.append(content)
-            if role == "user":
+            if msg_type == "human":
                 user_messages.append(content)
 
         async def iterator() -> AsyncIterator[AIMessageChunk]:
@@ -387,11 +403,9 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             split_index = max(1, len(full_text) // 2)
             yield AIMessageChunk(
                 content=full_text[:split_index],
-                response_metadata={"model_name": resolved_model_name},
             )
             yield AIMessageChunk(
                 content=full_text[split_index:],
-                response_metadata={"model_name": resolved_model_name},
             )
             yield AIMessageChunk(
                 content="",
@@ -401,6 +415,69 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
 
         return iterator()
 
+    def fake_create_runnable(
+        self: Any,
+        *,
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+        is_stream: bool = False,
+    ) -> Any:
+        """为集成测试返回假 Runnable，并确保它调用实例上的补全方法以便支持测试特定的 monkeypatch。"""
+        llm_instance = self
+
+        class FakeLLM(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-llm"
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: Any = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                raise NotImplementedError("Use _agenerate instead")
+
+            async def _agenerate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: Any = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                msg = await llm_instance.create_chat_completion(
+                    messages=messages,
+                    model_name=model_name,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    enable_thinking=enable_thinking,
+                )
+                return ChatResult(generations=[ChatGeneration(message=msg)])
+
+            async def _astream(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: Any = None,
+                **kwargs: Any,
+            ) -> AsyncIterator[ChatGenerationChunk]:
+                # print(f"DEBUG: FakeLLM._astream called with {len(messages)} messages")
+                async for chunk in llm_instance.stream_chat_completion(
+                    messages=messages,
+                    model_name=model_name,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    enable_thinking=enable_thinking,
+                ):
+                    yield ChatGenerationChunk(message=chunk)
+
+        result = FakeLLM()
+        result.name = "FakeLLM"
+        return result
+
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
@@ -408,6 +485,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.stream_chat_completion",
         fake_stream_chat_completion,
+    )
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_runnable",
+        fake_create_runnable,
     )
 
     from app.main import create_app

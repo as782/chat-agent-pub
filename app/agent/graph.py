@@ -3,11 +3,12 @@
 当前阶段先把 planner 节点接入图中，但仍保持既有真实路由行为不变。
 """
 
-from __future__ import annotations
-
+from collections.abc import AsyncIterator
 from typing import Any
 
+from langchain_core.messages import ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
@@ -20,11 +21,11 @@ from app.agent.nodes.report_node import ReportNode
 from app.agent.nodes.route_node import RouteNode
 from app.agent.nodes.router_node import RouterNode
 from app.agent.nodes.scheduler_node import SchedulerNode
-from app.agent.nodes.tool_node import ToolNode
+from app.agent.nodes.tool_node import ToolNode as CustomToolNode
 from app.agent.nodes.traffic_node import TrafficNode
 from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult, PreparedContext
 from app.clients.llm_client import LlmClient
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolRegistry, tool_to_langchain_format
 
 
 class ConversationGraph:
@@ -51,7 +52,7 @@ class ConversationGraph:
             llm_client=shared_llm_client,
             tool_registry=shared_tool_registry,
         )
-        self._tool_node = ToolNode(
+        self._custom_tool_node = CustomToolNode(
             db_session,
             answer_node=self._answer_node,
             llm_client=shared_llm_client,
@@ -60,6 +61,11 @@ class ConversationGraph:
         self._ragflow_node = RagflowNode(db_session)
         self._mcp_node = McpNode()
         self._memory_node = MemoryNode(db_session)
+        
+        # 获取并注册工具到预构建的 ToolNode
+        tools = [tool_to_langchain_format(tool) for tool in shared_tool_registry.get_tools(None)]
+        self._tool_node = ToolNode(tools)
+        
         self._compiled_graph = self._build_graph()
 
     async def run_turn(
@@ -79,33 +85,15 @@ class ConversationGraph:
             checkpoint_payload if isinstance(checkpoint_payload, dict) else None,
         )
 
-    async def prepare_stream_state(
+    async def stream_events(
         self,
         execution_request: ChatExecutionRequest,
-    ) -> AgentState:
-        """为流式路径准备与主图一致的预处理状态。"""
+    ) -> AsyncIterator[dict[str, Any]]:
+        """使用 astream_events 接管流式对话运行。"""
 
         initial_state = self._build_initial_state(execution_request)
-        planned_state = await self._planner_node.run(initial_state)
-        argument_state = await self._argument_node.run({**initial_state, **planned_state})
-        return await self._prepare_stream_execution_state(
-            {**initial_state, **planned_state, **argument_state}
-        )
-
-    async def prepare_stream_context(
-        self,
-        execution_request: ChatExecutionRequest,
-    ) -> tuple[str, PreparedContext]:
-        """兼容旧流式调用入口。"""
-
-        prepared_state = await self.prepare_stream_state(execution_request)
-        prepared_context = prepared_state["prepared_context"]
-        return str(prepared_state["route"]), prepared_context
-
-    async def advance_stream_state(self, state: AgentState) -> AgentState:
-        """鍦ㄦ祦寮忚矾寰勪腑褰撴煇涓?step 瀹屾垚鍚庨噸鏂拌皟搴﹀苟鍑嗗涓嬩竴涓彲鎵ц鐘舵€併€?"""
-
-        return await self._prepare_stream_execution_state(state)
+        async for event in self._compiled_graph.astream_events(initial_state, version="v2"):
+            yield event
 
     async def refresh_memory(
         self,
@@ -127,10 +115,17 @@ class ConversationGraph:
 
         return self._answer_node
 
-    def get_tool_node(self) -> ToolNode:
+    def get_tool_node(self) -> CustomToolNode:
         """暴露工具节点，供流式路径复用工具执行逻辑。"""
 
-        return self._tool_node
+        return self._custom_tool_node
+
+    def _should_continue(self, state: AgentState) -> str:
+        """决定下一个节点，基于是否有工具调用需要执行。"""
+        last_message = state.get("tool_completion_result")
+        if last_message and hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tool_node"
+        return "answer_node"
 
     def _build_graph(self) -> Any:
         """组装 LangGraph 状态图。"""
@@ -141,7 +136,7 @@ class ConversationGraph:
         graph_builder.add_node("scheduler_node", self._scheduler_node.run)
         graph_builder.add_node("router_node", self._router_node.run)
         graph_builder.add_node("route_node", self._route_node.run)
-        graph_builder.add_node("tool_node", self._tool_node.run)
+        graph_builder.add_node("tool_node", self._custom_tool_node.run)
         graph_builder.add_node("ragflow_node", self._ragflow_node.run)
         graph_builder.add_node("mcp_node", self._mcp_node.run)
         graph_builder.add_node("traffic_node", self._traffic_node.run)
@@ -169,7 +164,17 @@ class ConversationGraph:
         graph_builder.add_edge("route_node", "mcp_node")
         graph_builder.add_edge("traffic_node", "mcp_node")
         graph_builder.add_edge("report_node", "mcp_node")
-        graph_builder.add_edge("tool_node", "scheduler_node")
+        
+        # 添加工具节点的条件边，实现工具循环
+        graph_builder.add_conditional_edges(
+            "tool_node",
+            self._should_continue,
+            {
+                "tool_node": "tool_node",
+                "answer_node": "answer_node"
+            }
+        )
+        
         graph_builder.add_edge("ragflow_node", "scheduler_node")
         graph_builder.add_edge("mcp_node", "tool_node")
         graph_builder.add_edge("answer_node", "memory_node")
@@ -213,93 +218,3 @@ class ConversationGraph:
         if route == "report":
             return "report_node"
         return "answer_node"
-
-    async def _prepare_route_state(self, initial_state: AgentState) -> AgentState:
-        """按真实路由顺序执行前置节点，供流式路径复用。"""
-
-        planned_state = await self._planner_node.run(initial_state)
-        argument_state = await self._argument_node.run({**initial_state, **planned_state})
-        scheduled_state = await self._scheduler_node.run(
-            {**initial_state, **planned_state, **argument_state}
-        )
-        route_state = await self._router_node.run(
-            {**initial_state, **planned_state, **argument_state, **scheduled_state}
-        )
-        merged_state: AgentState = {
-            **initial_state,
-            **planned_state,
-            **argument_state,
-            **scheduled_state,
-            **route_state,
-        }
-        while True:
-            route = merged_state.get("route")
-            if route == "ragflow":
-                knowledge_state = await self._ragflow_node.run(merged_state)
-                merged_state = {**merged_state, **knowledge_state}
-                merged_state = await self._reschedule_state(merged_state)
-                continue
-            if route == "route":
-                route_state = await self._route_node.run(merged_state)
-                merged_state = {**merged_state, **route_state}
-                mcp_state = await self._mcp_node.run(merged_state)
-                return {**merged_state, **mcp_state}
-            if route == "mcp":
-                mcp_state = await self._mcp_node.run(merged_state)
-                return {**merged_state, **mcp_state}
-            if route == "traffic":
-                traffic_state = await self._traffic_node.run(merged_state)
-                merged_state = {**merged_state, **traffic_state}
-                mcp_state = await self._mcp_node.run(merged_state)
-                return {**merged_state, **mcp_state}
-            if route == "report":
-                report_state = await self._report_node.run(merged_state)
-                merged_state = {**merged_state, **report_state}
-                mcp_state = await self._mcp_node.run(merged_state)
-                return {**merged_state, **mcp_state}
-            return merged_state
-
-    async def _reschedule_state(self, state: AgentState) -> AgentState:
-        """在流式前置执行若干非回答步骤后重新调度当前计划。"""
-
-        scheduled_state = await self._scheduler_node.run(state)
-        route_state = await self._router_node.run({**state, **scheduled_state})
-        return {**state, **scheduled_state, **route_state}
-
-    async def _prepare_stream_execution_state(self, state: AgentState) -> AgentState:
-        """鎸夌湡瀹炶矾鐢遍『搴忔墽琛屽墠缃妭鐐癸紝骞朵负娴佸紡杈撳嚭鍑嗗濂藉綋鍓嶈疆娆′笂涓嬫枃銆?"""
-
-        merged_state = await self._reschedule_state(state)
-        while True:
-            route = merged_state.get("route")
-            if route == "ragflow":
-                knowledge_state = await self._ragflow_node.run(merged_state)
-                merged_state = {**merged_state, **knowledge_state}
-                merged_state = await self._reschedule_state(merged_state)
-                continue
-            if route == "route":
-                route_state = await self._route_node.run(merged_state)
-                merged_state = {**merged_state, **route_state}
-                mcp_state = await self._mcp_node.run(merged_state)
-                merged_state = {**merged_state, **mcp_state}
-                break
-            if route == "mcp":
-                mcp_state = await self._mcp_node.run(merged_state)
-                merged_state = {**merged_state, **mcp_state}
-                break
-            if route == "traffic":
-                traffic_state = await self._traffic_node.run(merged_state)
-                merged_state = {**merged_state, **traffic_state}
-                mcp_state = await self._mcp_node.run(merged_state)
-                merged_state = {**merged_state, **mcp_state}
-                break
-            if route == "report":
-                report_state = await self._report_node.run(merged_state)
-                merged_state = {**merged_state, **report_state}
-                mcp_state = await self._mcp_node.run(merged_state)
-                merged_state = {**merged_state, **mcp_state}
-                break
-            break
-
-        context_state = await self._answer_node.prepare_context_state(merged_state)
-        return {**merged_state, **context_state}

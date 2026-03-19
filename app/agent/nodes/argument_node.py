@@ -8,9 +8,6 @@ from __future__ import annotations
 
 from app.agent.argument_resolver import ArgumentResolver
 from app.agent.state import AgentState, ResolvedArguments
-from app.core.logger import get_logger
-
-LOGGER = get_logger(__name__)
 
 
 class ArgumentNode:
@@ -22,35 +19,17 @@ class ArgumentNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """提取当前问题对应的结构化参数。"""
 
-        LOGGER.info("========== 参数提取开始 ==========")
-        
         resolved_arguments = self._argument_resolver.resolve(state)
         step_arguments = self._build_step_arguments(state)
         missing_fields = self._collect_missing_fields(
             resolved_arguments=resolved_arguments,
             step_arguments=step_arguments,
         )
-        
-        LOGGER.info(
-            "参数提取完成：\n"
-            "  主参数 category=%s, 缺失字段：%s\n"
-            "  逐步参数数量：%s",
-            resolved_arguments.category,
-            list(resolved_arguments.missing_fields),
-            len(step_arguments),
-        )
-        for step_id, args in step_arguments.items():
-            LOGGER.info("    步骤 %s: category=%s, 缺失字段=%s", 
-                       step_id, args.category, list(args.missing_fields))
-
         need_clarification = bool(missing_fields) or bool(state.get("need_clarification", False))
         clarification_question = state.get("clarification_question")
         if need_clarification and clarification_question is None and missing_fields:
             clarification_question = self._build_clarification_question(missing_fields)
-            LOGGER.info("需要澄清：missing_fields=%s", missing_fields)
 
-        LOGGER.info("================================\n")
-        
         return {
             "resolved_arguments": resolved_arguments,
             "step_arguments": step_arguments,

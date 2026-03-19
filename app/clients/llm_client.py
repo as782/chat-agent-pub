@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any
 
 from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -122,6 +123,26 @@ class LlmClient:
             for tc in message.tool_calls
         ]
 
+    def create_runnable(
+        self,
+        *,
+        model_name: str | None = None,
+        tools: Sequence[LlmBindableTool] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        is_stream: bool = False,
+        enable_thinking: bool | None = None,
+    ) -> Any:
+        """创建一个可直接执行的 LangChain Runnable 对象。"""
+
+        chat_model = self._create_chat_model(
+            model_name=model_name,
+            is_stream=is_stream,
+            enable_thinking=enable_thinking,
+        )
+        if tools:
+            return chat_model.bind_tools(tools, tool_choice=tool_choice)
+        return chat_model
+
     async def create_chat_completion(
         self,
         messages: Sequence[LlmInputMessage],
@@ -141,16 +162,17 @@ class LlmClient:
             is_stream=False,
             enable_thinking=enable_thinking,
         )
-        chat_model = self._create_chat_model(
+        runnable = self.create_runnable(
             model_name=model_name,
+            tools=tools,
+            tool_choice=tool_choice,
             is_stream=False,
             enable_thinking=enable_thinking,
         )
-        runnable = chat_model.bind_tools(tools, tool_choice=tool_choice) if tools else chat_model
         llm_messages = self._build_langchain_messages(messages)
 
         try:
-            llm_response = await runnable.ainvoke(llm_messages)
+            completion_result = await runnable.ainvoke(llm_messages)
         except AppException:
             raise
         except (
@@ -165,7 +187,6 @@ class LlmClient:
         ) as exception:
             raise self._convert_openai_exception(exception) from exception
 
-        completion_result = llm_response
         LOGGER.info(
             (
                 "LLM 请求完成：mode=non_stream model=%s duration_ms=%.2f "
@@ -269,7 +290,7 @@ class LlmClient:
         *,
         is_stream: bool = False,
         enable_thinking: bool | None = None,
-    ) -> object:
+    ) -> BaseChatModel:
         """根据环境配置创建 LangChain 聊天模型客户端。"""
 
         api_key = self._settings.openai_api_key

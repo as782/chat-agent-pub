@@ -9,19 +9,14 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import ConversationGraph
-from app.agent.nodes.tool_node import MAX_TOOL_CALL_ROUNDS
 from app.agent.state import (
-    AgentRoute,
-    AgentState,
     ChatExecutionRequest,
     ChatTurnResult,
-    ExecutorResult,
-    ProblemCategory,
-    get_execution_step,
 )
 from app.clients.llm_client import LlmClient, LlmInputMessage
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -74,7 +69,6 @@ class ChatService:
             session_id=session_id,
         )
         checkpoint_payload: dict[str, object] | None = None
-        checkpoint_duration_ms = 0.0
 
         try:
             prepare_start_time = perf_counter()
@@ -151,35 +145,116 @@ class ChatService:
             # 先提交用户消息，避免流式响应已开始时会话仍未落库。
             await self._db_session.commit()
             prepare_duration_ms = (perf_counter() - prepare_start_time) * 1000
-
-            prepare_state_start_time = perf_counter()
-            prepared_state = await self._conversation_graph.prepare_stream_state(execution_request)
-            prepare_state_duration_ms = (perf_counter() - prepare_state_start_time) * 1000
         except Exception:
             await self._db_session.rollback()
             raise
 
         LOGGER.info(
             (
-                "聊天请求开始：request_id=%s mode=stream session_id=%s route=%s "
-                "prepare_ms=%.2f prepare_state_ms=%.2f total_elapsed_ms=%.2f"
+                "聊天流式请求开始：request_id=%s session_id=%s prepare_ms=%.2f"
             ),
             request_id,
             resolved_session_id,
-            str(prepared_state["route"]),
             prepare_duration_ms,
-            prepare_state_duration_ms,
-            (perf_counter() - request_start_time) * 1000,
         )
         return (
             resolved_session_id,
-            self._stream_planned_graph_turn(
+            self._consume_graph_events(
                 execution_request=execution_request,
-                prepared_state=prepared_state,
                 request_id=request_id,
                 request_start_time=request_start_time,
             ),
         )
+
+    async def _consume_graph_events(
+        self,
+        *,
+        execution_request: ChatExecutionRequest,
+        request_id: str,
+        request_start_time: float,
+    ) -> AsyncIterator[str]:
+        """通用的 LangGraph 事件消息流转化器。"""
+
+        chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
+            default_model_name=execution_request.model_name or self._llm_client.default_model_name
+        )
+        first_payload_duration_ms: float | None = None
+        final_result: ChatTurnResult | None = None
+        has_emitted_payload = False
+
+        try:
+            async for event in self._conversation_graph.stream_events(execution_request):
+                LOGGER.info(f"DEBUG: graph event: {event['event']} name: {event.get('name')}")
+                # 1. 提取 Token (on_chat_model_stream)
+                if event["event"] == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"]
+                    # print(f"DEBUG: stream_events chunk: {chunk}")
+                    if not isinstance(chunk, AIMessageChunk):
+                        continue
+
+                    if first_payload_duration_ms is None:
+                        first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
+
+                    for payload in chunk_builder.consume_chunk(chunk):
+                        has_emitted_payload = True
+                        yield payload
+
+                # 2. 提取最终结果 (on_chain_end for root graph)
+                elif event["event"] == "on_chain_end" and event["name"] == "LangGraph":
+                    output = event["data"]["output"]
+                    if isinstance(output, dict) and output.get("final_result"):
+                        final_result = output["final_result"]
+
+            # 3. 结束流
+            for payload in chunk_builder.finalize():
+                has_emitted_payload = True
+                yield payload
+
+            # 4. 记录日志与指标
+            if final_result:
+                # 注意：在流式完成后，我们可能需要更新会话时间戳和刷新内存，
+                # 但由于 astream_events 已经完成了图运行，这些逻辑应该在 Node 内部或在此处补齐。
+                # 目前 AnswerNode 已经处理了持久化，我们只需处理 commit 和 checkpoint。
+                await self._session_repository.update_timestamp(str(execution_request.session_id))
+                await self._db_session.commit()
+
+                LOGGER.info(
+                    (
+                        "聊天流式响应完成：request_id=%s session_id=%s route=%s "
+                        "first_payload_ms=%s total_elapsed_ms=%.2f"
+                    ),
+                    request_id,
+                    execution_request.session_id,
+                    final_result.route,
+                    (
+                        f"{first_payload_duration_ms:.2f}"
+                        if first_payload_duration_ms is not None
+                        else "none"
+                    ),
+                    (perf_counter() - request_start_time) * 1000,
+                )
+            yield "data: [DONE]\n\n"
+
+        except AppException as exception:
+            await self._db_session.rollback()
+            if not has_emitted_payload:
+                raise
+
+            yield self._openai_compat_service.build_stream_error_payload(exception)
+            yield "data: [DONE]\n\n"
+        except Exception as exception:
+            await self._db_session.rollback()
+            if not has_emitted_payload:
+                raise
+
+            LOGGER.exception("流式输出过程中发生未处理异常。", exc_info=exception)
+            yield self._openai_compat_service.build_stream_error_payload(
+                AppException(
+                    "流式输出过程中发生内部异常。",
+                    error_code="stream_error",
+                )
+            )
+            yield "data: [DONE]\n\n"
 
     def _build_execution_request(
         self,
@@ -211,386 +286,6 @@ class ChatService:
             enable_thinking=chat_request.enable_thinking,
             user_id=chat_request.user,
         )
-
-    async def _stream_planned_graph_turn(
-        self,
-        *,
-        execution_request: ChatExecutionRequest,
-        prepared_state: AgentState,
-        request_id: str,
-        request_start_time: float,
-    ) -> AsyncIterator[str]:
-        """执行支持多 step 调度的流式对话主逻辑。"""
-
-        request_route = str(prepared_state["route"])
-        current_route = request_route
-        working_state = prepared_state
-        has_emitted_payload = False
-        final_completion_result: AIMessage | None = None
-        final_used_session_memory = prepared_state["prepared_context"].used_session_memory
-        chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
-            default_model_name=execution_request.model_name or self._llm_client.default_model_name
-        )
-        first_payload_duration_ms: float | None = None
-        tool_execution_duration_ms = 0.0
-        persist_duration_ms = 0.0
-        memory_refresh_duration_ms = 0.0
-        commit_duration_ms = 0.0
-        checkpoint_duration_ms = 0.0
-
-        try:
-            while True:
-                current_route = str(working_state["route"])
-                prepared_context = working_state["prepared_context"]
-                final_used_session_memory = prepared_context.used_session_memory
-
-                if self._is_tool_route(current_route):
-                    tool_node = self._conversation_graph.get_tool_node()
-                    runtime_mcp_tools = tool_node.extract_runtime_mcp_tools(
-                        working_state
-                    )
-                    available_tools = tool_node.build_available_tools(
-                        route=current_route,
-                        requested_tool_names=execution_request.requested_tool_names,
-                        runtime_mcp_tools=runtime_mcp_tools,
-                    )
-                    conversation_messages = list(prepared_context.messages)
-                    normalized_tool_choice = execution_request.tool_choice
-                    suppress_step_content = self._should_defer_stream_step_content(working_state)
-                    executed_tool_calls = []
-                    completion_result: AIMessage | None = None
-
-                    for tool_round in range(MAX_TOOL_CALL_ROUNDS):
-                        round_index = tool_round + 1
-                        llm_round_start_time = perf_counter()
-                        current_completion_chunk: AIMessageChunk | None = None
-                        async for llm_chunk in self._llm_client.stream_chat_completion(
-                            messages=conversation_messages,
-                            model_name=execution_request.model_name,
-                            tools=available_tools,
-                            tool_choice=normalized_tool_choice,
-                            enable_thinking=execution_request.enable_thinking,
-                        ):
-                            if current_completion_chunk is None:
-                                current_completion_chunk = llm_chunk
-                            else:
-                                current_completion_chunk += llm_chunk
-
-                            if suppress_step_content and not llm_chunk.tool_calls:
-                                continue
-
-                            for payload in chunk_builder.consume_chunk(llm_chunk):
-                                first_payload_duration_ms = self._mark_first_stream_payload(
-                                    request_id=request_id,
-                                    route=request_route,
-                                    request_start_time=request_start_time,
-                                    current_first_payload_duration_ms=first_payload_duration_ms,
-                                )
-                                has_emitted_payload = True
-                                yield payload
-
-                        if current_completion_chunk is None:
-                            raise AppException(
-                                "LLM did not return a final response.",
-                                error_code="invalid_llm_response",
-                            )
-                        completion_result = AIMessage(
-                            content=current_completion_chunk.content,
-                            tool_calls=current_completion_chunk.tool_calls,
-                            response_metadata=current_completion_chunk.response_metadata,
-                        )
-                        LOGGER.info(
-                            (
-                                "聊天流式轮次完成：request_id=%s route=%s round=%s "
-                                "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
-                            ),
-                            request_id,
-                            current_route,
-                            round_index,
-                            (perf_counter() - llm_round_start_time) * 1000,
-                            completion_result.response_metadata.get("finish_reason"),
-                            len(completion_result.tool_calls),
-                        )
-                        if not completion_result.tool_calls:
-                            break
-
-                        await self._conversation_graph.get_answer_node().persist_assistant_tool_calls(
-                            session_id=str(execution_request.session_id),
-                            completion_result=completion_result,
-                        )
-                        conversation_messages.append(
-                            LlmInputMessage(
-                                role="assistant",
-                                content=completion_result.content,
-                                tool_calls=completion_result.tool_calls,
-                            )
-                        )
-
-                        tool_execute_start_time = perf_counter()
-                        current_tool_results = await self._conversation_graph.get_tool_node().execute_requested_tools_and_persist(
-                            session_id=str(execution_request.session_id),
-                            completion_result=completion_result,
-                            runtime_mcp_tools=runtime_mcp_tools,
-                        )
-                        current_tool_execution_duration_ms = (
-                            perf_counter() - tool_execute_start_time
-                        ) * 1000
-                        tool_execution_duration_ms += current_tool_execution_duration_ms
-                        LOGGER.info(
-                            (
-                                "聊天流式工具执行完成：request_id=%s route=%s round=%s "
-                                "tool_exec_ms=%.2f executed_tool_count=%s"
-                            ),
-                            request_id,
-                            current_route,
-                            round_index,
-                            current_tool_execution_duration_ms,
-                            len(current_tool_results),
-                        )
-                        executed_tool_calls.extend(current_tool_results)
-                        for executed_tool_call in current_tool_results:
-                            conversation_messages.append(
-                                LlmInputMessage(
-                                    role="tool",
-                                    content=executed_tool_call.output,
-                                    tool_call_id=executed_tool_call.tool_call_id,
-                                )
-                            )
-
-                        normalized_tool_choice = "auto"
-                        if round_index >= MAX_TOOL_CALL_ROUNDS:
-                            raise AppException(
-                                "Tool call rounds exceeded the current limit.",
-                                error_code="tool_call_limit_exceeded",
-                            )
-
-                    if completion_result is None:
-                        raise AppException(
-                            "LLM did not return a final response.",
-                            error_code="invalid_llm_response",
-                        )
-
-                    working_state = {
-                        **working_state,
-                        "tool_completion_result": completion_result,
-                        "executed_tool_calls": executed_tool_calls,
-                        **self._conversation_graph.get_tool_node().build_step_result_update(
-                            state=working_state,
-                            completion_result=completion_result,
-                            executed_tool_calls=executed_tool_calls,
-                        ),
-                    }
-                    advanced_state = await self._conversation_graph.advance_stream_state(
-                        working_state
-                    )
-                    if str(
-                        advanced_state["route"]
-                    ) == "answer" and not self._conversation_graph.get_answer_node().should_generate_summary(
-                        advanced_state
-                    ):
-                        working_state = advanced_state
-                        final_used_session_memory = advanced_state[
-                            "prepared_context"
-                        ].used_session_memory
-                        final_completion_result = completion_result
-                        break
-
-                    working_state = advanced_state
-                    continue
-
-                llm_round_start_time = perf_counter()
-                current_completion_chunk: AIMessageChunk | None = None
-                async for llm_chunk in self._llm_client.stream_chat_completion(
-                    messages=prepared_context.messages,
-                    model_name=execution_request.model_name,
-                    enable_thinking=execution_request.enable_thinking,
-                ):
-                    if current_completion_chunk is None:
-                        current_completion_chunk = llm_chunk
-                    else:
-                        current_completion_chunk += llm_chunk
-
-                    for payload in chunk_builder.consume_chunk(llm_chunk):
-                        first_payload_duration_ms = self._mark_first_stream_payload(
-                            request_id=request_id,
-                            route=request_route,
-                            request_start_time=request_start_time,
-                            current_first_payload_duration_ms=first_payload_duration_ms,
-                        )
-                        has_emitted_payload = True
-                        yield payload
-
-                if current_completion_chunk is None:
-                    raise AppException(
-                        "LLM did not return a final response.",
-                        error_code="invalid_llm_response",
-                    )
-                final_completion_result = AIMessage(
-                    content=current_completion_chunk.content,
-                    tool_calls=current_completion_chunk.tool_calls,
-                    response_metadata=current_completion_chunk.response_metadata,
-                )
-                LOGGER.info(
-                    (
-                        "聊天流式轮次完成：request_id=%s route=%s round=%s "
-                        "llm_round_ms=%.2f finish_reason=%s tool_call_count=%s"
-                    ),
-                    request_id,
-                    current_route,
-                    1,
-                    (perf_counter() - llm_round_start_time) * 1000,
-                    final_completion_result.response_metadata.get("finish_reason"),
-                    len(final_completion_result.tool_calls),
-                )
-                break
-
-            if final_completion_result is None:
-                raise AppException(
-                    "LLM did not return a final response.",
-                    error_code="invalid_llm_response",
-                )
-
-            persist_start_time = perf_counter()
-            await self._conversation_graph.get_answer_node().persist_stream_result(
-                session_id=str(execution_request.session_id),
-                completion_result=final_completion_result,
-                used_session_memory=final_used_session_memory,
-            )
-            persist_duration_ms = (perf_counter() - persist_start_time) * 1000
-
-            memory_refresh_start_time = perf_counter()
-            checkpoint_payload = await self._conversation_graph.refresh_memory(
-                session_id=str(execution_request.session_id),
-                route=request_route,
-            )
-            memory_refresh_duration_ms = (perf_counter() - memory_refresh_start_time) * 1000
-
-            commit_start_time = perf_counter()
-            await self._session_repository.update_timestamp(str(execution_request.session_id))
-            await self._db_session.commit()
-            commit_duration_ms = (perf_counter() - commit_start_time) * 1000
-
-            checkpoint_start_time = perf_counter()
-            await self._save_checkpoint_safely(checkpoint_payload)
-            checkpoint_duration_ms = (perf_counter() - checkpoint_start_time) * 1000
-
-            for payload in chunk_builder.finalize(
-                final_completion_result.response_metadata.get("finish_reason")
-            ):
-                first_payload_duration_ms = self._mark_first_stream_payload(
-                    request_id=request_id,
-                    route=request_route,
-                    request_start_time=request_start_time,
-                    current_first_payload_duration_ms=first_payload_duration_ms,
-                )
-                has_emitted_payload = True
-                yield payload
-
-            LOGGER.info(
-                (
-                    "聊天请求完成：request_id=%s mode=stream session_id=%s route=%s "
-                    "first_payload_ms=%s tool_exec_ms=%.2f persist_ms=%.2f "
-                    "memory_refresh_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
-                    "total_ms=%.2f finish_reason=%s"
-                ),
-                request_id,
-                execution_request.session_id,
-                request_route,
-                f"{first_payload_duration_ms:.2f}"
-                if first_payload_duration_ms is not None
-                else "none",
-                tool_execution_duration_ms,
-                persist_duration_ms,
-                memory_refresh_duration_ms,
-                commit_duration_ms,
-                checkpoint_duration_ms,
-                (perf_counter() - request_start_time) * 1000,
-                final_completion_result.response_metadata.get("finish_reason"),
-            )
-        except AppException as exception:
-            await self._db_session.rollback()
-            if not has_emitted_payload:
-                raise
-
-            LOGGER.warning(
-                (
-                    "聊天请求失败：request_id=%s mode=stream session_id=%s route=%s "
-                    "total_ms=%.2f error_code=%s"
-                ),
-                request_id,
-                execution_request.session_id,
-                request_route,
-                (perf_counter() - request_start_time) * 1000,
-                exception.error_code,
-            )
-            yield self._openai_compat_service.build_stream_error_payload(exception)
-            yield "data: [DONE]\n\n"
-        except Exception as exception:
-            await self._db_session.rollback()
-            if not has_emitted_payload:
-                raise
-
-            LOGGER.exception(
-                "内部聊天流式输出过程中发生未处理异常：request_id=%s route=%s",
-                request_id,
-                current_route,
-                exc_info=exception,
-            )
-            yield self._openai_compat_service.build_stream_error_payload(
-                AppException(
-                    "Internal stream error.",
-                    error_code="stream_error",
-                )
-            )
-            yield "data: [DONE]\n\n"
-
-    @staticmethod
-    def _is_tool_route(route: str) -> bool:
-        """判断当前路由是否需要进入工具/MCP 取数合并回答的技术分支。"""
-
-        return route in {"tool", "route", "mcp", "traffic", "report"}
-
-    @staticmethod
-    def _should_defer_stream_step_content(state: AgentState) -> bool:
-        """Suppress intermediate natural-language output for multi-step executor plans."""
-
-        execution_plan = state.get("execution_plan")
-        current_step = get_execution_step(
-            state,
-            step_id=(
-                str(state["current_step_id"]) if state.get("current_step_id") is not None else None
-            ),
-        )
-        if execution_plan is None or current_step is None or current_step.executor == "answer":
-            return False
-
-        non_answer_step_count = sum(1 for step in execution_plan.steps if step.executor != "answer")
-        return non_answer_step_count > 1
-
-    def _mark_first_stream_payload(
-        self,
-        *,
-        request_id: str,
-        route: str,
-        request_start_time: float,
-        current_first_payload_duration_ms: float | None,
-    ) -> float:
-        """记录第一次 SSE 输出的时间戳，用于后续日志记录。"""
-
-        if current_first_payload_duration_ms is not None:
-            return current_first_payload_duration_ms
-
-        first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
-        LOGGER.info(
-            (
-                "聊天请求第一次输出：request_id=%s "
-                "route=%s first_payload_ms=%.2f"
-            ),
-            request_id,
-            route,
-            first_payload_duration_ms,
-        )
-        return first_payload_duration_ms
 
     async def _ensure_session(
         self,
@@ -634,6 +329,9 @@ class ChatService:
         checkpoint_payload: dict[str, object] | None,
     ) -> None:
         """在事务提交后保存 checkpoint，并屏蔽非关键基础设施故障。"""
+
+        if checkpoint_payload is None:
+            return
 
         try:
             await self._conversation_graph.save_checkpoint(checkpoint_payload)

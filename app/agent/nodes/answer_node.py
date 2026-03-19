@@ -28,11 +28,15 @@ from app.agent.state import (
     get_execution_step,
 )
 from app.clients.llm_client import LlmClient, LlmInputMessage
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.runnables import RunnableConfig
 from app.core.exceptions import AppException
 from app.memory.manager import MemoryManager
+from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry
+
+LOGGER = get_logger(__name__)
 
 RECENT_CONTEXT_WINDOW_SIZE = 8
 
@@ -55,7 +59,7 @@ class AnswerNode:
         self._memory_manager = memory_manager or MemoryManager(db_session)
         self._message_repository = MessageRepository(db_session)
 
-    async def run(self, state: AgentState) -> dict[str, object]:
+    async def run(self, state: AgentState, config: RunnableConfig | None = None) -> dict[str, object]:
         """执行普通回答节点主逻辑。"""
 
         prepared_context = state.get("prepared_context")
@@ -77,17 +81,32 @@ class AnswerNode:
 
         if not should_reuse_existing_completion:
             execution_request = self.build_execution_request_from_state(state)
-            completion_result = await self._llm_client.create_chat_completion(
-                messages=prepared_context.messages,
+            runnable = self._llm_client.create_runnable(
                 model_name=execution_request.model_name,
                 enable_thinking=execution_request.enable_thinking,
+                is_stream=True,
             )
-            if not isinstance(existing_tool_completion_result, AIMessage):
-                executed_tool_calls = []
+            llm_messages = self._llm_client._build_langchain_messages(prepared_context.messages)
+
+            completion_result: AIMessageChunk | None = None
+            async for chunk in runnable.astream(llm_messages, config=config):
+                if completion_result is None:
+                    completion_result = chunk
+                else:
+                    completion_result = completion_result + chunk
+
+            if completion_result is None:
+                raise AppException(
+                    "大模型未返回有效响应。",
+                    error_code="invalid_llm_response",
+                )
+        else:
+            # 当复用现有完成结果时，仍然需要处理已执行的工具调用
+            completion_result = existing_tool_completion_result
 
         final_result = await self.persist_completion_result(
             session_id=str(state["session_id"]),
-            completion_result=completion_result,
+            completion_result=completion_result,  # type: ignore
             executed_tool_calls=executed_tool_calls,
             used_session_memory=prepared_context.used_session_memory,
         )
@@ -96,29 +115,12 @@ class AnswerNode:
             "final_result": final_result,
         }
 
-    async def prepare_context(
-        self,
-        execution_request: ChatExecutionRequest,
-        *,
-        answer_instruction: str | None = None,
-        step_results: dict[str, ExecutorResult] | None = None,
-        knowledge_context: str | None = None,
-        route_context: str | None = None,
-        mcp_context: str | None = None,
-        traffic_context: str | None = None,
-        report_context: str | None = None,
-    ) -> PreparedContext:
-        """为流式和非流式路径统一准备模型上下文。"""
-
-        if execution_request.session_id is None:
-            raise AppException(
-                "执行回答节点前必须先解析会话标识。",
-                error_code="invalid_request",
-            )
+    async def prepare_context(self, execution_request: ChatExecutionRequest) -> PreparedContext:
+        """根据执行请求准备上下文。"""
 
         recent_messages: list[LlmInputMessage] = []
         memory_summary: str | None = None
-        if execution_request.need_session_memory:
+        if execution_request.need_session_memory and execution_request.session_id is not None:
             memory_snapshot = await self._memory_manager.load_snapshot(execution_request.session_id)
             recent_messages = await self._load_recent_messages(execution_request.session_id)
             memory_summary = memory_snapshot.summary
@@ -128,48 +130,31 @@ class AnswerNode:
             recent_messages=recent_messages,
             memory_summary=memory_summary,
             need_session_memory=execution_request.need_session_memory,
-            answer_instruction=answer_instruction,
-            executor_results_context=self._build_executor_results_context(step_results or {}),
-            knowledge_context=knowledge_context,
-            route_context=route_context,
-            mcp_context=mcp_context,
-            traffic_context=traffic_context,
-            report_context=report_context,
         )
 
     async def prepare_context_state(self, state: AgentState) -> dict[str, PreparedContext]:
-        """从图状态中准备当前轮次上下文。"""
+        """根据状态准备上下文。"""
 
         execution_request = self._build_execution_request_from_state(state)
-        step_results = state.get("step_results", {})
-        knowledge_context = (
-            str(state["knowledge_context"])
-            if isinstance(state.get("knowledge_context"), str)
-            else None
-        )
-        route_context = (
-            str(state["route_context"]) if isinstance(state.get("route_context"), str) else None
-        )
-        mcp_context = (
-            str(state["mcp_context"]) if isinstance(state.get("mcp_context"), str) else None
-        )
-        traffic_context = (
-            str(state["traffic_context"]) if isinstance(state.get("traffic_context"), str) else None
-        )
-        report_context = (
-            str(state["report_context"]) if isinstance(state.get("report_context"), str) else None
-        )
-        prepared_context = await self.prepare_context(
-            execution_request,
-            answer_instruction=self._resolve_answer_instruction(state),
-            step_results=step_results,
-            knowledge_context=knowledge_context,
-            route_context=route_context,
-            mcp_context=mcp_context,
-            traffic_context=traffic_context,
-            report_context=report_context,
-        )
+        prepared_context = await self.prepare_context(execution_request)
         return {"prepared_context": prepared_context}
+
+    async def persist_completion_result(
+        self,
+        *,
+        session_id: str,
+        completion_result: AIMessage,
+        executed_tool_calls: list[ExecutedToolCall],
+        used_session_memory: bool,
+    ) -> ChatTurnResult:
+        """持久化本轮完整补全结果。"""
+
+        return await self._persist_completion_result(
+            session_id=session_id,
+            completion_result=completion_result,
+            executed_tool_calls=executed_tool_calls,
+            used_session_memory=used_session_memory,
+        )
 
     async def persist_stream_result(
         self,
@@ -180,86 +165,12 @@ class AnswerNode:
     ) -> ChatTurnResult:
         """持久化流式路径最终得到的模型输出。"""
 
-        return await self.persist_completion_result(
+        return await self._persist_completion_result(
             session_id=session_id,
             completion_result=completion_result,
             executed_tool_calls=[],
             used_session_memory=used_session_memory,
         )
-
-    async def persist_completion_result(
-        self,
-        *,
-        session_id: str,
-        completion_result: AIMessage,
-        executed_tool_calls: list[ExecutedToolCall],
-        used_session_memory: bool,
-    ) -> ChatTurnResult:
-        """持久化最终回答，并构造统一回包结果。"""
-
-        if completion_result.tool_calls:
-            await self.persist_assistant_tool_calls(
-                session_id=session_id,
-                completion_result=completion_result,
-            )
-        else:
-            content = ""
-            if isinstance(completion_result.content, str):
-                content = completion_result.content
-            elif isinstance(completion_result.content, list):
-                for part in completion_result.content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        content += part.get("text", "")
-
-            await self._message_repository.create(
-                message_id=self._generate_identifier(),
-                session_id=session_id,
-                role="assistant",
-                content=content,
-                message_metadata={
-                    "finish_reason": (completion_result.response_metadata or {}).get("finish_reason"),
-                    "model_name": (completion_result.response_metadata or {}).get("model_name"),
-                },
-            )
-
-        content = ""
-        if isinstance(completion_result.content, str):
-            content = completion_result.content
-        elif isinstance(completion_result.content, list):
-            for part in completion_result.content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    content += part.get("text", "")
-
-        response_metadata = completion_result.response_metadata or {}
-        usage_metadata = completion_result.usage_metadata or {}
-
-        return ChatTurnResult(
-            session_id=session_id,
-            content=content,
-            model_name=str(response_metadata.get("model_name", "")),
-            prompt_tokens=int(usage_metadata.get("input_tokens", 0)),
-            completion_tokens=int(usage_metadata.get("output_tokens", 0)),
-            total_tokens=int(usage_metadata.get("total_tokens", 0)),
-            finish_reason=str(response_metadata.get("finish_reason", "stop")),
-            tool_calls=executed_tool_calls,
-            used_session_memory=used_session_memory,
-        )
-
-    async def _load_recent_messages(self, session_id: str) -> list[LlmInputMessage]:
-        """读取当前会话最近上下文窗口。"""
-
-        total_message_count = await self._message_repository.count_by_session(session_id)
-        query_limit = min(max(total_message_count, 1), RECENT_CONTEXT_WINDOW_SIZE)
-        query_offset = max(total_message_count - query_limit, 0)
-        recent_message_entities = await self._message_repository.list_by_session(
-            session_id,
-            limit=query_limit,
-            offset=query_offset,
-        )
-        return [
-            message_entity_to_input_message(message_entity)
-            for message_entity in recent_message_entities
-        ]
 
     async def persist_assistant_tool_calls(
         self,
@@ -267,7 +178,10 @@ class AnswerNode:
         session_id: str,
         completion_result: AIMessage,
     ) -> None:
-        """持久化模型返回的工具调用请求。"""
+        """持久化助手的工具调用消息。"""
+
+        if not completion_result.tool_calls:
+            return
 
         await self._message_repository.create(
             message_id=self._generate_identifier(),
@@ -275,129 +189,168 @@ class AnswerNode:
             role="assistant",
             content=completion_result.content,
             message_metadata={
-                "finish_reason": (completion_result.response_metadata or {}).get("finish_reason"),
-                "model_name": (completion_result.response_metadata or {}).get("model_name"),
                 "tool_calls": [
                     {
-                        "tool_call_id": tool_call.get("id"),
-                        "tool_name": tool_call.get("name"),
-                        "arguments": tool_call.get("args"),
+                        "id": tool_call.get("id"),
+                        "function": {
+                            "name": tool_call.get("name"),
+                            "arguments": dumps(tool_call.get("args"), ensure_ascii=False),
+                        },
+                        "type": "function",
                     }
                     for tool_call in completion_result.tool_calls
                 ],
             },
         )
 
-    @staticmethod
-    def build_execution_request_from_state(state: AgentState) -> ChatExecutionRequest:
-        """把图状态恢复为统一执行请求。"""
+    def build_execution_request_from_state(self, state: AgentState) -> ChatExecutionRequest:
+        """从状态构建执行请求。"""
+
+        return self._build_execution_request_from_state(state)
+
+    def _build_execution_request_from_state(self, state: AgentState) -> ChatExecutionRequest:
+        """从状态构建执行请求。"""
 
         return ChatExecutionRequest(
             session_id=state.get("session_id"),
-            need_session_memory=bool(state.get("need_session_memory", False)),
-            latest_user_message=str(state.get("latest_user_message", "")),
-            input_messages=list(state.get("input_messages", [])),
+            need_session_memory=state.get("need_session_memory", False),
+            user_id=state.get("user_id"),
+            latest_user_message=state.get("latest_user_message", ""),
+            input_messages=state.get("input_messages", []),
             model_name=state.get("model_name"),
             requested_tool_names=state.get("requested_tool_names"),
             tool_choice=state.get("tool_choice"),
             enable_thinking=state.get("enable_thinking"),
-            user_id=state.get("user_id"),
         )
 
-    @staticmethod
-    def _build_execution_request_from_state(state: AgentState) -> ChatExecutionRequest:
-        """兼容旧调用入口。"""
-
-        return AnswerNode.build_execution_request_from_state(state)
-
-    @staticmethod
-    def _generate_identifier() -> str:
-        """生成统一长度的业务标识。"""
+    def _generate_identifier(self) -> str:
+        """生成唯一标识符。"""
 
         return uuid4().hex
 
-    @staticmethod
-    def _resolve_answer_instruction(state: AgentState) -> str:
-        """根据当前主分类选择最终回答提示词。"""
-
-        primary_category = state.get("primary_category", "general")
-        if primary_category == "policy":
-            return POLICY_SUMMARY_PROMPT
-        if primary_category == "route_planning":
-            return ROUTE_SUMMARY_PROMPT
-        if primary_category == "traffic_status":
-            return TRAFFIC_SUMMARY_PROMPT
-        if primary_category == "network_report":
-            return NETWORK_REPORT_SUMMARY_PROMPT
-        return GENERAL_ANSWER_PROMPT
 
     @staticmethod
-    def _build_executor_results_context(
-        step_results: dict[str, ExecutorResult] | object,
-    ) -> str | None:
-        """把统一 step_results 转成可注入回答节点的结构化上下文。"""
+    def _build_executor_results_context(step_results: dict[str, ExecutorResult]) -> str | None:
+        """构建执行器结果上下文。"""
 
-        if not isinstance(step_results, dict) or not step_results:
+        if not step_results:
             return None
 
-        context_lines = ["以下是当前执行节点返回的结构化结果，请优先依据这些结果组织回答："]
-        for step_id in sorted(step_results):
-            executor_result = step_results[step_id]
-            if not isinstance(executor_result, ExecutorResult):
-                continue
-
-            context_lines.append(
-                f"[{step_id}] executor={executor_result.executor} "
-                f"success={executor_result.is_success}"
+        parts: list[str] = []
+        for step_id, result in step_results.items():
+            result_summary = "\n".join(
+                f"- {k}: {v}"
+                for k, v in (result.normalized_result or {}).items()
+                if k != "raw_result"
             )
-            if executor_result.summary:
-                context_lines.append(f"summary={executor_result.summary}")
-            if executor_result.normalized_result:
-                context_lines.append(
-                    dumps(executor_result.normalized_result, ensure_ascii=False, indent=2)
-                )
+            parts.append(
+                f"[{step_id}] executor={result.executor} success={result.is_success} "
+                f"sources={result.sources}\n{result_summary}\n{result.summary}"
+            )
 
-        return "\n".join(context_lines) if len(context_lines) > 1 else None
+        return "\n\n".join(parts)
 
-    @staticmethod
-    def _extract_executed_tool_calls(state: AgentState) -> list[ExecutedToolCall]:
-        """从图状态中提取当前轮次已经执行完成的工具结果。"""
+    def _extract_executed_tool_calls(self, state: AgentState) -> list[ExecutedToolCall]:
+        """从状态中提取已执行的工具调用。"""
 
-        raw_executed_tool_calls = state.get("executed_tool_calls", [])
-        if not isinstance(raw_executed_tool_calls, list):
+        raw_executed_tool_calls = state.get("executed_tool_calls")
+        if not raw_executed_tool_calls:
             return []
-        return [
-            executed_tool_call
-            for executed_tool_call in raw_executed_tool_calls
-            if isinstance(executed_tool_call, ExecutedToolCall)
-        ]
 
-    @staticmethod
-    def _should_generate_summary(state: AgentState) -> bool:
-        """判断当前 answer 步是否需要基于累计 step_results 再做一次最终总结。"""
+        if isinstance(raw_executed_tool_calls, list):
+            return [
+                tool_call for tool_call in raw_executed_tool_calls
+                if isinstance(tool_call, ExecutedToolCall)
+            ]
 
-        current_step = get_execution_step(
-            state,
-            step_id=(
-                str(state["current_step_id"]) if state.get("current_step_id") is not None else None
-            ),
-        )
-        if current_step is None or current_step.executor != "answer":
+        return []
+
+    def should_generate_summary(self, state: AgentState) -> bool:
+        """判断是否需要生成摘要。"""
+
+        return self._should_generate_summary(state)
+
+    def _should_generate_summary(self, state: AgentState) -> bool:
+        """判断是否需要生成摘要。"""
+
+        current_step_id = state.get("current_step_id")
+        if current_step_id is None:
             return False
 
-        raw_step_results = state.get("step_results", {})
-        if not isinstance(raw_step_results, dict):
+        step_results = state.get("step_results", {})
+        if not isinstance(step_results, dict):
             return False
 
-        completed_non_answer_step_count = sum(
-            1
-            for executor_result in raw_step_results.values()
-            if isinstance(executor_result, ExecutorResult) and executor_result.executor != "answer"
+        current_step = get_execution_step(state, step_id=str(current_step_id))
+        if current_step is None:
+            return False
+
+        # 如果当前步骤是多步骤计划的一部分，需要重新生成摘要
+        return len(step_results) > 1
+
+    async def _load_recent_messages(self, session_id: str) -> list[LlmInputMessage]:
+        """加载最近的消息。"""
+
+        recent_entities = await self._message_repository.list_by_session(
+            session_id,
+            limit=RECENT_CONTEXT_WINDOW_SIZE,
         )
-        return completed_non_answer_step_count > 1
+        # 使用 message_entity_to_input_message 函数将实体转换为 LlmInputMessage
+        from app.agent.context_builder import message_entity_to_input_message
+        return [message_entity_to_input_message(entity) for entity in recent_entities]
 
-    @staticmethod
-    def should_generate_summary(state: AgentState) -> bool:
-        """瀵瑰鏆撮湶 answer 姝ユ槸鍚﹂渶瑕佸仛鏈€缁堟眹鎬荤殑鍒ゆ柇锛屼緵娴佸紡璺緞澶嶇敤銆?"""
+    async def _persist_completion_result(
+        self,
+        *,
+        session_id: str,
+        completion_result: AIMessage,
+        executed_tool_calls: list[ExecutedToolCall],
+        used_session_memory: bool,
+    ) -> ChatTurnResult:
+        """持久化补全结果。"""
 
-        return AnswerNode._should_generate_summary(state)
+        await self._message_repository.create(
+            message_id=self._generate_identifier(),
+            session_id=session_id,
+            role="assistant",
+            content=completion_result.content,  # type: ignore
+            name=None,
+            message_metadata={
+                "tool_calls": [
+                    {
+                        "id": tool_call.get("id"),
+                        "function": {
+                            "name": tool_call.get("name"),
+                            "arguments": dumps(tool_call.get("args"), ensure_ascii=False),
+                        },
+                        "type": "function",
+                    }
+                    for tool_call in completion_result.tool_calls
+                ] if completion_result.tool_calls else [],
+                "response_metadata": completion_result.response_metadata,
+                "usage_metadata": completion_result.usage_metadata,
+            },
+        )
+
+        return ChatTurnResult(
+            content=completion_result.content,  # type: ignore
+            tool_calls=[
+                {
+                    "id": tool_call.get("id"),
+                    "function": {
+                        "name": tool_call.get("name"),
+                        "arguments": dumps(tool_call.get("args"), ensure_ascii=False),
+                    },
+                    "type": "function",
+                }
+                for tool_call in completion_result.tool_calls
+            ] if completion_result.tool_calls else [],
+            finish_reason=(completion_result.response_metadata or {}).get("finish_reason", "unknown"),
+            input_tokens=(completion_result.usage_metadata or {}).get("input_tokens", 0),
+            output_tokens=(completion_result.usage_metadata or {}).get("output_tokens", 0),
+            executed_tool_calls=executed_tool_calls,
+            route=self._build_execution_request_from_state(
+                state  # type: ignore
+            ).route,
+            used_session_memory=used_session_memory,
+        )

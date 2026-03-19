@@ -26,6 +26,11 @@ class ExecutedToolCall:
     output: str
 
 
+def tool_to_langchain_format(tool: BaseTool) -> BaseTool:
+    """将工具转换为 LangChain 格式，供 langgraph.prebuilt.ToolNode 使用。"""
+    return tool
+
+
 class ToolRegistry:
     """内置工具注册表。"""
 

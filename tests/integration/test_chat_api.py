@@ -292,11 +292,11 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
                     available_tool_names.append(str(function_payload["name"]))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = getattr(message, "type", None) or str(getattr(message, "role", ""))
             content = str(getattr(message, "content", ""))
-            if role == "tool" and not latest_tool_output:
+            if msg_type == "tool" and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
             if latest_tool_output and latest_user_message:
                 break
@@ -387,6 +387,29 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
+    )
+    # 同时模拟流式接口
+    async def fake_stream_wrapper(*args, **kwargs):
+        msg = await fake_create_chat_completion(*args, **kwargs)
+        from langchain_core.messages import AIMessageChunk
+        yield AIMessageChunk(
+            content=msg.content,
+            additional_kwargs=msg.additional_kwargs,
+            response_metadata=msg.response_metadata or {},
+            usage_metadata=msg.usage_metadata or {},
+            tool_call_chunks=[
+                {
+                    "name": tc["name"],
+                    "args": json.dumps(tc["args"]),
+                    "id": tc["id"],
+                    "index": i,
+                }
+                for i, tc in enumerate(msg.tool_calls)
+            ] if hasattr(msg, "tool_calls") and msg.tool_calls else None
+        )
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_wrapper,
     )
 
     response = app_client.post(
@@ -583,11 +606,11 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
                     available_tool_names.append(str(function_payload["name"]))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = getattr(message, "type", None) or str(getattr(message, "role", ""))
             content = str(getattr(message, "content", ""))
-            if role == "tool" and not latest_tool_output:
+            if msg_type == "tool" and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
             if latest_tool_output and latest_user_message:
                 break
@@ -666,6 +689,29 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
     )
+    # 同时模拟流式接口
+    async def fake_stream_wrapper(*args, **kwargs):
+        msg = await fake_create_chat_completion(*args, **kwargs)
+        from langchain_core.messages import AIMessageChunk
+        yield AIMessageChunk(
+            content=msg.content,
+            additional_kwargs=msg.additional_kwargs,
+            response_metadata=msg.response_metadata or {},
+            usage_metadata=msg.usage_metadata or {},
+            tool_call_chunks=[
+                {
+                    "name": tc["name"],
+                    "args": json.dumps(tc["args"]),
+                    "id": tc["id"],
+                    "index": i,
+                }
+                for i, tc in enumerate(msg.tool_calls)
+            ] if hasattr(msg, "tool_calls") and msg.tool_calls else None
+        )
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_wrapper,
+    )
 
     response = app_client.post(
         "/api/v1/chat",
@@ -741,11 +787,11 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
                     available_tool_names.append(str(function_payload["name"]))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = getattr(message, "type", None) or str(getattr(message, "role", ""))
             content = str(getattr(message, "content", ""))
-            if role == "tool" and not latest_tool_output:
+            if msg_type == "tool" and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
             if latest_tool_output and latest_user_message:
                 break
@@ -823,6 +869,29 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
+    )
+    # 同时模拟流式接口
+    async def fake_stream_wrapper(*args, **kwargs):
+        msg = await fake_create_chat_completion(*args, **kwargs)
+        from langchain_core.messages import AIMessageChunk
+        yield AIMessageChunk(
+            content=msg.content,
+            additional_kwargs=msg.additional_kwargs,
+            response_metadata=msg.response_metadata or {},
+            usage_metadata=msg.usage_metadata or {},
+            tool_call_chunks=[
+                {
+                    "name": tc["name"],
+                    "args": json.dumps(tc["args"]),
+                    "id": tc["id"],
+                    "index": i,
+                }
+                for i, tc in enumerate(msg.tool_calls)
+            ] if hasattr(msg, "tool_calls") and msg.tool_calls else None
+        )
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_wrapper,
     )
 
     response = app_client.post(
@@ -1082,13 +1151,13 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
                 available_tool_names.append(str(function_payload["name"]))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = getattr(message, "type", "")
             content = str(getattr(message, "content", ""))
             if "以下是当前执行节点返回的结构化结果" in content:
                 has_executor_results_context = True
-            if role == "tool" and not latest_tool_output:
+            if msg_type == "tool" and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
             if latest_tool_output and latest_user_message:
                 break
@@ -1265,11 +1334,11 @@ def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(
                     available_tool_names.append(str(function_payload["name"]))
 
         for message in reversed(messages):
-            role = getattr(message, "role", "")
+            msg_type = getattr(message, "type", "")
             content = str(getattr(message, "content", ""))
-            if role == "tool" and not latest_tool_output:
+            if msg_type == "tool" and not latest_tool_output:
                 latest_tool_output = content
-            if role == "user" and not latest_user_message:
+            if msg_type == "human" and not latest_user_message:
                 latest_user_message = content
             if latest_tool_output and latest_user_message:
                 break
@@ -1294,7 +1363,7 @@ def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(
                 )
                 yield AIMessageChunk(
                     content="",
-                    response_metadata={"finish_reason": "tool_calls"},
+                    response_metadata={"finish_reason": "tool_calls", "model_name": resolved_model_name},
                     usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
                 return

@@ -23,7 +23,8 @@ from app.clients.llm_client import (
     LlmInputMessage,
     LlmToolCall,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.runnables import RunnableConfig
 from app.core.exceptions import AppException
 from app.mcp.manager import McpManager
 from app.mcp.models import McpRuntimeTool
@@ -51,7 +52,7 @@ class ToolNode:
         self._mcp_manager = mcp_manager or McpManager()
         self._message_repository = MessageRepository(db_session)
 
-    async def run(self, state: AgentState) -> dict[str, object]:
+    async def run(self, state: AgentState, config: RunnableConfig | None = None) -> dict[str, object]:
         """执行工具节点主逻辑。"""
 
         prepared_context_state = await self._answer_node.prepare_context_state(state)
@@ -71,6 +72,7 @@ class ToolNode:
             tool_choice=execution_request.tool_choice,
             enable_thinking=execution_request.enable_thinking,
             runtime_mcp_tools=runtime_mcp_tools,
+            config=config,
         )
         return {
             **prepared_context_state,
@@ -142,6 +144,7 @@ class ToolNode:
         tool_choice: str | dict[str, object] | None,
         enable_thinking: bool | None,
         runtime_mcp_tools: list[McpRuntimeTool],
+        config: RunnableConfig | None = None,
     ) -> tuple[AIMessage, list[ExecutedToolCall]]:
         """执行带工具的模型补全循环。"""
 
@@ -149,14 +152,28 @@ class ToolNode:
         normalized_tool_choice = tool_choice or "auto"
         executed_tool_calls: list[ExecutedToolCall] = []
 
+        runnable = self._llm_client.create_runnable(
+            model_name=model_name,
+            tools=available_tools,
+            tool_choice=normalized_tool_choice,
+            enable_thinking=enable_thinking,
+            is_stream=True,
+        )
         for tool_round in range(MAX_TOOL_CALL_ROUNDS):
-            completion_result = await self._llm_client.create_chat_completion(
-                messages=conversation_messages,
-                model_name=model_name,
-                tools=available_tools,
-                tool_choice=normalized_tool_choice,
-                enable_thinking=enable_thinking,
-            )
+            llm_messages = self._llm_client._build_langchain_messages(conversation_messages)
+            completion_result: AIMessageChunk | None = None
+            async for chunk in runnable.astream(llm_messages, config=config):
+                if completion_result is None:
+                    completion_result = chunk
+                else:
+                    completion_result = completion_result + chunk
+
+            if completion_result is None:
+                raise AppException(
+                    "大模型未返回有效响应。",
+                    error_code="invalid_llm_response",
+                )
+
             if not completion_result.tool_calls:
                 return completion_result, executed_tool_calls
 
@@ -362,13 +379,22 @@ class ToolNode:
         """从状态中提取当前轮次的 MCP 运行时工具。"""
 
         raw_runtime_mcp_tools = state.get("mcp_tools", [])
+        # LOGGER.info(f"DEBUG: raw_runtime_mcp_tools type: {type(raw_runtime_mcp_tools)}")
         if not isinstance(raw_runtime_mcp_tools, list):
             return []
-        return [
-            runtime_tool
-            for runtime_tool in raw_runtime_mcp_tools
-            if isinstance(runtime_tool, McpRuntimeTool)
-        ]
+        
+        result = []
+        for rt in raw_runtime_mcp_tools:
+            # LOGGER.info(f"DEBUG: tool type: {type(rt)} is_mcp: {isinstance(rt, McpRuntimeTool)}")
+            if isinstance(rt, McpRuntimeTool):
+                result.append(rt)
+            elif isinstance(rt, dict):
+                # 兼容字典格式（可能来自序列化）
+                try:
+                    result.append(McpRuntimeTool(**rt))
+                except Exception:
+                    pass
+        return result
 
     @staticmethod
     def _extract_runtime_mcp_tools(state: AgentState) -> list[McpRuntimeTool]:
