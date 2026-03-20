@@ -90,38 +90,139 @@ class LlmClient:
 
         return self._settings.openai_model
 
-    async def generate_answer(self, user_message: str, model_name: str | None = None) -> str:
-        """调用外部大模型生成单轮回答。"""
+    @staticmethod
+    def extract_llm_tool_calls(llm_response: Any) -> list[LlmToolCall]:
+        """从模型响应中提取统一工具调用列表。"""
 
-        prompt_value = self._prompt_template.invoke({"user_message": user_message})
-        completion_result = await self.create_chat_completion(
-            messages=[
-                LlmInputMessage(
-                    role=str(message.type),
-                    content=self._normalize_message_content(str(message.content)),
+        tool_calls: list[LlmToolCall] = []
+        raw_tool_calls = getattr(llm_response, "tool_calls", []) or []
+        
+        for tc in raw_tool_calls:
+            if isinstance(tc, dict):
+                # Native LangChain tool call dict
+                tool_calls.append(
+                    LlmToolCall(
+                        tool_call_id=str(tc.get("id", "")),
+                        tool_name=str(tc.get("name", "")),
+                        arguments=tc.get("args", {}) if isinstance(tc.get("args"), dict) else {},
+                    )
                 )
-                for message in prompt_value.messages
-            ],
-            model_name=model_name,
-        )
-        # AIMessage.content 可能是字符串或 ContentBlock 列表
-        if isinstance(completion_result.content, str):
-            return completion_result.content
-        return str(completion_result.content)
+            else:
+                # Internal ExecutedToolCall or similar object
+                tool_calls.append(
+                    LlmToolCall(
+                        tool_call_id=str(getattr(tc, "tool_call_id", getattr(tc, "id", ""))),
+                        tool_name=str(getattr(tc, "tool_name", getattr(tc, "name", ""))),
+                        arguments=getattr(tc, "arguments", getattr(tc, "args", {})),
+                    )
+                )
+        return tool_calls
 
     @staticmethod
-    def extract_llm_tool_calls(message: AIMessage) -> list[LlmToolCall]:
-        """从 AIMessage 中提取标准化的 LlmToolCall 列表。"""
-        if not message.tool_calls:
-            return []
-        return [
-            LlmToolCall(
-                tool_call_id=str(tc.get("id", "")),
-                tool_name=str(tc.get("name", "")),
-                arguments=dict(tc.get("args", {})),
+    def _normalize_message_content(content: str) -> str:
+        """规范化消息文本，避免将纯空白字符直接传给模型。"""
+
+        return content.strip()
+
+    def _build_provider_extra_body(
+        self,
+        *,
+        model_name: str,
+        is_stream: bool,
+        enable_thinking: bool | None,
+    ) -> dict[str, Any]:
+        """构造兼容提供方所需的额外请求体参数。"""
+
+        if enable_thinking is not None:
+            return {"enable_thinking": enable_thinking}
+
+        normalized_model_name = model_name.lower()
+        if normalized_model_name.startswith("qwen3") and not is_stream:
+            # 部分 OpenAI 兼容网关在非流式调用 Qwen3 时要求显式关闭 thinking 模式，
+            # 否则会直接返回 400 invalid_parameter_error。
+            return {"enable_thinking": False}
+
+        return {}
+
+    def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
+        """将统一消息列表转换为 LangChain 消息对象。"""
+
+        langchain_messages: list[BaseMessage] = []
+        for message in messages:
+            normalized_content = self._normalize_message_content(message.content)
+            if message.role == "user":
+                langchain_messages.append(
+                    HumanMessage(content=normalized_content, name=message.name)
+                )
+            elif message.role == "assistant":
+                langchain_messages.append(
+                    AIMessage(
+                        content=normalized_content,
+                        name=message.name,
+                        tool_calls=[
+                            {
+                                "name": tool_call.tool_name,
+                                "args": tool_call.arguments,
+                                "id": tool_call.tool_call_id,
+                                "type": "tool_call",
+                            }
+                            for tool_call in message.tool_calls
+                        ],
+                    )
+                )
+            elif message.role == "system":
+                langchain_messages.append(
+                    SystemMessage(content=normalized_content, name=message.name)
+                )
+            elif message.role == "tool":
+                if message.tool_call_id is None:
+                    raise AppException(
+                        "tool 消息缺少 tool_call_id。",
+                        error_code="invalid_request",
+                    )
+                langchain_messages.append(
+                    ToolMessage(
+                        content=normalized_content,
+                        tool_call_id=message.tool_call_id,
+                    )
+                )
+            else:
+                langchain_messages.append(
+                    ChatMessage(role=message.role, content=normalized_content, name=message.name)
+                )
+
+        return langchain_messages
+
+    def _create_chat_model(
+        self,
+        model_name: str | None = None,
+        *,
+        is_stream: bool = False,
+        enable_thinking: bool | None = None,
+    ) -> BaseChatModel:
+        """根据环境配置创建 LangChain 聊天模型客户端。"""
+
+        api_key = self._settings.openai_api_key
+        if api_key is None or not api_key.get_secret_value().strip():
+            raise ConfigurationException(
+                "未配置 OPENAI_API_KEY，无法调用大模型。",
+                details={"config_key": "OPENAI_API_KEY"},
             )
-            for tc in message.tool_calls
-        ]
+
+        resolved_model_name = model_name or self._settings.openai_model
+        provider_extra_body = self._build_provider_extra_body(
+            model_name=resolved_model_name,
+            is_stream=is_stream,
+            enable_thinking=enable_thinking,
+        )
+
+        return init_chat_model(
+            model=resolved_model_name,
+            model_provider="openai",
+            api_key=api_key.get_secret_value(),
+            base_url=self._settings.openai_base_url or None,
+            extra_body=provider_extra_body or None,
+        )
 
     def create_runnable(
         self,
@@ -143,6 +244,25 @@ class LlmClient:
             return chat_model.bind_tools(tools, tool_choice=tool_choice)
         return chat_model
 
+    async def generate_answer(self, user_message: str, model_name: str | None = None) -> str:
+        """调用LlmClient配置的大模型生成单轮回答。"""
+
+        prompt_value = self._prompt_template.invoke({"user_message": user_message})
+        completion_result = await self.create_chat_completion(
+            messages=[
+                LlmInputMessage(
+                    role=str(message.type),
+                    content=self._normalize_message_content(str(message.content)),
+                )
+                for message in prompt_value.messages
+            ],
+            model_name=model_name,
+        )
+        # AIMessage.content 可能是字符串或 ContentBlock 列表
+        if isinstance(completion_result.content, str):
+            return completion_result.content
+        return str(completion_result.content)
+
     async def create_chat_completion(
         self,
         messages: Sequence[LlmInputMessage],
@@ -154,6 +274,7 @@ class LlmClient:
         """使用统一消息结构创建一次聊天补全。"""
 
         request_start_time = perf_counter()
+        # 记录输入
         self._log_chat_request(
             messages=messages,
             model_name=model_name,
@@ -162,6 +283,7 @@ class LlmClient:
             is_stream=False,
             enable_thinking=enable_thinking,
         )
+        
         runnable = self.create_runnable(
             model_name=model_name,
             tools=tools,
@@ -197,37 +319,6 @@ class LlmClient:
             len(completion_result.tool_calls),
         )
         return completion_result
-
-    def stream_chat_completion(
-        self,
-        messages: Sequence[LlmInputMessage],
-        model_name: str | None = None,
-        tools: Sequence[LlmBindableTool] | None = None,
-        tool_choice: str | dict[str, Any] | None = None,
-        enable_thinking: bool | None = None,
-    ) -> AsyncIterator[AIMessageChunk]:
-        """以真实流式方式输出聊天补全增量。"""
-
-        self._log_chat_request(
-            messages=messages,
-            model_name=model_name,
-            tools=tools,
-            tool_choice=tool_choice,
-            is_stream=True,
-            enable_thinking=enable_thinking,
-        )
-        chat_model = self._create_chat_model(
-            model_name=model_name,
-            is_stream=True,
-            enable_thinking=enable_thinking,
-        )
-        runnable = chat_model.bind_tools(tools, tool_choice=tool_choice) if tools else chat_model
-        llm_messages = self._build_langchain_messages(messages)
-        return self._iterate_stream_chunks(
-            runnable=runnable,
-            llm_messages=llm_messages,
-            requested_model_name=model_name,
-        )
 
     async def _iterate_stream_chunks(
         self,
@@ -284,56 +375,37 @@ class LlmClient:
         ) as exception:
             raise self._convert_openai_exception(exception) from exception
 
-    def _create_chat_model(
+    def stream_chat_completion(
         self,
+        messages: Sequence[LlmInputMessage],
         model_name: str | None = None,
-        *,
-        is_stream: bool = False,
+        tools: Sequence[LlmBindableTool] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
-    ) -> BaseChatModel:
-        """根据环境配置创建 LangChain 聊天模型客户端。"""
+    ) -> AsyncIterator[AIMessageChunk]:
+        """以真实流式方式输出聊天补全增量。"""
 
-        api_key = self._settings.openai_api_key
-        if api_key is None or not api_key.get_secret_value().strip():
-            raise ConfigurationException(
-                "未配置 OPENAI_API_KEY，无法调用大模型。",
-                details={"config_key": "OPENAI_API_KEY"},
-            )
-
-        resolved_model_name = model_name or self._settings.openai_model
-        provider_extra_body = self._build_provider_extra_body(
-            model_name=resolved_model_name,
-            is_stream=is_stream,
+        self._log_chat_request(
+            messages=messages,
+            model_name=model_name,
+            tools=tools,
+            tool_choice=tool_choice,
+            is_stream=True,
             enable_thinking=enable_thinking,
         )
-
-        return init_chat_model(
-            model=resolved_model_name,
-            model_provider="openai",
-            api_key=api_key.get_secret_value(),
-            base_url=self._settings.openai_base_url or None,
-            extra_body=provider_extra_body or None,
+        runnable = self.create_runnable(
+            model_name=model_name,
+            tools=tools,
+            tool_choice=tool_choice,
+            is_stream=True,
+            enable_thinking=enable_thinking,
         )
-
-    def _build_provider_extra_body(
-        self,
-        *,
-        model_name: str,
-        is_stream: bool,
-        enable_thinking: bool | None,
-    ) -> dict[str, Any]:
-        """构造兼容提供方所需的额外请求体参数。"""
-
-        if enable_thinking is not None:
-            return {"enable_thinking": enable_thinking}
-
-        normalized_model_name = model_name.lower()
-        if normalized_model_name.startswith("qwen3") and not is_stream:
-            # 部分 OpenAI 兼容网关在非流式调用 Qwen3 时要求显式关闭 thinking 模式，
-            # 否则会直接返回 400 invalid_parameter_error。
-            return {"enable_thinking": False}
-
-        return {}
+        llm_messages = self._build_langchain_messages(messages)
+        return self._iterate_stream_chunks(
+            runnable=runnable,
+            llm_messages=llm_messages,
+            requested_model_name=model_name,
+        )
 
     def _log_chat_request(
         self,
@@ -384,83 +456,6 @@ class LlmClient:
             "tools": serialized_tool_names,
             "messages": serialized_messages,
         }, ensure_ascii=False))
-
-    def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
-        """将统一消息列表转换为 LangChain 消息对象。"""
-
-        langchain_messages: list[BaseMessage] = []
-        for message in messages:
-            normalized_content = self._normalize_message_content(message.content)
-            if message.role == "user":
-                langchain_messages.append(
-                    HumanMessage(content=normalized_content, name=message.name)
-                )
-            elif message.role == "assistant":
-                langchain_messages.append(
-                    AIMessage(
-                        content=normalized_content,
-                        name=message.name,
-                        tool_calls=[
-                            {
-                                "name": tool_call.tool_name,
-                                "args": tool_call.arguments,
-                                "id": tool_call.tool_call_id,
-                                "type": "tool_call",
-                            }
-                            for tool_call in message.tool_calls
-                        ],
-                    )
-                )
-            elif message.role == "system":
-                langchain_messages.append(
-                    SystemMessage(content=normalized_content, name=message.name)
-                )
-            elif message.role == "tool":
-                if message.tool_call_id is None:
-                    raise AppException(
-                        "tool 消息缺少 tool_call_id。",
-                        error_code="invalid_request",
-                    )
-                langchain_messages.append(
-                    ToolMessage(
-                        content=normalized_content,
-                        tool_call_id=message.tool_call_id,
-                    )
-                )
-            else:
-                langchain_messages.append(
-                    ChatMessage(role=message.role, content=normalized_content, name=message.name)
-                )
-
-        return langchain_messages
-
-    @staticmethod
-    def extract_llm_tool_calls(llm_response: Any) -> list[LlmToolCall]:
-        """从模型响应中提取统一工具调用列表。"""
-
-        tool_calls: list[LlmToolCall] = []
-        raw_tool_calls = getattr(llm_response, "tool_calls", []) or []
-        
-        for tc in raw_tool_calls:
-            if isinstance(tc, dict):
-                # Native LangChain tool call dict
-                tool_calls.append(
-                    LlmToolCall(
-                        tool_call_id=str(tc.get("id", "")),
-                        tool_name=str(tc.get("name", "")),
-                        arguments=tc.get("args", {}) if isinstance(tc.get("args"), dict) else {},
-                    )
-                )
-            else:
-                # Internal ExecutedToolCall or similar object
-                tool_calls.append(
-                    LlmToolCall(
-                        tool_call_id=str(getattr(tc, "tool_call_id", getattr(tc, "id", ""))),
-                        tool_name=str(getattr(tc, "tool_name", getattr(tc, "name", ""))),
-                        arguments=getattr(tc, "arguments", getattr(tc, "args", {})),
-                    )
-                )
-        return tool_calls
 
     def _convert_openai_exception(self, exception: Exception) -> UpstreamServiceException:
         """将 OpenAI 客户端异常映射为统一业务异常。"""
@@ -528,8 +523,3 @@ class LlmClient:
             details=details,
         )
 
-    @staticmethod
-    def _normalize_message_content(content: str) -> str:
-        """规范化消息文本，避免将纯空白字符直接传给模型。"""
-
-        return content.strip()
