@@ -1,11 +1,11 @@
 """对话接口集成测试。"""
 
+import json
 from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
-
 from langchain_core.messages import AIMessage, AIMessageChunk
-from app.clients.llm_client import LlmToolCall
+
 from app.core.exceptions import UpstreamServiceException
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
@@ -305,11 +305,14 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
             (tool_name for tool_name in available_tool_names if "route_plan" in tool_name),
             None,
         )
-        
+
         is_planner = any("生成分类与执行计划" in message for message in all_message_contents)
         if is_planner:
             return AIMessage(
-                content='{"primary_category": "route_planning", "steps": [{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}',
+                content=(
+                    '{"primary_category": "route_planning", "steps": '
+                    '[{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}'
+                ),
                 response_metadata={"finish_reason": "stop"},
                 usage_metadata={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
             )
@@ -388,10 +391,12 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
     )
+
     # 同时模拟流式接口
     async def fake_stream_wrapper(*args, **kwargs):
         msg = await fake_create_chat_completion(*args, **kwargs)
         from langchain_core.messages import AIMessageChunk
+
         yield AIMessageChunk(
             content=msg.content,
             additional_kwargs=msg.additional_kwargs,
@@ -405,8 +410,11 @@ def test_chat_api_executes_multi_step_route_and_policy_plan(
                     "index": i,
                 }
                 for i, tc in enumerate(msg.tool_calls)
-            ] if hasattr(msg, "tool_calls") and msg.tool_calls else None
+            ]
+            if hasattr(msg, "tool_calls") and msg.tool_calls
+            else [],
         )
+
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.stream_chat_completion",
         fake_stream_wrapper,
@@ -619,11 +627,14 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
             (tool_name for tool_name in available_tool_names if "traffic_status" in tool_name),
             None,
         )
-        
+
         is_planner = any("生成分类与执行计划" in str(getattr(m, "content", "")) for m in messages)
         if is_planner:
             return AIMessage(
-                content='{"primary_category": "traffic_status", "steps": [{"executor": "traffic"}, {"executor": "answer"}]}',
+                content=(
+                    '{"primary_category": "traffic_status", "steps": '
+                    '[{"executor": "traffic"}, {"executor": "answer"}]}'
+                ),
                 total_tokens=20,
                 finish_reason="stop",
             )
@@ -689,10 +700,12 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
     )
+
     # 同时模拟流式接口
     async def fake_stream_wrapper(*args, **kwargs):
         msg = await fake_create_chat_completion(*args, **kwargs)
         from langchain_core.messages import AIMessageChunk
+
         yield AIMessageChunk(
             content=msg.content,
             additional_kwargs=msg.additional_kwargs,
@@ -706,8 +719,11 @@ def test_chat_api_executes_traffic_executor_via_mcp_tools(
                     "index": i,
                 }
                 for i, tc in enumerate(msg.tool_calls)
-            ] if hasattr(msg, "tool_calls") and msg.tool_calls else None
+            ]
+            if hasattr(msg, "tool_calls") and msg.tool_calls
+            else [],
         )
+
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.stream_chat_completion",
         fake_stream_wrapper,
@@ -800,11 +816,14 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
             (tool_name for tool_name in available_tool_names if "network_report" in tool_name),
             None,
         )
-        
+
         is_planner = any("生成分类与执行计划" in str(getattr(m, "content", "")) for m in messages)
         if is_planner:
             return AIMessage(
-                content='{"primary_category": "report_generation", "steps": [{"executor": "report"}, {"executor": "answer"}]}',
+                content=(
+                    '{"primary_category": "report_generation", "steps": '
+                    '[{"executor": "report"}, {"executor": "answer"}]}'
+                ),
                 response_metadata={"finish_reason": "stop"},
                 usage_metadata={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
             )
@@ -870,10 +889,12 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
     )
+
     # 同时模拟流式接口
     async def fake_stream_wrapper(*args, **kwargs):
         msg = await fake_create_chat_completion(*args, **kwargs)
         from langchain_core.messages import AIMessageChunk
+
         yield AIMessageChunk(
             content=msg.content,
             additional_kwargs=msg.additional_kwargs,
@@ -887,8 +908,11 @@ def test_chat_api_executes_report_executor_via_mcp_tools(
                     "index": i,
                 }
                 for i, tc in enumerate(msg.tool_calls)
-            ] if hasattr(msg, "tool_calls") and msg.tool_calls else None
+            ]
+            if hasattr(msg, "tool_calls") and msg.tool_calls
+            else [],
         )
+
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.stream_chat_completion",
         fake_stream_wrapper,
@@ -987,6 +1011,116 @@ def test_chat_api_stream_executes_builtin_tool_when_requested(app_client: TestCl
     ]
     assert history_payload["items"][2]["content"] == "2"
     assert history_payload["items"][3]["content"] == "测试模型回答：工具结果是 2"
+
+
+def test_chat_api_stream_hides_tool_node_reasoning_text(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证流式输出不会透传 tool_node 的中间规划文本，只保留工具调用与最终回答。"""
+
+    def fake_stream_chat_completion(
+        self: object,
+        messages: list[object],
+        model_name: str | None = None,
+        tools: list[object] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> AsyncIterator[AIMessageChunk]:
+        del self, tool_choice, enable_thinking
+        latest_user_message = ""
+        latest_tool_output = ""
+
+        for message in reversed(messages):
+            msg_type = getattr(message, "type", None) or getattr(message, "role", "")
+            content = str(getattr(message, "content", ""))
+            if msg_type in ("tool", "function") and not latest_tool_output:
+                latest_tool_output = content
+            if msg_type in ("human", "user") and not latest_user_message:
+                latest_user_message = content
+            if latest_tool_output and latest_user_message:
+                break
+
+        async def iterator() -> AsyncIterator[AIMessageChunk]:
+            resolved_model_name = model_name or "test-model"
+
+            if tools and not latest_tool_output and ("1+1" in latest_user_message):
+                # 模拟模型在工具调用前输出“规划 JSON + 解释文本”。
+                yield AIMessageChunk(
+                    content=(
+                        '{"primary_category":"route_planning","steps":[{"executor":"tool"}]}'
+                    )
+                )
+                yield AIMessageChunk(content="先调用工具获取结果。")
+                yield AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "index": 0,
+                            "id": "call_calculator",
+                            "name": "calculator",
+                            "args": '{"expression":"1+1"}',
+                        }
+                    ],
+                )
+                yield AIMessageChunk(
+                    content="",
+                    response_metadata={
+                        "finish_reason": "tool_calls",
+                        "model_name": resolved_model_name,
+                    },
+                    usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+                )
+                return
+
+            full_text = f"测试模型回答：工具结果是 {latest_tool_output}"
+            yield AIMessageChunk(content=full_text)
+            yield AIMessageChunk(
+                content="",
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": resolved_model_name,
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            )
+
+        return iterator()
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.stream_chat_completion",
+        fake_stream_chat_completion,
+    )
+
+    with app_client.stream(
+        "POST",
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "请帮我计算 1+1"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string"}},
+                            "required": ["expression"],
+                        },
+                    },
+                }
+            ],
+            "stream": True,
+        },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert '"tool_calls"' in response_body
+    assert "测试模型回答：工具结果是 2" in response_body
+    assert "primary_category" not in response_body
+    assert "先调用工具获取结果" not in response_body
+    assert response_body.count("[DONE]") == 1
 
 
 def test_chat_api_stream_executes_mcp_tool_when_requested(
@@ -1163,7 +1297,6 @@ def test_chat_api_stream_executes_multi_step_route_and_policy_plan(
                 break
 
         async def iterator() -> AsyncIterator[AIMessageChunk]:
-            resolved_model_name = model_name or "test-model"
             route_tool_name = next(
                 (tool_name for tool_name in available_tool_names if "route_plan" in tool_name),
                 None,
@@ -1363,7 +1496,10 @@ def test_chat_api_stream_executes_traffic_executor_via_mcp_tools(
                 )
                 yield AIMessageChunk(
                     content="",
-                    response_metadata={"finish_reason": "tool_calls", "model_name": resolved_model_name},
+                    response_metadata={
+                        "finish_reason": "tool_calls",
+                        "model_name": resolved_model_name,
+                    },
                     usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
                 return

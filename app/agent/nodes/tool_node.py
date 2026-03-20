@@ -8,6 +8,9 @@ from __future__ import annotations
 from json import dumps
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import ToolNode as PrebuiltToolNode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
@@ -23,13 +26,11 @@ from app.clients.llm_client import (
     LlmInputMessage,
     LlmToolCall,
 )
-from langchain_core.messages import AIMessage, AIMessageChunk
-from langchain_core.runnables import RunnableConfig
 from app.core.exceptions import AppException
 from app.mcp.manager import McpManager
 from app.mcp.models import McpRuntimeTool
 from app.persistence.message_repo import MessageRepository
-from app.tools.registry import ExecutedToolCall, ToolRegistry
+from app.tools.registry import ExecutedToolCall, ToolRegistry, tool_to_langchain_format
 
 MAX_TOOL_CALL_ROUNDS = 10
 
@@ -51,8 +52,15 @@ class ToolNode:
         self._tool_registry = tool_registry or ToolRegistry()
         self._mcp_manager = mcp_manager or McpManager()
         self._message_repository = MessageRepository(db_session)
+        self._builtin_tool_node = PrebuiltToolNode(
+            [tool_to_langchain_format(tool) for tool in self._tool_registry.get_tools()]
+        )
 
-    async def run(self, state: AgentState, config: RunnableConfig | None = None) -> dict[str, object]:
+    async def run(
+        self,
+        state: AgentState,
+        config: RunnableConfig | None = None,
+    ) -> dict[str, object]:
         """执行工具节点主逻辑。"""
 
         prepared_context_state = await self._answer_node.prepare_context_state(state)
@@ -311,20 +319,14 @@ class ToolNode:
         mcp_tool_map = {
             runtime_tool.registered_name: runtime_tool for runtime_tool in runtime_mcp_tools
         }
-        builtin_tool_calls: list[dict[str, object]] = []
+        builtin_tool_calls: list[LlmToolCall] = []
         executed_tool_calls: list[ExecutedToolCall] = []
 
         requested_tool_calls = LlmClient.extract_llm_tool_calls(completion_result)
         for tool_call in requested_tool_calls:
             runtime_mcp_tool = mcp_tool_map.get(tool_call.tool_name)
             if runtime_mcp_tool is None:
-                builtin_tool_calls.append(
-                    {
-                        "id": tool_call.tool_call_id,
-                        "name": tool_call.tool_name,
-                        "args": tool_call.arguments,
-                    }
-                )
+                builtin_tool_calls.append(tool_call)
                 continue
 
             tool_response = await self._mcp_manager.call_tool(
@@ -348,9 +350,54 @@ class ToolNode:
 
         if builtin_tool_calls:
             executed_tool_calls.extend(
-                await self._tool_registry.execute_tool_calls(builtin_tool_calls)
+                await self._execute_builtin_tool_calls_with_prebuilt_tool_node(
+                    completion_result=completion_result,
+                    builtin_tool_calls=builtin_tool_calls,
+                )
             )
 
+        return executed_tool_calls
+
+    async def _execute_builtin_tool_calls_with_prebuilt_tool_node(
+        self,
+        *,
+        completion_result: AIMessage,
+        builtin_tool_calls: list[LlmToolCall],
+    ) -> list[ExecutedToolCall]:
+        """Use langgraph.prebuilt.ToolNode to execute registered builtin tools."""
+
+        builtin_tool_call_payloads = [
+            {
+                "id": tool_call.tool_call_id,
+                "name": tool_call.tool_name,
+                "args": tool_call.arguments,
+                "type": "tool_call",
+            }
+            for tool_call in builtin_tool_calls
+        ]
+        tool_call_argument_map = {
+            tool_call.tool_call_id: tool_call.arguments for tool_call in builtin_tool_calls
+        }
+        filtered_message = AIMessage(
+            content=self._extract_ai_message_text(completion_result),
+            tool_calls=builtin_tool_call_payloads,
+            response_metadata=completion_result.response_metadata,
+        )
+        tool_result_state = await self._builtin_tool_node.ainvoke({"messages": [filtered_message]})
+        tool_messages = tool_result_state.get("messages", [])
+
+        executed_tool_calls: list[ExecutedToolCall] = []
+        for tool_message in tool_messages:
+            if not isinstance(tool_message, ToolMessage):
+                continue
+            executed_tool_calls.append(
+                ExecutedToolCall(
+                    tool_call_id=str(tool_message.tool_call_id),
+                    tool_name=str(tool_message.name or ""),
+                    arguments=tool_call_argument_map.get(str(tool_message.tool_call_id), {}),
+                    output=self._normalize_tool_message_content(tool_message),
+                )
+            )
         return executed_tool_calls
 
     async def _persist_tool_messages(
@@ -382,7 +429,7 @@ class ToolNode:
         # LOGGER.info(f"DEBUG: raw_runtime_mcp_tools type: {type(raw_runtime_mcp_tools)}")
         if not isinstance(raw_runtime_mcp_tools, list):
             return []
-        
+
         result = []
         for rt in raw_runtime_mcp_tools:
             # LOGGER.info(f"DEBUG: tool type: {type(rt)} is_mcp: {isinstance(rt, McpRuntimeTool)}")
@@ -401,3 +448,36 @@ class ToolNode:
         """兼容旧调用入口。"""
 
         return ToolNode.extract_runtime_mcp_tools(state)
+
+    @staticmethod
+    def _extract_ai_message_text(message: AIMessage) -> str:
+        """Normalize AIMessage content into plain text for persistence and replay."""
+
+        if isinstance(message.content, str):
+            return message.content
+        if isinstance(message.content, list):
+            text_parts: list[str] = []
+            for part in message.content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+            return "".join(text_parts)
+        return str(message.content)
+
+    @staticmethod
+    def _normalize_tool_message_content(message: ToolMessage) -> str:
+        """Normalize ToolMessage content into a stable string payload."""
+
+        if isinstance(message.content, str):
+            return message.content
+        if isinstance(message.content, list):
+            text_parts: list[str] = []
+            for part in message.content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(str(part.get("text", "")))
+                    else:
+                        text_parts.append(dumps(part, ensure_ascii=False))
+                else:
+                    text_parts.append(str(part))
+            return "".join(text_parts)
+        return str(message.content)

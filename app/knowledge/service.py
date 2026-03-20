@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import AppException
+from app.core.config import Settings, get_settings
+from app.core.exceptions import AppException, UpstreamServiceException
+from app.core.logger import get_logger
 from app.knowledge.ragflow.chat import RagflowChatClient
 from app.knowledge.ragflow.datasets import RagflowDatasetClient
 from app.knowledge.ragflow.documents import RagflowDocumentClient
@@ -26,6 +28,8 @@ from app.schemas.knowledge import (
 )
 from app.schemas.openai_compat import OpenAIChatCompletionResponse
 
+LOGGER = get_logger(__name__)
+
 
 class KnowledgeService:
     """知识库服务。"""
@@ -38,7 +42,9 @@ class KnowledgeService:
         document_client: RagflowDocumentClient | None = None,
         retrieval_client: RagflowRetrievalClient | None = None,
         chat_client: RagflowChatClient | None = None,
+        settings: Settings | None = None,
     ) -> None:
+        self._settings = settings or get_settings()
         self._db_session = db_session
         self._ragflow_repository = RagflowRepository(db_session)
         self._dataset_client = dataset_client or RagflowDatasetClient()
@@ -226,6 +232,14 @@ class KnowledgeService:
     ) -> list[str]:
         """解析本次请求应使用的数据集列表。"""
 
+        configured_dataset_id = (
+            self._settings.default_knowledge_dataset_id.strip()
+            if isinstance(self._settings.default_knowledge_dataset_id, str)
+            else ""
+        )
+        if configured_dataset_id:
+            return [configured_dataset_id]
+
         if preferred_dataset_ids:
             return preferred_dataset_ids
 
@@ -248,7 +262,7 @@ class KnowledgeService:
     ) -> list[KnowledgeSearchResult]:
         """执行一次检索并把原始结果标准化。"""
 
-        retrieval_payloads = await self._retrieval_client.retrieve_chunks(
+        retrieval_payloads = await self._retrieve_chunks_with_fallback(
             query=query,
             dataset_ids=dataset_ids,
             top_k=top_k,
@@ -302,6 +316,104 @@ class KnowledgeService:
                 )
             )
         return normalized_results
+
+    async def _retrieve_chunks_with_fallback(
+        self,
+        *,
+        query: str,
+        dataset_ids: list[str],
+        top_k: int,
+    ) -> list[dict[str, object]]:
+        """优先走多数据集联合检索，遇到 embedding 模型冲突时自动降级。"""
+
+        try:
+            return await self._retrieval_client.retrieve_chunks(
+                query=query,
+                dataset_ids=dataset_ids,
+                top_k=top_k,
+            )
+        except UpstreamServiceException as exception:
+            if not self._is_mixed_embedding_model_error(exception) or len(dataset_ids) <= 1:
+                raise
+            LOGGER.warning(
+                (
+                    "RAGFlow 联合检索因 embedding 模型不一致失败，"
+                    "已降级为逐数据集检索：dataset_count=%d top_k=%d"
+                ),
+                len(dataset_ids),
+                top_k,
+            )
+            return await self._retrieve_chunks_per_dataset(
+                query=query,
+                dataset_ids=dataset_ids,
+                top_k=top_k,
+            )
+
+    async def _retrieve_chunks_per_dataset(
+        self,
+        *,
+        query: str,
+        dataset_ids: list[str],
+        top_k: int,
+    ) -> list[dict[str, object]]:
+        """逐数据集检索并合并结果，避免 RAGFlow 因 embedding 模型不一致报错。"""
+
+        merged_payloads: list[dict[str, object]] = []
+        last_exception: UpstreamServiceException | None = None
+        for dataset_id in dataset_ids:
+            try:
+                current_payloads = await self._retrieval_client.retrieve_chunks(
+                    query=query,
+                    dataset_ids=[dataset_id],
+                    top_k=top_k,
+                )
+            except UpstreamServiceException as exception:
+                last_exception = exception
+                continue
+            for payload in current_payloads:
+                if isinstance(payload, dict):
+                    merged_payloads.append(payload)
+
+        if not merged_payloads and last_exception is not None:
+            raise last_exception
+
+        return sorted(
+            merged_payloads,
+            key=self._resolve_payload_score,
+            reverse=True,
+        )[:top_k]
+
+    @staticmethod
+    def _is_mixed_embedding_model_error(exception: UpstreamServiceException) -> bool:
+        """判断是否为 RAGFlow 的“数据集 embedding 模型不一致”错误。"""
+
+        if exception.error_code != "ragflow_business_error":
+            return False
+
+        candidates = [str(exception.message)]
+        response_payload = exception.details.get("response")
+        if isinstance(response_payload, dict):
+            response_message = response_payload.get("message")
+            if isinstance(response_message, str):
+                candidates.append(response_message)
+
+        normalized_text = " ".join(candidates).lower()
+        return "different embedding models" in normalized_text
+
+    @staticmethod
+    def _resolve_payload_score(payload: dict[str, object]) -> float:
+        """统一解析检索结果打分，用于降级模式下的跨数据集合并排序。"""
+
+        for field_name in ("score", "similarity", "similarity_score"):
+            field_value = payload.get(field_name)
+            if isinstance(field_value, (int, float)):
+                return float(field_value)
+            if isinstance(field_value, str):
+                try:
+                    return float(field_value)
+                except ValueError:
+                    continue
+        return 0.0
 
     @staticmethod
     def _resolve_dataset_enabled(remote_dataset: dict[str, object]) -> bool:

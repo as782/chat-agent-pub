@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
-from json import dumps
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.context_builder import ContextBuilder, message_entity_to_input_message
+from app.agent.context_builder import ContextBuilder
 from app.agent.prompts import (
     GENERAL_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
@@ -28,11 +29,9 @@ from app.agent.state import (
     get_execution_step,
 )
 from app.clients.llm_client import LlmClient, LlmInputMessage
-from langchain_core.messages import AIMessage, AIMessageChunk
-from langchain_core.runnables import RunnableConfig
 from app.core.exceptions import AppException
-from app.memory.manager import MemoryManager
 from app.core.logger import get_logger
+from app.memory.manager import MemoryManager
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry
 
@@ -59,7 +58,11 @@ class AnswerNode:
         self._memory_manager = memory_manager or MemoryManager(db_session)
         self._message_repository = MessageRepository(db_session)
 
-    async def run(self, state: AgentState, config: RunnableConfig | None = None) -> dict[str, object]:
+    async def run(
+        self,
+        state: AgentState,
+        config: RunnableConfig | None = None,
+    ) -> dict[str, object]:
         """执行普通回答节点主逻辑。"""
 
         prepared_context = state.get("prepared_context")
@@ -118,6 +121,31 @@ class AnswerNode:
     async def prepare_context(self, execution_request: ChatExecutionRequest) -> PreparedContext:
         """根据执行请求准备上下文。"""
 
+        return await self._prepare_context(
+            execution_request=execution_request,
+            answer_instruction=None,
+            executor_results_context=None,
+            knowledge_context=None,
+            route_context=None,
+            mcp_context=None,
+            traffic_context=None,
+            report_context=None,
+        )
+
+    async def _prepare_context(
+        self,
+        *,
+        execution_request: ChatExecutionRequest,
+        answer_instruction: str | None,
+        executor_results_context: str | None,
+        knowledge_context: str | None,
+        route_context: str | None,
+        mcp_context: str | None,
+        traffic_context: str | None,
+        report_context: str | None,
+    ) -> PreparedContext:
+        """根据执行请求和节点状态准备上下文。"""
+
         recent_messages: list[LlmInputMessage] = []
         memory_summary: str | None = None
         if execution_request.need_session_memory and execution_request.session_id is not None:
@@ -130,13 +158,33 @@ class AnswerNode:
             recent_messages=recent_messages,
             memory_summary=memory_summary,
             need_session_memory=execution_request.need_session_memory,
+            answer_instruction=answer_instruction,
+            executor_results_context=executor_results_context,
+            knowledge_context=knowledge_context,
+            route_context=route_context,
+            mcp_context=mcp_context,
+            traffic_context=traffic_context,
+            report_context=report_context,
         )
 
     async def prepare_context_state(self, state: AgentState) -> dict[str, PreparedContext]:
         """根据状态准备上下文。"""
 
         execution_request = self._build_execution_request_from_state(state)
-        prepared_context = await self.prepare_context(execution_request)
+        prepared_context = await self._prepare_context(
+            execution_request=execution_request,
+            answer_instruction=self._resolve_answer_instruction(state),
+            executor_results_context=self._build_executor_results_context(
+                state.get("step_results", {})
+                if isinstance(state.get("step_results", {}), dict)
+                else {}
+            ),
+            knowledge_context=state.get("knowledge_context"),
+            route_context=state.get("route_context"),
+            mcp_context=state.get("mcp_context"),
+            traffic_context=state.get("traffic_context"),
+            report_context=state.get("report_context"),
+        )
         return {"prepared_context": prepared_context}
 
     async def persist_completion_result(
@@ -187,19 +235,9 @@ class AnswerNode:
             message_id=self._generate_identifier(),
             session_id=session_id,
             role="assistant",
-            content=completion_result.content,
+            content=self._extract_message_text(completion_result),
             message_metadata={
-                "tool_calls": [
-                    {
-                        "id": tool_call.get("id"),
-                        "function": {
-                            "name": tool_call.get("name"),
-                            "arguments": dumps(tool_call.get("args"), ensure_ascii=False),
-                        },
-                        "type": "function",
-                    }
-                    for tool_call in completion_result.tool_calls
-                ],
+                "tool_calls": self._serialize_tool_calls(completion_result),
             },
         )
 
@@ -228,7 +266,6 @@ class AnswerNode:
 
         return uuid4().hex
 
-
     @staticmethod
     def _build_executor_results_context(step_results: dict[str, ExecutorResult]) -> str | None:
         """构建执行器结果上下文。"""
@@ -236,7 +273,7 @@ class AnswerNode:
         if not step_results:
             return None
 
-        parts: list[str] = []
+        parts = ["以下是当前执行节点返回的结构化结果，请基于这些结果组织最终回答："]
         for step_id, result in step_results.items():
             result_summary = "\n".join(
                 f"- {k}: {v}"
@@ -259,7 +296,8 @@ class AnswerNode:
 
         if isinstance(raw_executed_tool_calls, list):
             return [
-                tool_call for tool_call in raw_executed_tool_calls
+                tool_call
+                for tool_call in raw_executed_tool_calls
                 if isinstance(tool_call, ExecutedToolCall)
             ]
 
@@ -297,6 +335,7 @@ class AnswerNode:
         )
         # 使用 message_entity_to_input_message 函数将实体转换为 LlmInputMessage
         from app.agent.context_builder import message_entity_to_input_message
+
         return [message_entity_to_input_message(entity) for entity in recent_entities]
 
     async def _persist_completion_result(
@@ -313,44 +352,83 @@ class AnswerNode:
             message_id=self._generate_identifier(),
             session_id=session_id,
             role="assistant",
-            content=completion_result.content,  # type: ignore
-            name=None,
+            content=self._extract_message_text(completion_result),
             message_metadata={
-                "tool_calls": [
-                    {
-                        "id": tool_call.get("id"),
-                        "function": {
-                            "name": tool_call.get("name"),
-                            "arguments": dumps(tool_call.get("args"), ensure_ascii=False),
-                        },
-                        "type": "function",
-                    }
-                    for tool_call in completion_result.tool_calls
-                ] if completion_result.tool_calls else [],
+                "tool_calls": self._serialize_tool_calls(completion_result),
                 "response_metadata": completion_result.response_metadata,
                 "usage_metadata": completion_result.usage_metadata,
             },
         )
 
+        usage_metadata = completion_result.usage_metadata or {}
+        response_metadata = completion_result.response_metadata or {}
+        prompt_tokens = int(usage_metadata.get("input_tokens") or 0)
+        completion_tokens = int(usage_metadata.get("output_tokens") or 0)
+        total_tokens = int(
+            usage_metadata.get("total_tokens") or (prompt_tokens + completion_tokens)
+        )
         return ChatTurnResult(
-            content=completion_result.content,  # type: ignore
-            tool_calls=[
-                {
-                    "id": tool_call.get("id"),
-                    "function": {
-                        "name": tool_call.get("name"),
-                        "arguments": dumps(tool_call.get("args"), ensure_ascii=False),
-                    },
-                    "type": "function",
-                }
-                for tool_call in completion_result.tool_calls
-            ] if completion_result.tool_calls else [],
-            finish_reason=(completion_result.response_metadata or {}).get("finish_reason", "unknown"),
-            input_tokens=(completion_result.usage_metadata or {}).get("input_tokens", 0),
-            output_tokens=(completion_result.usage_metadata or {}).get("output_tokens", 0),
-            executed_tool_calls=executed_tool_calls,
-            route=self._build_execution_request_from_state(
-                state  # type: ignore
-            ).route,
+            session_id=session_id,
+            content=self._extract_message_text(completion_result),
+            model_name=str(
+                response_metadata.get("model_name") or response_metadata.get("model") or ""
+            ),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            finish_reason=str(
+                response_metadata.get("finish_reason")
+                or ("tool_calls" if completion_result.tool_calls else "stop")
+            ),
+            route="answer",
+            tool_calls=list(executed_tool_calls),
             used_session_memory=used_session_memory,
         )
+
+    @staticmethod
+    def _extract_message_text(message: AIMessage) -> str:
+        """将 AIMessage 的内容稳定归一化为纯文本。"""
+
+        if isinstance(message.content, str):
+            return message.content
+        if isinstance(message.content, list):
+            text_parts: list[str] = []
+            for part in message.content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                else:
+                    text_parts.append(str(part))
+            return "".join(text_parts)
+        return str(message.content)
+
+    @staticmethod
+    def _serialize_tool_calls(message: AIMessage) -> list[dict[str, object]]:
+        """将 LangChain tool_calls 归一化为内部消息元数据格式。"""
+
+        return [
+            {
+                "tool_call_id": str(tool_call.get("id", "")),
+                "tool_name": str(tool_call.get("name", "")),
+                "arguments": (
+                    dict(tool_call.get("args", {}))
+                    if isinstance(tool_call.get("args"), dict)
+                    else {}
+                ),
+            }
+            for tool_call in (message.tool_calls or [])
+        ]
+
+    @staticmethod
+    def _resolve_answer_instruction(state: AgentState) -> str:
+        """根据主分类选择最终回答阶段的提示词。"""
+
+        category = state.get("primary_category", "general")
+        if category == "policy":
+            return POLICY_SUMMARY_PROMPT
+        if category == "route_planning":
+            return ROUTE_SUMMARY_PROMPT
+        if category == "traffic_status":
+            return TRAFFIC_SUMMARY_PROMPT
+        if category == "network_report":
+            return NETWORK_REPORT_SUMMARY_PROMPT
+        return GENERAL_ANSWER_PROMPT

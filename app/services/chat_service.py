@@ -9,8 +9,8 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
-from typing import Any
 
+from langchain_core.messages import AIMessageChunk
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import ConversationGraph
@@ -18,8 +18,7 @@ from app.agent.state import (
     ChatExecutionRequest,
     ChatTurnResult,
 )
-from app.clients.llm_client import LlmClient, LlmInputMessage
-from langchain_core.messages import AIMessage, AIMessageChunk
+from app.clients.llm_client import LlmClient
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
@@ -29,6 +28,21 @@ from app.services.openai_compat_service import OpenAICompatService
 from app.tools.registry import ToolRegistry
 
 LOGGER = get_logger(__name__)
+_GRAPH_NODE_NAMES = {
+    "planner_node",
+    "argument_node",
+    "scheduler_node",
+    "router_node",
+    "route_node",
+    "tool_node",
+    "ragflow_node",
+    "mcp_node",
+    "traffic_node",
+    "report_node",
+    "answer_node",
+    "memory_node",
+}
+_USER_VISIBLE_STREAM_NODES = {"answer_node"}
 
 
 class ChatService:
@@ -181,26 +195,74 @@ class ChatService:
         first_payload_duration_ms: float | None = None
         final_result: ChatTurnResult | None = None
         has_emitted_payload = False
+        active_node_stack: list[str] = []
+        tool_round_chunks: list[AIMessageChunk] = []
 
         try:
             async for event in self._conversation_graph.stream_events(execution_request):
-                LOGGER.info(f"DEBUG: graph event: {event['event']} name: {event.get('name')}")
+                event_name = event["event"]
+                runnable_name = event.get("name")
+                if event_name == "on_chain_start" and runnable_name in _GRAPH_NODE_NAMES:
+                    active_node_stack.append(runnable_name)
+                elif event_name == "on_chain_end" and runnable_name in _GRAPH_NODE_NAMES:
+                    if runnable_name == "tool_node" and tool_round_chunks:
+                        for buffered_chunk in tool_round_chunks:
+                            for payload in chunk_builder.consume_chunk(buffered_chunk):
+                                if first_payload_duration_ms is None:
+                                    first_payload_duration_ms = (
+                                        perf_counter() - request_start_time
+                                    ) * 1000
+                                has_emitted_payload = True
+                                yield payload
+                        tool_round_chunks.clear()
+                    if active_node_stack and active_node_stack[-1] == runnable_name:
+                        active_node_stack.pop()
+                    elif runnable_name in active_node_stack:
+                        active_node_stack.remove(runnable_name)
+
+                current_node = active_node_stack[-1] if active_node_stack else None
                 # 1. 提取 Token (on_chat_model_stream)
-                if event["event"] == "on_chat_model_stream":
+                if event_name == "on_chat_model_stream":
                     chunk = event["data"]["chunk"]
-                    # print(f"DEBUG: stream_events chunk: {chunk}")
                     if not isinstance(chunk, AIMessageChunk):
                         continue
 
-                    if first_payload_duration_ms is None:
-                        first_payload_duration_ms = (perf_counter() - request_start_time) * 1000
+                    if current_node == "tool_node":
+                        tool_round_chunks.append(chunk)
+                        finish_reason = self._resolve_chunk_finish_reason(chunk)
+                        if finish_reason is None:
+                            continue
 
-                    for payload in chunk_builder.consume_chunk(chunk):
-                        has_emitted_payload = True
-                        yield payload
+                        if finish_reason == "tool_calls":
+                            chunks_to_emit = [
+                                filtered_chunk
+                                for buffered_chunk in tool_round_chunks
+                                if (
+                                    filtered_chunk := self._filter_tool_round_chunk_for_tool_calls(
+                                        buffered_chunk
+                                    )
+                                )
+                                is not None
+                            ]
+                        else:
+                            chunks_to_emit = list(tool_round_chunks)
+                        tool_round_chunks.clear()
+                    elif current_node in _USER_VISIBLE_STREAM_NODES:
+                        chunks_to_emit = [chunk]
+                    else:
+                        continue
+
+                    for emit_chunk in chunks_to_emit:
+                        for payload in chunk_builder.consume_chunk(emit_chunk):
+                            if first_payload_duration_ms is None:
+                                first_payload_duration_ms = (
+                                    perf_counter() - request_start_time
+                                ) * 1000
+                            has_emitted_payload = True
+                            yield payload
 
                 # 2. 提取最终结果 (on_chain_end for root graph)
-                elif event["event"] == "on_chain_end" and event["name"] == "LangGraph":
+                elif event_name == "on_chain_end" and runnable_name == "LangGraph":
                     output = event["data"]["output"]
                     if isinstance(output, dict) and output.get("final_result"):
                         final_result = output["final_result"]
@@ -233,7 +295,6 @@ class ChatService:
                     ),
                     (perf_counter() - request_start_time) * 1000,
                 )
-            yield "data: [DONE]\n\n"
 
         except AppException as exception:
             await self._db_session.rollback()
@@ -255,6 +316,31 @@ class ChatService:
                 )
             )
             yield "data: [DONE]\n\n"
+
+    @staticmethod
+    def _resolve_chunk_finish_reason(chunk: AIMessageChunk) -> str | None:
+        """从增量块中解析结束原因。"""
+
+        response_metadata = chunk.response_metadata or {}
+        finish_reason = response_metadata.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            return finish_reason
+        if chunk.tool_calls:
+            return "tool_calls"
+        return None
+
+    @staticmethod
+    def _filter_tool_round_chunk_for_tool_calls(chunk: AIMessageChunk) -> AIMessageChunk | None:
+        """tool_calls 轮次仅输出工具调用结构与结束信号。"""
+
+        response_metadata = chunk.response_metadata or {}
+        finish_reason = response_metadata.get("finish_reason")
+        has_tool_payload = bool(chunk.tool_call_chunks or chunk.tool_calls)
+        if not has_tool_payload and finish_reason != "tool_calls":
+            return None
+        if not has_tool_payload or not chunk.content:
+            return chunk
+        return chunk.model_copy(update={"content": ""})
 
     def _build_execution_request(
         self,

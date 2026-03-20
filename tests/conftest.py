@@ -10,19 +10,14 @@ import json
 import sys
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from pytest import MonkeyPatch
-
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
-from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.outputs import ChatGenerationChunk, ChatResult, ChatGeneration
-from app.clients.llm_client import (
-    LlmToolCall,
-)
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from pytest import MonkeyPatch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -96,7 +91,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
-    ) -> LlmChatCompletionResult:
+    ) -> AIMessage:
         """为集成测试返回稳定的假模型结果。"""
 
         del self, tool_choice, enable_thinking
@@ -121,7 +116,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             msg_type = _resolve_msg_type(message)
             content = str(getattr(message, "content", ""))
             all_message_contents.append(content)
-            
+
             if msg_type in ("tool", "function") and not latest_tool_output:
                 latest_tool_output = content
             if msg_type == "human" and not latest_user_message:
@@ -157,12 +152,20 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 plan_json = '{"primary_category": "route_planning", "steps": [{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}'
             elif "路网" in latest_user_message or "数据" in latest_user_message:
                 plan_json = '{"primary_category": "report_generation", "steps": [{"executor": "report"}, {"executor": "answer"}]}'
-            elif "1+1" in latest_user_message or "计算" in latest_user_message or "时间" in latest_user_message or "几点" in latest_user_message:
+            elif (
+                "1+1" in latest_user_message
+                or "计算" in latest_user_message
+                or "时间" in latest_user_message
+                or "几点" in latest_user_message
+            ):
                 plan_json = '{"primary_category": "general", "steps": [{"executor": "tool"}, {"executor": "answer"}]}'
-            
+
             return AIMessage(
                 content=plan_json,
-                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={
                     "input_tokens": 10,
                     "output_tokens": 10,
@@ -170,12 +173,14 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 },
             )
 
-
         need_calculator_tool = "1+1" in latest_user_message or "计算" in latest_user_message
         if tools and not latest_tool_output and need_calculator_tool:
             return AIMessage(
                 content="",
-                response_metadata={"finish_reason": "tool_calls", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "tool_calls",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={
                     "input_tokens": 12,
                     "output_tokens": 8,
@@ -195,7 +200,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         if tools and not latest_tool_output and need_datetime_tool:
             return AIMessage(
                 content="",
-                response_metadata={"finish_reason": "tool_calls", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "tool_calls",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={
                     "input_tokens": 12,
                     "output_tokens": 8,
@@ -222,7 +230,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         if mcp_weather_tool_name and not latest_tool_output and "天气" in latest_user_message:
             return AIMessage(
                 content="",
-                response_metadata={"finish_reason": "tool_calls", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "tool_calls",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={
                     "input_tokens": 12,
                     "output_tokens": 8,
@@ -241,7 +252,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         if latest_tool_output:
             return AIMessage(
                 content=f"测试模型回答：工具结果是 {latest_tool_output}",
-                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={
                     "input_tokens": 12,
                     "output_tokens": 8,
@@ -253,26 +267,38 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             if history_contains_name:
                 return AIMessage(
                     content="测试模型回答：你刚刚说你叫小王",
-                    response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                    response_metadata={
+                        "finish_reason": "stop",
+                        "model_name": model_name or "test-model",
+                    },
                     usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
             if explicit_force_no_memory:
                 return AIMessage(
                     content="测试模型回答：不知道",
-                    response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                    response_metadata={
+                        "finish_reason": "stop",
+                        "model_name": model_name or "test-model",
+                    },
                     usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
 
         if has_knowledge_context and "西湖" in latest_user_message:
             return AIMessage(
                 content="测试模型回答：根据知识库，西湖位于杭州。",
-                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
         if has_mcp_context and "MCP" in latest_user_message.upper():
             return AIMessage(
                 content="测试模型回答：当前已配置 MCP 服务骨架。",
-                response_metadata={"finish_reason": "stop", "model_name": model_name or "test-model"},
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
                 usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
 
@@ -346,7 +372,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 )
                 yield AIMessageChunk(
                     content="",
-                    response_metadata={"finish_reason": "tool_calls", "model_name": resolved_model_name},
+                    response_metadata={
+                        "finish_reason": "tool_calls",
+                        "model_name": resolved_model_name,
+                    },
                     usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                 )
                 return
@@ -373,7 +402,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                     )
                     yield AIMessageChunk(
                         content="",
-                        response_metadata={"finish_reason": "tool_calls", "model_name": resolved_model_name},
+                        response_metadata={
+                            "finish_reason": "tool_calls",
+                            "model_name": resolved_model_name,
+                        },
                         usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
                     )
                     return

@@ -3,12 +3,12 @@
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage, AIMessageChunk
 from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.nodes.answer_node import AnswerNode
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
-from langchain_core.messages import AIMessage
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
 from app.persistence.message_repo import MessageRepository
@@ -121,6 +121,29 @@ async def test_answer_node_regenerates_summary_for_multi_step_answer(
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
+    )
+
+    def fake_create_runnable(self: object, **kwargs: object) -> object:
+        """让回答节点通过 astream 获取稳定总结结果。"""
+
+        del self, kwargs
+
+        class _FakeRunnable:
+            async def astream(self, messages: list[object], config=None):
+                del messages, config
+                ai_message = await fake_create_chat_completion()
+                yield AIMessageChunk(
+                    content=ai_message.content,
+                    response_metadata=ai_message.response_metadata or {},
+                    usage_metadata=ai_message.usage_metadata or {},
+                    tool_call_chunks=[],
+                )
+
+        return _FakeRunnable()
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_runnable",
+        fake_create_runnable,
     )
 
     engine = create_async_engine(

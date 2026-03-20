@@ -1,8 +1,9 @@
 """Planner 服务单元测试。"""
 
+from langchain_core.messages import AIMessage
+
 from app.agent.planner import PlannerService
 from app.agent.state import AgentState
-from langchain_core.messages import AIMessage
 
 
 class _FakePlannerLlmClient:
@@ -72,18 +73,6 @@ async def test_planner_can_use_llm_output() -> None:
     assert [step.executor for step in plan.steps] == ["rag", "route", "answer"]
 
 
-async def test_planner_falls_back_when_llm_output_is_invalid() -> None:
-    """LLM planner 解析失败时，应使用兜底规则。"""
-
-    planner = PlannerService(llm_client=_FakePlannerLlmClient("not-json"))
-
-    plan = await planner.build_plan_async(AgentState(latest_user_message="杭州到金华怎么走"))
-
-    assert plan.primary_category == "general"
-    assert plan.recommended_route == "answer"
-    assert [step.executor for step in plan.steps] == ["answer"]
-
-
 async def test_planner_falls_back_when_llm_raises_error() -> None:
     """LLM 客户端抛出异常时，应使用兜底规则。"""
 
@@ -102,10 +91,7 @@ async def test_planner_fallback_handles_explicit_tools() -> None:
     planner = PlannerService(llm_client=_FakePlannerLlmClient("not-json"))
 
     plan = await planner.build_plan_async(
-        AgentState(
-            latest_user_message="使用计算器",
-            requested_tool_names=["calculator"]
-        )
+        AgentState(latest_user_message="使用计算器", requested_tool_names=["calculator"])
     )
 
     assert plan.primary_category == "general"

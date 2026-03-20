@@ -3,12 +3,12 @@
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage, AIMessageChunk
 from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.agent.graph import ConversationGraph
 from app.agent.state import ChatExecutionRequest
-from langchain_core.messages import AIMessage
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
 from app.persistence.memory_repo import MemoryRepository
@@ -34,11 +34,11 @@ async def test_conversation_graph_reuses_session_history(
         """根据上下文中的历史用户消息生成稳定回答。"""
 
         del self, tools, tool_choice, enable_thinking
-        user_messages = [
-            str(getattr(message, "content", ""))
-            for message in messages
-            if getattr(message, "role", "") == "user"
-        ]
+        user_messages = []
+        for message in messages:
+            message_role = getattr(message, "role", None) or getattr(message, "type", "")
+            if str(message_role) in {"user", "human"}:
+                user_messages.append(str(getattr(message, "content", "")))
         latest_user_message = user_messages[-1] if user_messages else ""
 
         if "我刚刚告诉你的名字是什么" in latest_user_message and any(
@@ -55,6 +55,24 @@ async def test_conversation_graph_reuses_session_history(
             response_metadata={"finish_reason": "stop"},
             usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
+
+    def fake_create_runnable(self: object, **kwargs: object) -> object:
+        """让 AnswerNode 通过 astream 获取稳定的测试输出。"""
+
+        del self, kwargs
+
+        class _FakeRunnable:
+            async def astream(self, messages: list[object], config=None):
+                del config
+                ai_message = await fake_create_chat_completion(object(), messages)
+                yield AIMessageChunk(
+                    content=ai_message.content,
+                    response_metadata=ai_message.response_metadata or {},
+                    usage_metadata=ai_message.usage_metadata or {},
+                    tool_call_chunks=[],
+                )
+
+        return _FakeRunnable()
 
     async def fake_load_checkpoint(self: object, session_id: str) -> dict[str, object] | None:
         """测试场景下不依赖真实 Redis。"""
@@ -76,6 +94,10 @@ async def test_conversation_graph_reuses_session_history(
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_chat_completion",
         fake_create_chat_completion,
+    )
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_runnable",
+        fake_create_runnable,
     )
     monkeypatch.setattr("app.memory.checkpoint_store.CheckpointStore.load", fake_load_checkpoint)
     monkeypatch.setattr("app.memory.checkpoint_store.CheckpointStore.save", fake_save_checkpoint)

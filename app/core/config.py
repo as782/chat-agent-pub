@@ -42,6 +42,10 @@ class Settings(BaseSettings):
         validation_alias="RAGFLOW_BASE_URL",
     )
     ragflow_api_key: SecretStr | None = Field(default=None, validation_alias="RAGFLOW_API_KEY")
+    default_knowledge_dataset_id: str | None = Field(
+        default=None,
+        validation_alias="DEFAULT_KNOWLEDGE_DATASET_ID",
+    )
     mcp_servers_json: str | None = Field(default=None, validation_alias="MCP_SERVERS_JSON")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")

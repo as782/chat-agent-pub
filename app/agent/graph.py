@@ -6,9 +6,7 @@
 from collections.abc import AsyncIterator
 from typing import Any
 
-from langchain_core.messages import ToolMessage
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
@@ -23,9 +21,9 @@ from app.agent.nodes.router_node import RouterNode
 from app.agent.nodes.scheduler_node import SchedulerNode
 from app.agent.nodes.tool_node import ToolNode as CustomToolNode
 from app.agent.nodes.traffic_node import TrafficNode
-from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult, PreparedContext
+from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult
 from app.clients.llm_client import LlmClient
-from app.tools.registry import ToolRegistry, tool_to_langchain_format
+from app.tools.registry import ToolRegistry
 
 
 class ConversationGraph:
@@ -61,11 +59,6 @@ class ConversationGraph:
         self._ragflow_node = RagflowNode(db_session)
         self._mcp_node = McpNode()
         self._memory_node = MemoryNode(db_session)
-        
-        # 获取并注册工具到预构建的 ToolNode
-        tools = [tool_to_langchain_format(tool) for tool in shared_tool_registry.get_tools(None)]
-        self._tool_node = ToolNode(tools)
-        
         self._compiled_graph = self._build_graph()
 
     async def run_turn(
@@ -164,17 +157,14 @@ class ConversationGraph:
         graph_builder.add_edge("route_node", "mcp_node")
         graph_builder.add_edge("traffic_node", "mcp_node")
         graph_builder.add_edge("report_node", "mcp_node")
-        
+
         # 添加工具节点的条件边，实现工具循环
         graph_builder.add_conditional_edges(
             "tool_node",
             self._should_continue,
-            {
-                "tool_node": "tool_node",
-                "answer_node": "answer_node"
-            }
+            {"tool_node": "tool_node", "answer_node": "answer_node"},
         )
-        
+
         graph_builder.add_edge("ragflow_node", "scheduler_node")
         graph_builder.add_edge("mcp_node", "tool_node")
         graph_builder.add_edge("answer_node", "memory_node")

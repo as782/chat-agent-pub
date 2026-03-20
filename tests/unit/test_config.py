@@ -19,6 +19,7 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
     monkeypatch.setenv("PLANNER_MODEL", "test-planner-model")
+    monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv(
         "MCP_SERVERS_JSON",
         '[{"name":"demo","transport":"http","endpoint":"https://mcp.example.com"}]',
@@ -33,6 +34,7 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.openai_base_url == "https://example.com/v1"
     assert settings.openai_model == "test-chat-model"
     assert settings.planner_model == "test-planner-model"
+    assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.mcp_servers_json is not None
     assert settings.is_debug is True
 
