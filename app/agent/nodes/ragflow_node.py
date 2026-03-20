@@ -13,7 +13,7 @@ from app.agent.state import (
     ExecutorResult,
     ResolvedArguments,
     merge_step_result,
-    resolve_execution_step_id,
+    resolve_active_execution_step_id,
     resolve_step_arguments,
 )
 from app.knowledge.service import KnowledgeService
@@ -34,7 +34,11 @@ class RagflowNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """执行知识检索，并返回注入回答节点所需的知识上下文。"""
 
-        step_id = resolve_execution_step_id(state, executor="rag", default_step_id="rag_1")
+        step_id = resolve_active_execution_step_id(
+            state,
+            executor="rag",
+            default_step_id="rag_1",
+        )
         step_arguments = resolve_step_arguments(state, step_id=step_id, executor="rag")
         normalized_query = self._resolve_query(state, step_arguments)
         knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)

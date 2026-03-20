@@ -14,7 +14,7 @@ from app.agent.state import (
     ExecutorResult,
     ResolvedArguments,
     merge_step_result,
-    resolve_execution_step_id,
+    resolve_active_execution_step_id,
     resolve_step_arguments,
 )
 
@@ -25,7 +25,7 @@ class ReportNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """生成路网报告问题的业务上下文。"""
 
-        step_id = resolve_execution_step_id(
+        step_id = resolve_active_execution_step_id(
             state,
             executor="report",
             default_step_id="report_1",

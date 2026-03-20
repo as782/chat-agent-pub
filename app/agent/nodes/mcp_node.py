@@ -10,7 +10,7 @@ from app.agent.state import (
     ExecutorResult,
     get_execution_step,
     merge_step_result,
-    resolve_execution_step_id,
+    resolve_active_execution_step_id,
 )
 from app.core.exceptions import AppException
 from app.mcp.manager import McpManager
@@ -41,7 +41,11 @@ class McpNode:
         if current_step is None or current_step.executor != "mcp":
             return result
 
-        step_id = resolve_execution_step_id(state, executor="mcp", default_step_id="mcp_1")
+        step_id = resolve_active_execution_step_id(
+            state,
+            executor="mcp",
+            default_step_id="mcp_1",
+        )
         executor_result = ExecutorResult(
             step_id=step_id,
             executor="mcp",

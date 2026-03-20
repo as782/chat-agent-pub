@@ -179,6 +179,27 @@ def resolve_execution_step_id(
     return default_step_id
 
 
+def resolve_active_execution_step_id(
+    state: AgentState,
+    *,
+    executor: ExecutorType,
+    default_step_id: str,
+) -> str:
+    """优先返回当前调度中的 step_id，避免同类 executor 多步计划写回错误 step。"""
+
+    current_step_id = state.get("current_step_id")
+    if isinstance(current_step_id, str):
+        current_step = get_execution_step(state, step_id=current_step_id)
+        if current_step is not None and current_step.executor == executor:
+            return current_step.step_id
+
+    return resolve_execution_step_id(
+        state,
+        executor=executor,
+        default_step_id=default_step_id,
+    )
+
+
 def get_execution_step(
     state: AgentState,
     *,
