@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import AIMessageChunk
@@ -43,6 +44,31 @@ _GRAPH_NODE_NAMES = {
     "memory_node",
 }
 _USER_VISIBLE_STREAM_NODES = {"answer_node"}
+_ROOT_GRAPH_RUNNABLE_NAME = "LangGraph"
+
+
+@dataclass(slots=True)
+class _PreparedChatExecution:
+    """封装聊天请求准备阶段的结果。"""
+
+    request_id: str
+    request_start_time: float
+    execution_request: ChatExecutionRequest
+    resolved_session_id: str
+    prepare_duration_ms: float
+
+
+@dataclass(slots=True)
+class _GraphStreamState:
+    """封装图流式处理过程中的中间状态。"""
+
+    first_payload_duration_ms: float | None = None
+    final_result: ChatTurnResult | None = None
+    checkpoint_payload: dict[str, object] | None = None
+    has_emitted_payload: bool = False
+    active_node_stack: list[str] = field(default_factory=list)
+    visited_nodes: list[str] = field(default_factory=list)
+    tool_round_chunks: list[AIMessageChunk] = field(default_factory=list) 
 
 
 class ChatService:
@@ -68,6 +94,7 @@ class ChatService:
             llm_client=self._llm_client,
             tool_registry=self._tool_registry,
         )
+
     @staticmethod
     def _resolve_chunk_finish_reason(chunk: AIMessageChunk) -> str | None:
         """从增量块中解析结束原因。"""
@@ -83,7 +110,7 @@ class ChatService:
     @staticmethod
     def _filter_tool_round_chunk_for_tool_calls(chunk: AIMessageChunk) -> AIMessageChunk | None:
         """tool_calls 轮次仅输出工具调用结构与结束信号。"""
-        print(chunk)
+
         response_metadata = chunk.response_metadata or {}
         finish_reason = response_metadata.get("finish_reason")
         has_tool_payload = bool(chunk.tool_call_chunks or chunk.tool_calls)
@@ -99,136 +126,271 @@ class ChatService:
 
         return uuid4().hex
 
+    @staticmethod
+    def _enter_graph_node(stream_state: _GraphStreamState, runnable_name: str) -> None:
+        """记录进入图节点的事件。"""
+
+        stream_state.active_node_stack.append(runnable_name)
+        if runnable_name not in stream_state.visited_nodes:
+            stream_state.visited_nodes.append(runnable_name)
+
+    @staticmethod
+    def _exit_graph_node(stream_state: _GraphStreamState, runnable_name: str) -> None:
+        """记录离开图节点的事件。"""
+
+        if stream_state.active_node_stack and stream_state.active_node_stack[-1] == runnable_name:
+            stream_state.active_node_stack.pop()
+            return
+        if runnable_name in stream_state.active_node_stack:
+            stream_state.active_node_stack.remove(runnable_name)
+
+    @staticmethod
+    def _get_current_graph_node(stream_state: _GraphStreamState) -> str | None:
+        """获取当前活跃的图节点。"""
+
+        return stream_state.active_node_stack[-1] if stream_state.active_node_stack else None
+
+    def _flush_tool_round_chunks(
+        self,
+        stream_state: _GraphStreamState,
+        *,
+        tool_calls_only: bool,
+    ) -> list[AIMessageChunk]:
+        """刷新当前 tool_node 轮次中缓冲的 chunk。"""
+
+        if not stream_state.tool_round_chunks:
+            return []
+
+        if tool_calls_only:
+            chunks_to_emit = [
+                filtered_chunk
+                for buffered_chunk in stream_state.tool_round_chunks
+                if (
+                    filtered_chunk := self._filter_tool_round_chunk_for_tool_calls(buffered_chunk)
+                )
+                is not None
+            ]
+        else:
+            chunks_to_emit = list(stream_state.tool_round_chunks)
+        stream_state.tool_round_chunks.clear()
+        return chunks_to_emit
+
+    def _collect_chunks_from_stream_event(
+        self,
+        *,
+        stream_state: _GraphStreamState,
+        current_node: str | None,
+        event: dict[str, Any],
+    ) -> list[AIMessageChunk]:
+        """根据单个 LangGraph 事件提取需要对外输出的 chunk。"""
+
+        if event["event"] != "on_chat_model_stream":
+            return []
+
+        chunk = event["data"]["chunk"]
+        if not isinstance(chunk, AIMessageChunk):
+            return []
+
+        if current_node == "tool_node":
+            stream_state.tool_round_chunks.append(chunk)
+            finish_reason = self._resolve_chunk_finish_reason(chunk)
+            if finish_reason is None:
+                return []
+            return self._flush_tool_round_chunks(
+                stream_state,
+                tool_calls_only=finish_reason == "tool_calls",
+            )
+
+        if current_node in _USER_VISIBLE_STREAM_NODES:
+            return [chunk]
+        return []
+
+    async def _emit_stream_payloads(
+        self,
+        *,
+        stream_state: _GraphStreamState,
+        request_start_time: float,
+        chunk_builder: Any,
+        chunks: list[AIMessageChunk],
+    ) -> AsyncIterator[str]:
+        """把 chunk 列表统一转换为 OpenAI 兼容 SSE。"""
+
+        for emit_chunk in chunks:
+            for payload in chunk_builder.consume_chunk(emit_chunk):
+                if stream_state.first_payload_duration_ms is None:
+                    stream_state.first_payload_duration_ms = (
+                        perf_counter() - request_start_time
+                    ) * 1000
+                stream_state.has_emitted_payload = True
+                yield payload
+
+    @staticmethod
+    def _capture_graph_completion(
+        stream_state: _GraphStreamState,
+        *,
+        output: object,
+    ) -> None:
+        """从根图输出中提取最终结果与 checkpoint。"""
+
+        if not isinstance(output, dict):
+            return
+
+        final_result = output.get("final_result")
+        if isinstance(final_result, ChatTurnResult):
+            stream_state.final_result = final_result
+
+        checkpoint_payload = output.get("checkpoint_payload")
+        if isinstance(checkpoint_payload, dict):
+            stream_state.checkpoint_payload = checkpoint_payload
+
+    async def _prepare_chat_execution(
+        self,
+        *,
+        chat_request: OpenAIChatCompletionRequest,
+        session_id: str | None,
+        commit_after_prepare: bool,
+    ) -> _PreparedChatExecution:
+        """统一处理请求准备阶段的会话解析与用户消息落库。"""
+
+        request_id = self._generate_identifier()[:8]
+        request_start_time = perf_counter()
+        execution_request = self._build_execution_request(
+            chat_request=chat_request,
+            session_id=session_id,
+        )
+
+        try:
+            prepare_start_time = perf_counter()
+            resolved_session_id = await self._ensure_session(
+                session_id=execution_request.session_id,
+                user_message=execution_request.latest_user_message,
+                user_id=execution_request.user_id,
+            )
+            execution_request = replace(execution_request, session_id=resolved_session_id)
+            await self._persist_user_message(execution_request)
+            if commit_after_prepare:
+                await self._db_session.commit()
+            prepare_duration_ms = (perf_counter() - prepare_start_time) * 1000
+        except Exception:
+            await self._db_session.rollback()
+            raise
+
+        return _PreparedChatExecution(
+            request_id=request_id,
+            request_start_time=request_start_time,
+            execution_request=execution_request,
+            resolved_session_id=resolved_session_id,
+            prepare_duration_ms=prepare_duration_ms,
+        )
+
     async def _consume_graph_events(
         self,
         *,
         execution_request: ChatExecutionRequest,
         request_id: str,
         request_start_time: float,
+        prepare_duration_ms: float,
     ) -> AsyncIterator[str]:
         """通用的 LangGraph 事件消息流转化器。"""
 
         chunk_builder = self._openai_compat_service.create_stream_chunk_builder(
             default_model_name=execution_request.model_name or self._llm_client.default_model_name
         )
-        first_payload_duration_ms: float | None = None
-        final_result: ChatTurnResult | None = None
-        has_emitted_payload = False
-        active_node_stack: list[str] = []
-        visited_nodes: list[str] = []
-        tool_round_chunks: list[AIMessageChunk] = []
+        stream_state = _GraphStreamState()
+        graph_start_time = perf_counter()
 
         try:
             async for event in self._conversation_graph.stream_events(execution_request):
                 event_name = event["event"]
                 runnable_name = event.get("name")
+
                 if event_name == "on_chain_start" and runnable_name in _GRAPH_NODE_NAMES:
-                    active_node_stack.append(runnable_name)
-                    if runnable_name not in visited_nodes:
-                        visited_nodes.append(runnable_name)
+                    self._enter_graph_node(stream_state, runnable_name)
                 elif event_name == "on_chain_end" and runnable_name in _GRAPH_NODE_NAMES:
-                    if runnable_name == "tool_node" and tool_round_chunks:
-                        for buffered_chunk in tool_round_chunks:
-                            for payload in chunk_builder.consume_chunk(buffered_chunk):
-                                if first_payload_duration_ms is None:
-                                    first_payload_duration_ms = (
-                                        perf_counter() - request_start_time
-                                    ) * 1000
-                                has_emitted_payload = True
-                                yield payload
-                        tool_round_chunks.clear()
-                    if active_node_stack and active_node_stack[-1] == runnable_name:
-                        active_node_stack.pop()
-                    elif runnable_name in active_node_stack:
-                        active_node_stack.remove(runnable_name)
+                    chunks_to_emit = (
+                        self._flush_tool_round_chunks(
+                            stream_state,
+                            tool_calls_only=False,
+                        )
+                        if runnable_name == "tool_node"
+                        else []
+                    )
+                    self._exit_graph_node(stream_state, runnable_name)
+                    async for payload in self._emit_stream_payloads(
+                        stream_state=stream_state,
+                        request_start_time=request_start_time,
+                        chunk_builder=chunk_builder,
+                        chunks=chunks_to_emit,
+                    ):
+                        yield payload
 
-                current_node = active_node_stack[-1] if active_node_stack else None
-                # 1. 提取 Token (on_chat_model_stream)
-                if event_name == "on_chat_model_stream":
-                    chunk = event["data"]["chunk"]
-                    if not isinstance(chunk, AIMessageChunk):
-                        continue
+                current_node = self._get_current_graph_node(stream_state)
+                chunks_to_emit = self._collect_chunks_from_stream_event(
+                    stream_state=stream_state,
+                    current_node=current_node,
+                    event=event,
+                )
+                async for payload in self._emit_stream_payloads(
+                    stream_state=stream_state,
+                    request_start_time=request_start_time,
+                    chunk_builder=chunk_builder,
+                    chunks=chunks_to_emit,
+                ):
+                    yield payload
 
-                    if current_node == "tool_node":
-                        tool_round_chunks.append(chunk)
-                        finish_reason = self._resolve_chunk_finish_reason(chunk)
-                        if finish_reason is None:
-                            continue
+                if event_name == "on_chain_end" and runnable_name == _ROOT_GRAPH_RUNNABLE_NAME:
+                    self._capture_graph_completion(
+                        stream_state,
+                        output=event["data"]["output"],
+                    )
 
-                        if finish_reason == "tool_calls":
-                            chunks_to_emit = [
-                                filtered_chunk
-                                for buffered_chunk in tool_round_chunks
-                                if (
-                                    filtered_chunk := self._filter_tool_round_chunk_for_tool_calls(
-                                        buffered_chunk
-                                    )
-                                )
-                                is not None
-                            ]
-                        else:
-                            chunks_to_emit = list(tool_round_chunks)
-                        tool_round_chunks.clear()
-                    elif current_node in _USER_VISIBLE_STREAM_NODES:
-                        chunks_to_emit = [chunk]
-                    else:
-                        continue
-
-                    for emit_chunk in chunks_to_emit:
-                        for payload in chunk_builder.consume_chunk(emit_chunk):
-                            if first_payload_duration_ms is None:
-                                first_payload_duration_ms = (
-                                    perf_counter() - request_start_time
-                                ) * 1000
-                            has_emitted_payload = True
-                            yield payload
-
-                # 2. 提取最终结果 (on_chain_end for root graph)
-                elif event_name == "on_chain_end" and runnable_name == "LangGraph":
-                    output = event["data"]["output"]
-                    if isinstance(output, dict) and output.get("final_result"):
-                        final_result = output["final_result"]
-
-            # 3. 结束流
             for payload in chunk_builder.finalize():
-                has_emitted_payload = True
+                stream_state.has_emitted_payload = True
                 yield payload
 
-            # 4. 记录日志与指标
-            if final_result:
-                # 注意：在流式完成后，我们可能需要更新会话时间戳和刷新内存，
-                # 但由于 astream_events 已经完成了图运行，这些逻辑应该在 Node 内部或在此处补齐。
-                # 目前 AnswerNode 已经处理了持久化，我们只需处理 commit 和 checkpoint。
+            if stream_state.final_result:
+                graph_duration_ms = (perf_counter() - graph_start_time) * 1000
+                commit_start_time = perf_counter()
                 await self._session_repository.update_timestamp(str(execution_request.session_id))
                 await self._db_session.commit()
+                commit_duration_ms = (perf_counter() - commit_start_time) * 1000
+
+                checkpoint_start_time = perf_counter()
+                await self._save_checkpoint_safely(stream_state.checkpoint_payload)
+                checkpoint_duration_ms = (perf_counter() - checkpoint_start_time) * 1000
 
                 LOGGER.info(
                     (
-                        "聊天流式响应完成：request_id=%s session_id=%s route=%s "
-                        "visited_nodes=%s first_payload_ms=%s total_elapsed_ms=%.2f"
+                        "聊天请求完成：request_id=%s mode=stream session_id=%s "
+                        "prepare_ms=%.2f graph_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
+                        "total_ms=%.2f finish_reason=%s visited_nodes=%s first_payload_ms=%s"
                     ),
                     request_id,
                     execution_request.session_id,
-                    final_result.route,
-                    "->".join(visited_nodes) if visited_nodes else "none",
+                    prepare_duration_ms,
+                    graph_duration_ms,
+                    commit_duration_ms,
+                    checkpoint_duration_ms,
+                    (perf_counter() - request_start_time) * 1000,
+                    stream_state.final_result.finish_reason,
+                    "->".join(stream_state.visited_nodes) if stream_state.visited_nodes else "none",
                     (
-                        f"{first_payload_duration_ms:.2f}"
-                        if first_payload_duration_ms is not None
+                        f"{stream_state.first_payload_duration_ms:.2f}"
+                        if stream_state.first_payload_duration_ms is not None
                         else "none"
                     ),
-                    (perf_counter() - request_start_time) * 1000,
                 )
 
         except AppException as exception:
             await self._db_session.rollback()
-            if not has_emitted_payload:
+            if not stream_state.has_emitted_payload:
                 raise
 
             yield self._openai_compat_service.build_stream_error_payload(exception)
             yield "data: [DONE]\n\n"
         except Exception as exception:
             await self._db_session.rollback()
-            if not has_emitted_payload:
+            if not stream_state.has_emitted_payload:
                 raise
 
             LOGGER.exception("流式输出过程中发生未处理异常。", exc_info=exception)
@@ -329,33 +491,22 @@ class ChatService:
     ) -> tuple[str, OpenAIChatCompletionResponse]:
         """处理内部聊天请求，并返回 OpenAI 兼容响应。"""
 
-        request_id = self._generate_identifier()[:8]
-        request_start_time = perf_counter()
-        execution_request = self._build_execution_request(
+        prepared_execution = await self._prepare_chat_execution(
             chat_request=chat_request,
             session_id=session_id,
+            commit_after_prepare=False,
         )
         checkpoint_payload: dict[str, object] | None = None
 
         try:
-            prepare_start_time = perf_counter()
-            resolved_session_id = await self._ensure_session(
-                session_id=execution_request.session_id,
-                user_message=execution_request.latest_user_message,
-                user_id=execution_request.user_id,
-            )
-            execution_request = replace(execution_request, session_id=resolved_session_id)
-            await self._persist_user_message(execution_request)
-            prepare_duration_ms = (perf_counter() - prepare_start_time) * 1000
-
             graph_start_time = perf_counter()
             turn_result, checkpoint_payload = await self._conversation_graph.run_turn(
-                execution_request
+                prepared_execution.execution_request
             )
             graph_duration_ms = (perf_counter() - graph_start_time) * 1000
 
             commit_start_time = perf_counter()
-            await self._session_repository.update_timestamp(resolved_session_id)
+            await self._session_repository.update_timestamp(prepared_execution.resolved_session_id)
             await self._db_session.commit()
             commit_duration_ms = (perf_counter() - commit_start_time) * 1000
         except Exception:
@@ -372,17 +523,17 @@ class ChatService:
                 "prepare_ms=%.2f graph_ms=%.2f commit_ms=%.2f checkpoint_ms=%.2f "
                 "total_ms=%.2f finish_reason=%s"
             ),
-            request_id,
-            resolved_session_id,
-            prepare_duration_ms,
+            prepared_execution.request_id,
+            prepared_execution.resolved_session_id,
+            prepared_execution.prepare_duration_ms,
             graph_duration_ms,
             commit_duration_ms,
             checkpoint_duration_ms,
-            (perf_counter() - request_start_time) * 1000,
+            (perf_counter() - prepared_execution.request_start_time) * 1000,
             turn_result.finish_reason,
         )
         return (
-            resolved_session_id,
+            prepared_execution.resolved_session_id,
             self._openai_compat_service.build_chat_completion_response(turn_result),
         )
 
@@ -393,42 +544,24 @@ class ChatService:
     ) -> tuple[str, AsyncIterator[str]]:
         """处理内部流式聊天请求，并返回 OpenAI 兼容 SSE。"""
 
-        request_id = self._generate_identifier()[:8]
-        request_start_time = perf_counter()
-        execution_request = self._build_execution_request(
+        prepared_execution = await self._prepare_chat_execution(
             chat_request=chat_request,
             session_id=session_id,
+            commit_after_prepare=True,
         )
-
-        try:
-            prepare_start_time = perf_counter()
-            resolved_session_id = await self._ensure_session(
-                session_id=execution_request.session_id,
-                user_message=execution_request.latest_user_message,
-                user_id=execution_request.user_id,
-            )
-            execution_request = replace(execution_request, session_id=resolved_session_id)
-            await self._persist_user_message(execution_request)
-            # 先提交用户消息，避免流式响应已开始时会话仍未落库。
-            await self._db_session.commit()
-            prepare_duration_ms = (perf_counter() - prepare_start_time) * 1000
-        except Exception:
-            await self._db_session.rollback()
-            raise
 
         LOGGER.info(
-            (
-                "聊天流式请求开始：request_id=%s session_id=%s prepare_ms=%.2f"
-            ),
-            request_id,
-            resolved_session_id,
-            prepare_duration_ms,
+            "聊天流式请求开始：request_id=%s session_id=%s prepare_ms=%.2f",
+            prepared_execution.request_id,
+            prepared_execution.resolved_session_id,
+            prepared_execution.prepare_duration_ms,
         )
         return (
-            resolved_session_id,
+            prepared_execution.resolved_session_id,
             self._consume_graph_events(
-                execution_request=execution_request,
-                request_id=request_id,
-                request_start_time=request_start_time,
+                execution_request=prepared_execution.execution_request,
+                request_id=prepared_execution.request_id,
+                request_start_time=prepared_execution.request_start_time,
+                prepare_duration_ms=prepared_execution.prepare_duration_ms,
             ),
         )
