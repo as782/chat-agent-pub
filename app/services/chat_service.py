@@ -39,6 +39,7 @@ _GRAPH_NODE_NAMES = {
     "ragflow_node",
     "mcp_node",
     "traffic_node",
+    "service_node",
     "report_node",
     "answer_node",
     "memory_node",

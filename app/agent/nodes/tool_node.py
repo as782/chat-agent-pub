@@ -3,8 +3,6 @@
 当前阶段支持内置工具与 MCP 远端工具混合执行，不负责更复杂的跨服务规划。
 """
 
-from __future__ import annotations
-
 from json import dumps
 from uuid import uuid4
 

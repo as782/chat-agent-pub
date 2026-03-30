@@ -27,6 +27,8 @@ def resolve_agent_route(state: AgentState) -> AgentRoute:
         normalized_message=normalized_message,
     ):
         return "ragflow"
+    if latest_user_message.startswith("service:") or "#service" in normalized_message:
+        return "service"
     if latest_user_message.startswith("route:") or "#route" in normalized_message:
         return "route"
     if latest_user_message.startswith("mcp:") or "#mcp" in normalized_message:

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from json import dumps
+from json import dumps, loads
 
 from app.agent.prompts import REPORT_CONTEXT_PROMPT_PREFIX
 from app.agent.state import (
@@ -17,13 +17,18 @@ from app.agent.state import (
     resolve_active_execution_step_id,
     resolve_step_arguments,
 )
+from app.core.exceptions import AppException
+from app.tools.registry import ToolRegistry
 
 
 class ReportNode:
     """LangGraph 路网报告业务节点。"""
 
+    def __init__(self, *, tool_registry: ToolRegistry | None = None) -> None:
+        self._tool_registry = tool_registry or ToolRegistry()
+
     async def run(self, state: AgentState) -> dict[str, object]:
-        """生成路网报告问题的业务上下文。"""
+        """执行整体路网查询工具并生成路网报告上下文。"""
 
         step_id = resolve_active_execution_step_id(
             state,
@@ -33,26 +38,133 @@ class ReportNode:
         resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="report")
         if not isinstance(resolved_arguments, ResolvedArguments):
             return {"report_context": None}
-        executor_result = ExecutorResult(
-            step_id=step_id,
-            executor="report",
-            is_success=True,
-            raw_result=dict(resolved_arguments.arguments),
-            normalized_result=dict(resolved_arguments.arguments),
-            summary="已整理路网报告任务的结构化参数。",
-        )
+        query_arguments = self._build_tool_arguments(resolved_arguments)
+        try:
+            tool_output = await self._tool_registry.execute_named_tool(
+                tool_name="live_network_overview_query",
+                arguments=query_arguments,
+            )
+            response_payload = self._parse_tool_output(tool_output)
+            executor_result = ExecutorResult(
+                step_id=step_id,
+                executor="report",
+                is_success=True,
+                raw_result={
+                    "query_arguments": dict(query_arguments),
+                    "api_result": response_payload,
+                },
+                normalized_result=self._build_normalized_result(
+                    resolved_arguments=resolved_arguments,
+                    response_payload=response_payload,
+                ),
+                summary="整体路网查询成功。",
+            )
+            return {
+                "report_context": self._build_report_context(
+                    resolved_arguments=resolved_arguments,
+                    response_payload=response_payload,
+                ),
+                **merge_step_result(state, result=executor_result),
+            }
+        except AppException as exception:
+            executor_result = ExecutorResult(
+                step_id=step_id,
+                executor="report",
+                is_success=False,
+                raw_result={"query_arguments": dict(query_arguments)},
+                normalized_result=dict(query_arguments),
+                summary="整体路网查询失败。",
+                error=exception.message,
+            )
+            return {
+                "report_context": self._build_error_context(
+                    resolved_arguments=resolved_arguments,
+                    query_arguments=query_arguments,
+                    error_message=exception.message,
+                ),
+                **merge_step_result(state, result=executor_result),
+            }
+
+    @staticmethod
+    def _build_tool_arguments(resolved_arguments: ResolvedArguments) -> dict[str, object]:
+        """把结构化参数转换为整体路网查询工具参数。"""
+
         return {
-            "report_context": self._build_report_context(resolved_arguments),
-            **merge_step_result(state, result=executor_result),
+            "query": str(resolved_arguments.arguments.get("query") or ""),
+            "scope": str(resolved_arguments.arguments.get("scope") or "全路网"),
+            "report_type": str(resolved_arguments.arguments.get("report_type") or "ad_hoc"),
         }
 
     @staticmethod
-    def _build_report_context(resolved_arguments: ResolvedArguments) -> str:
-        """把结构化参数转为报表类 system 上下文。"""
+    def _parse_tool_output(tool_output: str) -> dict[str, object] | list[dict[str, object]]:
+        """解析整体路网工具返回的 JSON 字符串。"""
+
+        response_payload = loads(tool_output)
+        if isinstance(response_payload, dict):
+            return response_payload
+        if isinstance(response_payload, list):
+            return [item for item in response_payload if isinstance(item, dict)]
+        return {}
+
+    @staticmethod
+    def _build_normalized_result(
+        *,
+        resolved_arguments: ResolvedArguments,
+        response_payload: dict[str, object] | list[dict[str, object]],
+    ) -> dict[str, object]:
+        """提取整体路网查询结果中的关键摘要字段。"""
+
+        record_count = len(response_payload) if isinstance(response_payload, list) else 1
+        return {
+            "scope": resolved_arguments.arguments.get("scope"),
+            "report_type": resolved_arguments.arguments.get("report_type"),
+            "need_table": resolved_arguments.arguments.get("need_table"),
+            "need_comparison": resolved_arguments.arguments.get("need_comparison"),
+            "record_count": record_count,
+        }
+
+    @staticmethod
+    def _build_report_context(
+        *,
+        resolved_arguments: ResolvedArguments,
+        response_payload: dict[str, object] | list[dict[str, object]],
+    ) -> str:
+        """把结构化参数和接口返回转为报表类 system 上下文。"""
 
         return "\n".join(
             [
                 REPORT_CONTEXT_PROMPT_PREFIX,
-                dumps(resolved_arguments.arguments, ensure_ascii=False, indent=2),
+                dumps(
+                    {
+                        "query_arguments": dict(resolved_arguments.arguments),
+                        "api_result": response_payload,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            ]
+        )
+
+    @staticmethod
+    def _build_error_context(
+        *,
+        resolved_arguments: ResolvedArguments,
+        query_arguments: dict[str, object],
+        error_message: str,
+    ) -> str:
+        """构造整体路网查询失败时的上下文。"""
+
+        return "\n".join(
+            [
+                REPORT_CONTEXT_PROMPT_PREFIX,
+                dumps(
+                    {
+                        "query_arguments": dict(query_arguments),
+                        "resolved_arguments": dict(resolved_arguments.arguments),
+                        "error": error_message,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
             ]
         )

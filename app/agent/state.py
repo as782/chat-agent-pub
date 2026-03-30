@@ -14,16 +14,17 @@ from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
 from app.tools.registry import ExecutedToolCall
 
-AgentRoute = Literal["answer", "tool", "ragflow", "route", "mcp", "traffic", "report"]
+AgentRoute = Literal["answer", "tool", "ragflow", "route", "mcp", "traffic", "service", "report"]
 ProblemCategory = Literal[
     "policy",
     "route_planning",
     "traffic_status",
+    "service_area",
     "network_report",
     "general",
 ]
 ExecutionMode = Literal["direct", "single_step", "multi_step"]
-ExecutorType = Literal["answer", "rag", "mcp", "tool", "route", "traffic", "report"]
+ExecutorType = Literal["answer", "rag", "mcp", "tool", "route", "traffic", "service", "report"]
 
 
 @dataclass(slots=True)
@@ -101,6 +102,7 @@ class PreparedContext:
     route_context: str | None = None
     mcp_context: str | None = None
     traffic_context: str | None = None
+    service_context: str | None = None
     report_context: str | None = None
     answer_instruction: str | None = None
     executor_results_context: str | None = None
@@ -152,6 +154,7 @@ class AgentState(TypedDict, total=False):
     route_context: str | None
     mcp_context: str | None
     traffic_context: str | None
+    service_context: str | None
     report_context: str | None
     mcp_tools: list[McpRuntimeTool]
     prepared_context: PreparedContext

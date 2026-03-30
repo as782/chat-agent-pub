@@ -97,3 +97,17 @@ async def test_planner_fallback_handles_explicit_tools() -> None:
     assert plan.primary_category == "general"
     assert plan.recommended_route == "tool"
     assert [step.executor for step in plan.steps] == ["tool", "answer"]
+
+
+async def test_planner_fallback_can_classify_service_area() -> None:
+    """当 LLM planner 失败时，应能识别服务区查询问题。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="杭州东服务区充电桩情况怎么样？")
+    )
+
+    assert plan.primary_category == "service_area"
+    assert plan.recommended_route == "service"
+    assert [step.executor for step in plan.steps] == ["service", "answer"]

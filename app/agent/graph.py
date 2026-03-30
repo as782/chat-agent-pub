@@ -19,6 +19,7 @@ from app.agent.nodes.report_node import ReportNode
 from app.agent.nodes.route_node import RouteNode
 from app.agent.nodes.router_node import RouterNode
 from app.agent.nodes.scheduler_node import SchedulerNode
+from app.agent.nodes.service_node import ServiceNode
 from app.agent.nodes.tool_node import ToolNode as CustomToolNode
 from app.agent.nodes.traffic_node import TrafficNode
 from app.agent.state import AgentState, ChatExecutionRequest, ChatTurnResult
@@ -44,6 +45,7 @@ class ConversationGraph:
         self._router_node = RouterNode()
         self._route_node = RouteNode()
         self._traffic_node = TrafficNode()
+        self._service_node = ServiceNode()
         self._report_node = ReportNode()
         self._answer_node = AnswerNode(
             db_session,
@@ -133,6 +135,7 @@ class ConversationGraph:
         graph_builder.add_node("ragflow_node", self._ragflow_node.run)
         graph_builder.add_node("mcp_node", self._mcp_node.run)
         graph_builder.add_node("traffic_node", self._traffic_node.run)
+        graph_builder.add_node("service_node", self._service_node.run)
         graph_builder.add_node("report_node", self._report_node.run)
         graph_builder.add_node("answer_node", self._answer_node.run)
         graph_builder.add_node("memory_node", self._memory_node.run)
@@ -151,12 +154,14 @@ class ConversationGraph:
                 "route_node": "route_node",
                 "mcp_node": "mcp_node",
                 "traffic_node": "traffic_node",
+                "service_node": "service_node",
                 "report_node": "report_node",
             },
         )
-        graph_builder.add_edge("route_node", "mcp_node")
-        graph_builder.add_edge("traffic_node", "mcp_node")
-        graph_builder.add_edge("report_node", "mcp_node")
+        graph_builder.add_edge("route_node", "answer_node")
+        graph_builder.add_edge("traffic_node", "answer_node")
+        graph_builder.add_edge("service_node", "answer_node")
+        graph_builder.add_edge("report_node", "answer_node")
 
         # 添加工具节点的条件边，实现工具循环
         graph_builder.add_conditional_edges(
@@ -205,6 +210,8 @@ class ConversationGraph:
             return "mcp_node"
         if route == "traffic":
             return "traffic_node"
+        if route == "service":
+            return "service_node"
         if route == "report":
             return "report_node"
         return "answer_node"

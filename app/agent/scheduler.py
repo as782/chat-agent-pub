@@ -16,6 +16,7 @@ EXECUTOR_ROUTE_MAPPING: dict[str, AgentRoute] = {
     "tool": "tool",
     "route": "route",
     "traffic": "traffic",
+    "service": "service",
     "report": "report",
 }
 

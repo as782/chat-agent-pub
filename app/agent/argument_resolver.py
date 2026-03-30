@@ -29,6 +29,8 @@ class ArgumentResolver:
             return self._resolve_route_arguments(latest_user_message, category=category)
         if category == "traffic_status":
             return self._resolve_traffic_arguments(latest_user_message, category=category)
+        if category == "service_area":
+            return self._resolve_service_arguments(latest_user_message, category=category)
         if category == "network_report":
             return self._resolve_report_arguments(latest_user_message, category=category)
         if category == "policy":
@@ -57,6 +59,11 @@ class ArgumentResolver:
             return self._resolve_traffic_arguments(
                 latest_user_message,
                 category="traffic_status",
+            )
+        if executor == "service":
+            return self._resolve_service_arguments(
+                latest_user_message,
+                category="service_area",
             )
         if executor == "report":
             return self._resolve_report_arguments(
@@ -112,6 +119,7 @@ class ArgumentResolver:
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("traffic:",))
         arguments: dict[str, object] = {
             "query": normalized_query,
+            "road": normalized_query.replace("路况", "").replace("怎么样", "").replace("如何", "").strip(),
             "target": normalized_query.replace("路况", "").replace("怎么样", "").strip(),
         }
         if "实时" in normalized_query or "当前" in normalized_query:
@@ -119,6 +127,26 @@ class ArgumentResolver:
         if "今天" in normalized_query:
             arguments["time_range"] = "today"
         return ResolvedArguments(category=category, arguments=arguments)
+
+    def _resolve_service_arguments(
+        self,
+        latest_user_message: str,
+        *,
+        category: ProblemCategory,
+    ) -> ResolvedArguments:
+        """提取服务区问题中的服务区或设施关键词。"""
+
+        normalized_query = self._strip_prefix(latest_user_message, prefixes=("service:",))
+        keyword = normalized_query
+        for suffix in ("服务区", "充电桩", "充电站", "有什么", "怎么样", "信息", "情况"):
+            keyword = keyword.replace(suffix, " ")
+        keyword = " ".join(keyword.split()).strip()
+        if not keyword:
+            keyword = normalized_query.strip()
+        return ResolvedArguments(
+            category=category,
+            arguments={"query": normalized_query, "keyword": keyword},
+        )
 
     def _resolve_report_arguments(
         self,

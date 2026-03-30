@@ -123,6 +123,7 @@ class ContextBuilder:
         route_context: str | None = None,
         mcp_context: str | None = None,
         traffic_context: str | None = None,
+        service_context: str | None = None,
         report_context: str | None = None,
     ) -> PreparedContext:
         """构建当前轮次的模型输入上下文。
@@ -148,6 +149,8 @@ class ContextBuilder:
                 context_messages.append(LlmInputMessage(role="system", content=mcp_context))
             if traffic_context:
                 context_messages.append(LlmInputMessage(role="system", content=traffic_context))
+            if service_context:
+                context_messages.append(LlmInputMessage(role="system", content=service_context))
             if report_context:
                 context_messages.append(LlmInputMessage(role="system", content=report_context))
             context_messages.extend(input_messages)
@@ -159,6 +162,7 @@ class ContextBuilder:
                 route_context=route_context,
                 mcp_context=mcp_context,
                 traffic_context=traffic_context,
+                service_context=service_context,
                 report_context=report_context,
                 answer_instruction=answer_instruction,
                 executor_results_context=executor_results_context,
@@ -186,6 +190,8 @@ class ContextBuilder:
             context_messages.append(LlmInputMessage(role="system", content=mcp_context))
         if traffic_context:
             context_messages.append(LlmInputMessage(role="system", content=traffic_context))
+        if service_context:
+            context_messages.append(LlmInputMessage(role="system", content=service_context))
         if report_context:
             context_messages.append(LlmInputMessage(role="system", content=report_context))
 
@@ -204,6 +210,7 @@ class ContextBuilder:
             route_context=route_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
+            service_context=service_context,
             report_context=report_context,
             answer_instruction=answer_instruction,
             executor_results_context=executor_results_context,

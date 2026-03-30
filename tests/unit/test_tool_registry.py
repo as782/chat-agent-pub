@@ -13,7 +13,14 @@ def test_tool_registry_lists_builtin_tools() -> None:
 
     registry = ToolRegistry()
 
-    assert registry.list_tool_names() == ["calculator", "current_datetime"]
+    assert registry.list_tool_names() == [
+        "calculator",
+        "current_datetime",
+        "live_driving_query",
+        "live_network_overview_query",
+        "live_road_event_query",
+        "live_service_query",
+    ]
 
 
 @pytest.mark.asyncio

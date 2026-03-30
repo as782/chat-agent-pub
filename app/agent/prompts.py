@@ -28,6 +28,10 @@ TRAFFIC_CONTEXT_PROMPT_PREFIX = (
     "以下是当前路况类问题的结构化查询信息，请结合这些信息回答，并明确说明仍缺少哪些实时数据："
 )
 
+SERVICE_CONTEXT_PROMPT_PREFIX = (
+    "以下是当前服务区查询结果和结构化需求，请基于这些信息回答，并明确说明关键设施和拥挤情况："
+)
+
 REPORT_CONTEXT_PROMPT_PREFIX = (
     "以下是当前路网报告任务的结构化需求，请按照用户要求组织结果，必要时输出表格："
 )
@@ -40,6 +44,7 @@ PLANNER_PROMPT = """你是问答系统的任务规划器。
 - policy：政策、制度、标准、规范、解释口径
 - route_planning：路线规划、从 A 到 B 怎么走、出行方案
 - traffic_status：路况、拥堵、封闭、施工、事故、实时状态
+- service_area：服务区、充电桩、配套设施、服务区拥挤情况
 - network_report：全路网汇总、对比分析、表格化报告
 - general：其他普通问答
 
@@ -53,14 +58,14 @@ PLANNER_PROMPT = """你是问答系统的任务规划器。
 PLANNER_JSON_OUTPUT_PROMPT = """请只输出一个 JSON 对象，不要输出额外解释。
 
 JSON 字段要求：
-- primary_category: policy | route_planning | traffic_status | network_report | general
+- primary_category: policy | route_planning | traffic_status | service_area | network_report | general
 - need_clarification: boolean
 - clarification_question: string | null
 - steps: array
 
 steps 中每个元素字段：
 - step_id: string
-- executor: answer | rag | mcp | tool | route | traffic | report
+- executor: answer | rag | mcp | tool | route | traffic | service | report
 - goal: string
 - depends_on: string[]
 - can_run_in_parallel: boolean
@@ -128,5 +133,14 @@ TRAFFIC_SUMMARY_PROMPT ="""
 NETWORK_REPORT_SUMMARY_PROMPT = (
     "请基于采集到的路网数据生成简洁的总结。若用户明确要求表格，请输出清晰表格后再给结论。"
 )
+
+SERVICE_SUMMARY_PROMPT = """
+请基于服务区查询结果回答，整理“规范中文输出”。
+要求：
+1. 先给出匹配到的服务区名称和所在高速
+2. 再说明充电、商业配套和拥挤情况
+3. 如果有多个结果，优先给最相关的 1-3 个
+4. 不要输出内部工具或参数信息
+"""
 
 GENERAL_ANSWER_PROMPT = "请直接、简洁、准确地回答用户问题。"

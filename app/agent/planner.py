@@ -30,6 +30,7 @@ _VALID_PROBLEM_CATEGORIES: set[ProblemCategory] = {
     "policy",
     "route_planning",
     "traffic_status",
+    "service_area",
     "network_report",
     "general",
 }
@@ -40,6 +41,7 @@ _VALID_EXECUTORS: set[ExecutorType] = {
     "tool",
     "route",
     "traffic",
+    "service",
     "report",
 }
 
@@ -67,8 +69,8 @@ class PlannerService:
                 "LLM planner 规划失败, error=%s",
                 str(exception)
             )
- 
- 
+            return self._build_fallback_plan(state)
+
     async def _build_plan_with_llm(self, state: AgentState) -> ExecutionPlan:
         """调用 LLM 生成规划结果。"""
 
@@ -287,6 +289,8 @@ class PlannerService:
             return "route"
         if primary_category == "traffic_status":
             return "traffic"
+        if primary_category == "service_area":
+            return "service"
         if primary_category == "network_report":
             return "report"
         return "answer"
@@ -308,7 +312,7 @@ class PlannerService:
                 continue
             if step.executor == "rag":
                 return "ragflow"
-            if step.executor in {"route", "traffic", "report", "tool", "mcp"}:
+            if step.executor in {"route", "traffic", "service", "report", "tool", "mcp"}:
                 return step.executor
         return self._build_recommended_route(
             primary_category=primary_category,
@@ -392,6 +396,21 @@ class PlannerService:
                 ),
             ]
 
+        if primary_category == "service_area":
+            return [
+                ExecutionStep(
+                    step_id="service_1",
+                    executor="service",
+                    goal="查询服务区、充电和商业配套信息",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结服务区结果并回答用户",
+                    depends_on=["service_1"],
+                ),
+            ]
+
         if primary_category == "network_report":
             return [
                 ExecutionStep(
@@ -415,4 +434,68 @@ class PlannerService:
                 goal="直接回答用户问题",
             )
         ]
+
+    def _build_fallback_plan(self, state: AgentState) -> ExecutionPlan:
+        """在 LLM planner 不可用时，使用规则生成保底计划。"""
+
+        requested_tool_names = state.get("requested_tool_names") or []
+        primary_category = self._infer_primary_category(
+            latest_user_message=str(state.get("latest_user_message", "")),
+            has_requested_tools=bool(requested_tool_names),
+        )
+        steps = self._build_steps(
+            primary_category=primary_category,
+            has_requested_tools=bool(requested_tool_names),
+        )
+        return ExecutionPlan(
+            primary_category=primary_category,
+            execution_mode=self._resolve_execution_mode(steps),
+            recommended_route=self._derive_recommended_route(
+                steps=steps,
+                primary_category=primary_category,
+                has_requested_tools=bool(requested_tool_names),
+            ),
+            steps=steps,
+        )
+
+    @staticmethod
+    def _infer_primary_category(
+        *,
+        latest_user_message: str,
+        has_requested_tools: bool,
+    ) -> ProblemCategory:
+        """根据问题文本做最小规则分类。"""
+
+        if has_requested_tools:
+            return "general"
+
+        normalized_message = latest_user_message.strip().lower()
+        if (
+            latest_user_message.startswith("知识库:")
+            or normalized_message.startswith("knowledge:")
+            or normalized_message.startswith("konwledge:")
+            or any(keyword in latest_user_message for keyword in ("政策", "制度", "标准", "规范", "口径"))
+        ):
+            return "policy"
+        if any(
+            keyword in latest_user_message
+            for keyword in ("服务区", "充电桩", "充电站", "休息区", "加油站", "便利店")
+        ):
+            return "service_area"
+        if any(
+            keyword in latest_user_message
+            for keyword in ("全路网", "路网", "日报", "周报", "月报", "表格", "对比")
+        ):
+            return "network_report"
+        if any(
+            keyword in latest_user_message
+            for keyword in ("路况", "拥堵", "封闭", "施工", "事故", "缓行", "通行情况")
+        ):
+            return "traffic_status"
+        if (
+            "到" in latest_user_message
+            and any(keyword in latest_user_message for keyword in ("怎么走", "怎么去", "路线", "导航"))
+        ):
+            return "route_planning"
+        return "general"
 

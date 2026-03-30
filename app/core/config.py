@@ -46,6 +46,18 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="DEFAULT_KNOWLEDGE_DATASET_ID",
     )
+    live_agent_base_url: str = Field(
+        default="http://localhost:8081",
+        validation_alias="LIVE_AGENT_BASE_URL",
+    )
+    live_agent_timeout_seconds: float = Field(
+        default=15.0,
+        validation_alias="LIVE_AGENT_TIMEOUT_SECONDS",
+    )
+    live_agent_network_overview_path: str = Field(
+        default="/agent/network-overview",
+        validation_alias="LIVE_AGENT_NETWORK_OVERVIEW_PATH",
+    )
     mcp_servers_json: str | None = Field(default=None, validation_alias="MCP_SERVERS_JSON")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")

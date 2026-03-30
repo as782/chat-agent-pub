@@ -14,6 +14,12 @@ from langchain_core.tools import BaseTool
 from app.core.exceptions import AppException
 from app.tools.builtin.calculator import calculator_tool
 from app.tools.builtin.datetime_tool import current_datetime_tool
+from app.tools.builtin.live_agent import (
+    live_driving_query,
+    live_network_overview_query,
+    live_road_event_query,
+    live_service_query,
+)
 
 
 @dataclass(slots=True)
@@ -38,6 +44,10 @@ class ToolRegistry:
         self._tools: dict[str, BaseTool] = {
             "calculator": calculator_tool,
             "current_datetime": current_datetime_tool,
+            "live_driving_query": live_driving_query,
+            "live_road_event_query": live_road_event_query,
+            "live_service_query": live_service_query,
+            "live_network_overview_query": live_network_overview_query,
         }
 
     def list_tool_names(self) -> list[str]:
@@ -53,6 +63,12 @@ class ToolRegistry:
 
         self.ensure_supported(tool_names)
         return [self._tools[tool_name] for tool_name in tool_names]
+
+    def get_tool(self, tool_name: str) -> BaseTool:
+        """按名称获取单个工具对象。"""
+
+        self.ensure_supported([tool_name])
+        return self._tools[tool_name]
 
     def ensure_supported(self, tool_names: list[str]) -> None:
         """校验请求中的工具名是否都已注册。"""
@@ -130,3 +146,16 @@ class ToolRegistry:
             )
 
         return executed_tool_calls
+
+    async def execute_named_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str:
+        """按名称执行单个工具并返回字符串结果。"""
+
+        self.ensure_supported([tool_name])
+        tool_instance = self._tools[tool_name]
+        tool_output = await tool_instance.ainvoke(arguments)
+        return str(tool_output)

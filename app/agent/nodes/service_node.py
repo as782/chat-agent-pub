@@ -1,14 +1,14 @@
-"""路况业务节点模块。
+"""服务区业务节点模块。
 
-负责把当前路况问题的结构化参数整理为可注入回答节点的业务上下文。
-当前阶段只做任务规范化，不直接访问实时路况接口。
+负责在服务区类问题中直接调用标准工具查询服务区、充电和商业配套信息，
+并把结果整理为可注入回答节点的上下文。
 """
 
 from __future__ import annotations
 
 from json import dumps, loads
 
-from app.agent.prompts import TRAFFIC_CONTEXT_PROMPT_PREFIX
+from app.agent.prompts import SERVICE_CONTEXT_PROMPT_PREFIX
 from app.agent.state import (
     AgentState,
     ExecutorResult,
@@ -21,33 +21,33 @@ from app.core.exceptions import AppException
 from app.tools.registry import ToolRegistry
 
 
-class TrafficNode:
-    """LangGraph 路况业务节点。"""
+class ServiceNode:
+    """LangGraph 服务区业务节点。"""
 
     def __init__(self, *, tool_registry: ToolRegistry | None = None) -> None:
         self._tool_registry = tool_registry or ToolRegistry()
 
     async def run(self, state: AgentState) -> dict[str, object]:
-        """执行路况查询工具并生成路况业务上下文。"""
+        """执行服务区查询工具并生成服务区业务上下文。"""
 
         step_id = resolve_active_execution_step_id(
             state,
-            executor="traffic",
-            default_step_id="traffic_1",
+            executor="service",
+            default_step_id="service_1",
         )
-        resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="traffic")
+        resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="service")
         if not isinstance(resolved_arguments, ResolvedArguments):
-            return {"traffic_context": None}
+            return {"service_context": None}
         query_arguments = self._build_tool_arguments(resolved_arguments)
         try:
             tool_output = await self._tool_registry.execute_named_tool(
-                tool_name="live_road_event_query",
+                tool_name="live_service_query",
                 arguments=query_arguments,
             )
             response_payload = self._parse_tool_output(tool_output)
             executor_result = ExecutorResult(
                 step_id=step_id,
-                executor="traffic",
+                executor="service",
                 is_success=True,
                 raw_result={
                     "query_arguments": dict(query_arguments),
@@ -57,10 +57,10 @@ class TrafficNode:
                     resolved_arguments=resolved_arguments,
                     response_payload=response_payload,
                 ),
-                summary=self._build_success_summary(response_payload),
+                summary=f"服务区查询成功，命中 {len(response_payload)} 条结果。",
             )
             return {
-                "traffic_context": self._build_traffic_context(
+                "service_context": self._build_service_context(
                     resolved_arguments=resolved_arguments,
                     response_payload=response_payload,
                 ),
@@ -69,15 +69,15 @@ class TrafficNode:
         except AppException as exception:
             executor_result = ExecutorResult(
                 step_id=step_id,
-                executor="traffic",
+                executor="service",
                 is_success=False,
                 raw_result={"query_arguments": dict(query_arguments)},
                 normalized_result=dict(query_arguments),
-                summary="路况查询失败。",
+                summary="服务区查询失败。",
                 error=exception.message,
             )
             return {
-                "traffic_context": self._build_error_context(
+                "service_context": self._build_error_context(
                     resolved_arguments=resolved_arguments,
                     query_arguments=query_arguments,
                     error_message=exception.message,
@@ -87,19 +87,19 @@ class TrafficNode:
 
     @staticmethod
     def _build_tool_arguments(resolved_arguments: ResolvedArguments) -> dict[str, object]:
-        """把结构化参数转换为路况查询工具参数。"""
+        """把结构化参数转换为服务区查询工具参数。"""
 
-        road = str(
-            resolved_arguments.arguments.get("road")
-            or resolved_arguments.arguments.get("target")
-            or resolved_arguments.arguments.get("query")
-            or ""
-        )
-        return {"road": road}
+        return {
+            "keyword": str(
+                resolved_arguments.arguments.get("keyword")
+                or resolved_arguments.arguments.get("query")
+                or ""
+            )
+        }
 
     @staticmethod
     def _parse_tool_output(tool_output: str) -> list[dict[str, object]]:
-        """解析路况工具返回的 JSON 字符串。"""
+        """解析服务区工具返回的 JSON 字符串。"""
 
         response_payload = loads(tool_output)
         if isinstance(response_payload, list):
@@ -112,41 +112,34 @@ class TrafficNode:
         resolved_arguments: ResolvedArguments,
         response_payload: list[dict[str, object]],
     ) -> dict[str, object]:
-        """提取路况查询结果中的关键摘要字段。"""
+        """提取服务区查询结果中的关键摘要字段。"""
 
-        first_road = response_payload[0] if response_payload else {}
-        congestion_count = len(first_road.get("congestionInfoList", []))
-        traffic_control_count = len(first_road.get("trafficControlList", []))
-        service_area_count = len(first_road.get("serviceAreaList", []))
-        exit_count = len(first_road.get("exitInfoList", []))
+        first_result = response_payload[0] if response_payload else {}
+        charge_list = first_result.get("chargeList", [])
+        commercial_list = first_result.get("commercialList", [])
+        tags = first_result.get("tags", [])
         return {
-            "road": resolved_arguments.arguments.get("road")
-            or resolved_arguments.arguments.get("target"),
-            "road_name": first_road.get("roadName"),
+            "keyword": resolved_arguments.arguments.get("keyword"),
             "result_count": len(response_payload),
-            "congestion_count": congestion_count,
-            "traffic_control_count": traffic_control_count,
-            "service_area_count": service_area_count,
-            "exit_count": exit_count,
+            "service_name": first_result.get("serviceName"),
+            "road_name": first_result.get("roadName"),
+            "status_tag": first_result.get("statusTag"),
+            "charge_brand_count": len(charge_list) if isinstance(charge_list, list) else 0,
+            "commercial_count": len(commercial_list) if isinstance(commercial_list, list) else 0,
+            "tag_count": len(tags) if isinstance(tags, list) else 0,
         }
 
     @staticmethod
-    def _build_success_summary(response_payload: list[dict[str, object]]) -> str:
-        """生成路况查询成功摘要。"""
-
-        return f"路况查询成功，命中 {len(response_payload)} 条道路结果。"
-
-    @staticmethod
-    def _build_traffic_context(
+    def _build_service_context(
         *,
         resolved_arguments: ResolvedArguments,
         response_payload: list[dict[str, object]],
     ) -> str:
-        """把结构化参数和接口返回转为路况类 system 上下文。"""
+        """把结构化参数和接口返回转为服务区类 system 上下文。"""
 
         return "\n".join(
             [
-                TRAFFIC_CONTEXT_PROMPT_PREFIX,
+                SERVICE_CONTEXT_PROMPT_PREFIX,
                 dumps(
                     {
                         "query_arguments": dict(resolved_arguments.arguments),
@@ -165,11 +158,11 @@ class TrafficNode:
         query_arguments: dict[str, object],
         error_message: str,
     ) -> str:
-        """构造路况查询失败时的上下文。"""
+        """构造服务区查询失败时的上下文。"""
 
         return "\n".join(
             [
-                TRAFFIC_CONTEXT_PROMPT_PREFIX,
+                SERVICE_CONTEXT_PROMPT_PREFIX,
                 dumps(
                     {
                         "query_arguments": dict(query_arguments),

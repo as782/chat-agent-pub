@@ -58,6 +58,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.setenv("RAGFLOW_API_KEY", "test-ragflow-key")
     monkeypatch.setenv("RAGFLOW_BASE_URL", "https://ragflow.example.com")
+    monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
     monkeypatch.setenv(
         "MCP_SERVERS_JSON",
         json.dumps(
@@ -138,20 +139,26 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
             )
             for message in all_message_contents
         )
+        has_route_context = any("以下是当前路线规划问题" in message for message in all_message_contents)
+        has_traffic_context = any("以下是当前路况类问题" in message for message in all_message_contents)
+        has_service_context = any("以下是当前服务区查询结果" in message for message in all_message_contents)
+        has_report_context = any("以下是当前路网报告任务" in message for message in all_message_contents)
 
         is_planner = any("生成分类与执行计划" in message for message in all_message_contents)
         if is_planner:
             plan_json = '{"primary_category": "general", "steps": [{"executor": "answer"}]}'
             if "西湖" in latest_user_message or "知识库" in latest_user_message:
-                plan_json = '{"primary_category": "knowledge_retrieval", "steps": [{"executor": "rag"}, {"executor": "answer"}]}'
+                plan_json = '{"primary_category": "policy", "steps": [{"executor": "rag"}, {"executor": "answer"}]}'
             elif "天气" in latest_user_message or "mcp" in latest_user_message.lower():
-                plan_json = '{"primary_category": "mcp_tool_execution", "steps": [{"executor": "mcp"}, {"executor": "answer"}]}'
+                plan_json = '{"primary_category": "general", "steps": [{"executor": "mcp"}, {"executor": "answer"}]}'
+            elif "服务区" in latest_user_message or "充电桩" in latest_user_message:
+                plan_json = '{"primary_category": "service_area", "steps": [{"executor": "service"}, {"executor": "answer"}]}'
+            elif "怎么走" in latest_user_message:
+                plan_json = '{"primary_category": "route_planning", "steps": [{"executor": "route"}, {"executor": "answer"}]}'
+            elif "路网" in latest_user_message or "数据" in latest_user_message:
+                plan_json = '{"primary_category": "network_report", "steps": [{"executor": "report"}, {"executor": "answer"}]}'
             elif "路况" in latest_user_message:
                 plan_json = '{"primary_category": "traffic_status", "steps": [{"executor": "traffic"}, {"executor": "answer"}]}'
-            elif "怎么走" in latest_user_message:
-                plan_json = '{"primary_category": "route_planning", "steps": [{"executor": "rag"}, {"executor": "route"}, {"executor": "answer"}]}'
-            elif "路网" in latest_user_message or "数据" in latest_user_message:
-                plan_json = '{"primary_category": "report_generation", "steps": [{"executor": "report"}, {"executor": "answer"}]}'
             elif (
                 "1+1" in latest_user_message
                 or "计算" in latest_user_message
@@ -301,6 +308,42 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                 },
                 usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
             )
+        if has_route_context and "怎么走" in latest_user_message:
+            return AIMessage(
+                content="测试模型回答：推荐杭州到金华高速路线，约 2 小时。",
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            )
+        if has_traffic_context and "路况" in latest_user_message:
+            return AIMessage(
+                content="测试模型回答：根据路况查询，杭州当前整体缓行，部分高架拥堵。",
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            )
+        if has_service_context and ("服务区" in latest_user_message or "充电桩" in latest_user_message):
+            return AIMessage(
+                content="测试模型回答：杭州东服务区可提供充电和便利店服务，当前较繁忙。",
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            )
+        if has_report_context and ("路网" in latest_user_message or "表格" in latest_user_message):
+            return AIMessage(
+                content="测试模型回答：全路网整体运行平稳，北向略有缓行。",
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": model_name or "test-model",
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            )
 
         return AIMessage(
             content=f"测试模型回答：{latest_user_message}",
@@ -358,6 +401,14 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
 
             if latest_tool_output:
                 full_text = f"测试模型回答：工具结果是 {latest_tool_output}"
+            elif any("以下是当前路线规划问题" in message for message in all_message_contents):
+                full_text = "测试模型回答：推荐杭州到金华高速路线，约 2 小时。"
+            elif any("以下是当前路况类问题" in message for message in all_message_contents):
+                full_text = "测试模型回答：根据路况查询，杭州当前整体缓行，部分高架拥堵。"
+            elif any("以下是当前服务区查询结果" in message for message in all_message_contents):
+                full_text = "测试模型回答：杭州东服务区可提供充电和便利店服务，当前较繁忙。"
+            elif any("以下是当前路网报告任务" in message for message in all_message_contents):
+                full_text = "测试模型回答：全路网整体运行平稳，北向略有缓行。"
             elif tools and ("1+1" in latest_user_message or "计算" in latest_user_message):
                 yield AIMessageChunk(
                     content="",
@@ -521,6 +572,67 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     monkeypatch.setattr(
         "app.clients.llm_client.LlmClient.create_runnable",
         fake_create_runnable,
+    )
+    async def fake_live_agent_request(
+        self: object,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> object:
+        """为直播问答接口客户端返回稳定的假数据。"""
+
+        del self, method
+        normalized_params = params or {}
+        if path == "/agent/driving":
+            return {
+                "routesCount": 1,
+                "routes": [
+                    {
+                        "distance": 180000,
+                        "duration": 120,
+                        "toll": 85,
+                        "sections": [
+                            {
+                                "roadName": "沪昆高速",
+                                "trafficControls": [],
+                                "serviceAreas": [{"serviceName": "诸暨服务区"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        if path == "/agent/event":
+            return [
+                {
+                    "roadName": str(normalized_params.get("road") or "杭州"),
+                    "congestionInfoList": [{"id": "cg-1"}],
+                    "trafficControlList": [{"id": "tc-1"}],
+                    "serviceAreaList": [{"serviceName": "杭州服务区"}],
+                    "exitInfoList": [{"tollName": "杭州南"}],
+                }
+            ]
+        if path == "/agent/service":
+            return [
+                {
+                    "serviceName": "杭州东服务区",
+                    "roadName": "沪昆高速",
+                    "statusTag": "繁忙",
+                    "chargeList": [{"manufacturerName": "国网"}],
+                    "commercialList": [{"name": "便利店"}],
+                    "tags": ["餐饮", "休息区"],
+                }
+            ]
+        if path == "/agent/network-overview":
+            return {
+                "scope": str(normalized_params.get("scope") or "全路网"),
+                "summary": "全路网整体运行平稳，北向略有缓行。",
+            }
+        raise AssertionError(f"unexpected live agent path: {path}")
+
+    monkeypatch.setattr(
+        "app.clients.live_agent_client.LiveAgentClient.request",
+        fake_live_agent_request,
     )
 
     from app.main import create_app

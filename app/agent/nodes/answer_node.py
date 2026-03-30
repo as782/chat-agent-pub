@@ -4,8 +4,6 @@
 当前阶段不负责工具循环编排，这部分能力由独立的 tool_node 承担。
 """
 
-from __future__ import annotations
-
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -18,6 +16,7 @@ from app.agent.prompts import (
     NETWORK_REPORT_SUMMARY_PROMPT,
     POLICY_SUMMARY_PROMPT,
     ROUTE_SUMMARY_PROMPT,
+    SERVICE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
 from app.agent.state import (
@@ -128,6 +127,7 @@ class AnswerNode:
         route_context: str | None,
         mcp_context: str | None,
         traffic_context: str | None,
+        service_context: str | None,
         report_context: str | None,
     ) -> PreparedContext:
         """根据执行请求和节点状态准备上下文。"""
@@ -150,6 +150,7 @@ class AnswerNode:
             route_context=route_context,
             mcp_context=mcp_context,
             traffic_context=traffic_context,
+            service_context=service_context,
             report_context=report_context,
         )
 
@@ -169,6 +170,7 @@ class AnswerNode:
             route_context=state.get("route_context"),
             mcp_context=state.get("mcp_context"),
             traffic_context=state.get("traffic_context"),
+            service_context=state.get("service_context"),
             report_context=state.get("report_context"),
         )
         return {"prepared_context": prepared_context}
@@ -415,6 +417,8 @@ class AnswerNode:
             return ROUTE_SUMMARY_PROMPT
         if category == "traffic_status":
             return TRAFFIC_SUMMARY_PROMPT
+        if category == "service_area":
+            return SERVICE_SUMMARY_PROMPT
         if category == "network_report":
             return NETWORK_REPORT_SUMMARY_PROMPT
         return GENERAL_ANSWER_PROMPT

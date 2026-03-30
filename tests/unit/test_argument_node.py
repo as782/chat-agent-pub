@@ -83,6 +83,30 @@ async def test_argument_node_extracts_report_flags() -> None:
 
 
 @pytest.mark.asyncio
+async def test_argument_node_extracts_service_keywords() -> None:
+    """服务区问题应提取服务区或设施关键词。"""
+
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "杭州东服务区充电桩情况怎么样？",
+            "primary_category": "service_area",
+            "execution_plan": ExecutionPlan(
+                primary_category="service_area",
+                execution_mode="single_step",
+                recommended_route="service",
+            ),
+        }
+    )
+
+    resolved_arguments = result["resolved_arguments"]
+    assert resolved_arguments.arguments["query"] == "杭州东服务区充电桩情况怎么样？"
+    assert "杭州东" in resolved_arguments.arguments["keyword"]
+    assert result["step_arguments"]["service_1"].category == "service_area"
+
+
+@pytest.mark.asyncio
 async def test_argument_node_builds_step_arguments_for_multi_step_route_plan() -> None:
     """多步骤路线计划应为不同 step 生成独立参数。"""
 

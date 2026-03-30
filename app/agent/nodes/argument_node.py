@@ -78,6 +78,11 @@ class ArgumentNode:
                 "traffic_1",
                 self._argument_resolver.resolve_for_executor(state, executor="traffic"),
             )
+        if primary_category == "service_area":
+            return (
+                "service_1",
+                self._argument_resolver.resolve_for_executor(state, executor="service"),
+            )
         if primary_category == "network_report":
             return (
                 "report_1",

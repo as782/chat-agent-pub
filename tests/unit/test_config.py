@@ -20,6 +20,9 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
     monkeypatch.setenv("PLANNER_MODEL", "test-planner-model")
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
+    monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
+    monkeypatch.setenv("LIVE_AGENT_TIMEOUT_SECONDS", "18")
+    monkeypatch.setenv("LIVE_AGENT_NETWORK_OVERVIEW_PATH", "/agent/network")
     monkeypatch.setenv(
         "MCP_SERVERS_JSON",
         '[{"name":"demo","transport":"http","endpoint":"https://mcp.example.com"}]',
@@ -35,6 +38,9 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.openai_model == "test-chat-model"
     assert settings.planner_model == "test-planner-model"
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
+    assert settings.live_agent_base_url == "http://localhost:8081"
+    assert settings.live_agent_timeout_seconds == 18.0
+    assert settings.live_agent_network_overview_path == "/agent/network"
     assert settings.mcp_servers_json is not None
     assert settings.is_debug is True
 
