@@ -118,20 +118,6 @@ class AnswerNode:
             "final_result": final_result,
         }
 
-    async def prepare_context(self, execution_request: ChatExecutionRequest) -> PreparedContext:
-        """根据执行请求准备上下文。"""
-
-        return await self._prepare_context(
-            execution_request=execution_request,
-            answer_instruction=None,
-            executor_results_context=None,
-            knowledge_context=None,
-            route_context=None,
-            mcp_context=None,
-            traffic_context=None,
-            report_context=None,
-        )
-
     async def _prepare_context(
         self,
         *,
