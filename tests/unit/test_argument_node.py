@@ -59,8 +59,8 @@ async def test_argument_node_marks_missing_route_arguments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_argument_node_extracts_report_flags() -> None:
-    """路网报告问题应提取表格和对比需求。"""
+async def test_argument_node_extracts_report_query() -> None:
+    """路网报告问题应保留原始查询文本供 answer 阶段自行判断。"""
 
     node = ArgumentNode()
 
@@ -77,9 +77,7 @@ async def test_argument_node_extracts_report_flags() -> None:
     )
 
     resolved_arguments = result["resolved_arguments"]
-    assert resolved_arguments.arguments["scope"] == "全路网"
-    assert resolved_arguments.arguments["need_table"] is True
-    assert resolved_arguments.arguments["need_comparison"] is True
+    assert resolved_arguments.arguments["query"] == "请基于上次结果生成今天全路网路况对比表格"
 
 
 @pytest.mark.asyncio

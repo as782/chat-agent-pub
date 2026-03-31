@@ -54,7 +54,6 @@ class ReportNode:
                     "api_result": response_payload,
                 },
                 normalized_result=self._build_normalized_result(
-                    resolved_arguments=resolved_arguments,
                     response_payload=response_payload,
                 ),
                 summary="整体路网查询成功。",
@@ -95,7 +94,6 @@ class ReportNode:
     @staticmethod
     def _build_normalized_result(
         *,
-        resolved_arguments: ResolvedArguments,
         response_payload: dict[str, object] | list[dict[str, object]],
     ) -> dict[str, object]:
         """提取整体路网查询结果中的关键摘要字段。"""
@@ -123,10 +121,6 @@ class ReportNode:
             control_top_count = len(control_top) if isinstance(control_top, list) else 0
             record_count = 1
         return {
-            "scope": resolved_arguments.arguments.get("scope"),
-            "report_type": resolved_arguments.arguments.get("report_type"),
-            "need_table": resolved_arguments.arguments.get("need_table"),
-            "need_comparison": resolved_arguments.arguments.get("need_comparison"),
             "record_count": record_count,
             "query_time": query_time,
             "congestion_total_mile": congestion_total_mile,

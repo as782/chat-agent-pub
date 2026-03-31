@@ -31,7 +31,7 @@ def test_answer_node_builds_executor_results_context() -> None:
                 step_id="report_1",
                 executor="report",
                 is_success=True,
-                normalized_result={"scope": "全路网", "need_table": True},
+                normalized_result={"query_time": "2026-03-31 09:00:00", "congestion_total_mile": 12.5},
                 summary="已整理路网报告任务参数。",
             ),
         }
@@ -40,7 +40,7 @@ def test_answer_node_builds_executor_results_context() -> None:
     assert context is not None
     assert "[rag_1] executor=rag success=True" in context
     assert "知识检索命中 2 条结果。" in context
-    assert "全路网" in context
+    assert "12.5" in context
 
 
 @pytest.mark.asyncio

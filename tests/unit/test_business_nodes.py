@@ -208,12 +208,12 @@ async def test_report_node_builds_business_context() -> None:
             ),
             "resolved_arguments": ResolvedArguments(
                 category="network_report",
-                arguments={"scope": "全路网", "need_table": True},
+                arguments={"query": "请生成今天全路网路况对比表格"},
             ),
         }
     )
 
     assert result["report_context"] is not None
-    assert "全路网" in result["report_context"]
+    assert "queryTime" in result["report_context"]
     assert result["step_results"]["report_1"].executor == "report"
-    assert result["step_results"]["report_1"].normalized_result["scope"] == "全路网"
+    assert result["step_results"]["report_1"].normalized_result["congestion_total_mile"] == 12.5

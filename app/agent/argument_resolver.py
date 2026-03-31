@@ -158,20 +158,7 @@ class ArgumentResolver:
         """提取路网报告问题中的报表参数。"""
 
         normalized_query = latest_user_message.strip()
-        arguments: dict[str, object] = {
-            "query": normalized_query,
-            "scope": "全路网" if "全路网" in normalized_query else "未明确范围",
-            "need_table": "表格" in normalized_query or "表" in normalized_query,
-            "need_comparison": "对比" in normalized_query or "上次" in normalized_query,
-        }
-        if "日报" in normalized_query:
-            arguments["report_type"] = "daily"
-        elif "周报" in normalized_query:
-            arguments["report_type"] = "weekly"
-        elif "月报" in normalized_query:
-            arguments["report_type"] = "monthly"
-        else:
-            arguments["report_type"] = "ad_hoc"
+        arguments: dict[str, object] = {"query": normalized_query}
 
         reference_answer = self._extract_reference_answer(input_messages or [])
         if reference_answer is not None:
