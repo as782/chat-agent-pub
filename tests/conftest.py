@@ -631,7 +631,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         raise AssertionError(f"unexpected live agent path: {path}")
 
     monkeypatch.setattr(
-        "app.clients.live_agent_client.LiveAgentClient.request",
+        "app.tools.live_agent.client.LiveAgentClient.request",
         fake_live_agent_request,
     )
 

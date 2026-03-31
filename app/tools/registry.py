@@ -14,12 +14,6 @@ from langchain_core.tools import BaseTool
 from app.core.exceptions import AppException
 from app.tools.builtin.calculator import calculator_tool
 from app.tools.builtin.datetime_tool import current_datetime_tool
-from app.tools.builtin.live_agent import (
-    live_driving_query,
-    live_network_overview_query,
-    live_road_event_query,
-    live_service_query,
-)
 
 
 @dataclass(slots=True)
@@ -44,11 +38,18 @@ class ToolRegistry:
         self._tools: dict[str, BaseTool] = {
             "calculator": calculator_tool,
             "current_datetime": current_datetime_tool,
-            "live_driving_query": live_driving_query,
-            "live_road_event_query": live_road_event_query,
-            "live_service_query": live_service_query,
-            "live_network_overview_query": live_network_overview_query,
         }
+        self._register_optional_toolsets()
+
+    def _register_optional_toolsets(self) -> None:
+        """按需挂载可拆卸工具集。"""
+
+        try:
+            from app.tools.live_agent.tools import build_live_agent_tools
+        except ImportError:
+            return
+
+        self._tools.update(build_live_agent_tools())
 
     def list_tool_names(self) -> list[str]:
         """返回当前可用的工具名称列表。"""

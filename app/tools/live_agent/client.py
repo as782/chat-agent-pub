@@ -14,6 +14,11 @@ import httpx
 from app.core.config import get_settings
 from app.core.exceptions import UpstreamServiceException
 
+DRIVING_PATH = "/agent/driving"
+EVENT_PATH = "/agent/event"
+SERVICE_PATH = "/agent/service"
+NETWORK_OVERVIEW_PATH = "/agent/network-overview"
+
 
 class LiveAgentClient:
     """直播问答接口 HTTP 客户端。"""
@@ -27,14 +32,14 @@ class LiveAgentClient:
 
         response_payload = await self.request(
             "GET",
-            "/agent/driving",
+            DRIVING_PATH,
             params={"start": start, "end": end},
         )
         if not isinstance(response_payload, dict):
             raise UpstreamServiceException(
                 "路线查询接口返回了意外的响应结构。",
                 error_code="live_agent_invalid_response",
-                details={"path": "/agent/driving"},
+                details={"path": DRIVING_PATH},
             )
         return response_payload
 
@@ -43,14 +48,14 @@ class LiveAgentClient:
 
         response_payload = await self.request(
             "GET",
-            "/agent/event",
+            EVENT_PATH,
             params={"road": road},
         )
         if not isinstance(response_payload, list):
             raise UpstreamServiceException(
                 "路况查询接口返回了意外的响应结构。",
                 error_code="live_agent_invalid_response",
-                details={"path": "/agent/event"},
+                details={"path": EVENT_PATH},
             )
         return [item for item in response_payload if isinstance(item, dict)]
 
@@ -59,14 +64,14 @@ class LiveAgentClient:
 
         response_payload = await self.request(
             "GET",
-            "/agent/service",
+            SERVICE_PATH,
             params={"keyword": keyword},
         )
         if not isinstance(response_payload, list):
             raise UpstreamServiceException(
                 "服务区查询接口返回了意外的响应结构。",
                 error_code="live_agent_invalid_response",
-                details={"path": "/agent/service"},
+                details={"path": SERVICE_PATH},
             )
         return [item for item in response_payload if isinstance(item, dict)]
 
@@ -81,7 +86,7 @@ class LiveAgentClient:
 
         return await self.request(
             "GET",
-            self._settings.live_agent_network_overview_path,
+            NETWORK_OVERVIEW_PATH,
             params={
                 "scope": scope,
                 "query": query,

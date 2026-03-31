@@ -451,7 +451,7 @@ def test_chat_api_returns_json_error_when_live_agent_upstream_fails(
         )
 
     monkeypatch.setattr(
-        "app.clients.live_agent_client.LiveAgentClient.request",
+        "app.tools.live_agent.client.LiveAgentClient.request",
         fake_live_agent_request,
     )
 

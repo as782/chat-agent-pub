@@ -1,16 +1,16 @@
-"""直播问答接口工具模块。
+"""直播问答工具定义模块。
 
-负责把直播问答接口文档中的标准 HTTP 能力包装为统一工具，供业务节点和通用工具链复用。
-当前阶段返回 JSON 字符串结果，方便写入消息历史并在回答节点中继续加工。
+负责把直播问答接口封装为标准工具定义，供统一工具注册表按需挂载。
+当前阶段保持工具名稳定，便于业务节点通过名称调用。
 """
 
 from __future__ import annotations
 
 from json import dumps
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
-from app.clients.live_agent_client import LiveAgentClient
+from app.tools.live_agent.client import LiveAgentClient
 
 
 @tool("live_driving_query")
@@ -55,3 +55,14 @@ async def live_network_overview_query(
         report_type=report_type,
     )
     return dumps(result, ensure_ascii=False)
+
+
+def build_live_agent_tools() -> dict[str, BaseTool]:
+    """返回直播问答工具集注册映射。"""
+
+    return {
+        "live_driving_query": live_driving_query,
+        "live_road_event_query": live_road_event_query,
+        "live_service_query": live_service_query,
+        "live_network_overview_query": live_network_overview_query,
+    }
