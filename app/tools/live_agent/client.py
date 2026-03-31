@@ -17,7 +17,7 @@ from app.core.exceptions import UpstreamServiceException
 DRIVING_PATH = "/agent/driving"
 EVENT_PATH = "/agent/event"
 SERVICE_PATH = "/agent/service"
-NETWORK_OVERVIEW_PATH = "/agent/network-overview"
+NETWORK_OVERVIEW_PATH = "/agent/topN"
 
 
 class LiveAgentClient:
@@ -75,24 +75,17 @@ class LiveAgentClient:
             )
         return [item for item in response_payload if isinstance(item, dict)]
 
-    async def query_network_overview(
-        self,
-        *,
-        scope: str,
-        query: str,
-        report_type: str | None = None,
-    ) -> dict[str, Any] | list[dict[str, Any]]:
+    async def query_network_overview(self) -> dict[str, Any]:
         """查询整体路网概况。"""
 
-        return await self.request(
-            "GET",
-            NETWORK_OVERVIEW_PATH,
-            params={
-                "scope": scope,
-                "query": query,
-                "report_type": report_type,
-            },
-        )
+        response_payload = await self.request("GET", NETWORK_OVERVIEW_PATH)
+        if not isinstance(response_payload, dict):
+            raise UpstreamServiceException(
+                "整体路网查询接口返回了意外的响应结构。",
+                error_code="live_agent_invalid_response",
+                details={"path": NETWORK_OVERVIEW_PATH},
+            )
+        return response_payload
 
     async def request(
         self,

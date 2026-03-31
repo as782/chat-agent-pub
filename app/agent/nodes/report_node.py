@@ -78,11 +78,8 @@ class ReportNode:
     def _build_tool_arguments(resolved_arguments: ResolvedArguments) -> dict[str, object]:
         """把结构化参数转换为整体路网查询工具参数。"""
 
-        return {
-            "query": str(resolved_arguments.arguments.get("query") or ""),
-            "scope": str(resolved_arguments.arguments.get("scope") or "全路网"),
-            "report_type": str(resolved_arguments.arguments.get("report_type") or "ad_hoc"),
-        }
+        del resolved_arguments
+        return {}
 
     @staticmethod
     def _parse_tool_output(tool_output: str) -> dict[str, object] | list[dict[str, object]]:
@@ -103,13 +100,39 @@ class ReportNode:
     ) -> dict[str, object]:
         """提取整体路网查询结果中的关键摘要字段。"""
 
-        record_count = len(response_payload) if isinstance(response_payload, list) else 1
+        if isinstance(response_payload, list):
+            record_count = len(response_payload)
+            congestion_total_mile = None
+            query_time = None
+            congestion_top_count = 0
+            accident_top_count = 0
+            control_top_count = 0
+        else:
+            congestion_payload = response_payload.get("congestion", {})
+            congestion_total_mile = (
+                congestion_payload.get("totalMile")
+                if isinstance(congestion_payload, dict)
+                else None
+            )
+            query_time = response_payload.get("queryTime")
+            congestion_top = response_payload.get("congestionTopN", [])
+            accident_top = response_payload.get("accidentTopN", [])
+            control_top = response_payload.get("controlTopN", [])
+            congestion_top_count = len(congestion_top) if isinstance(congestion_top, list) else 0
+            accident_top_count = len(accident_top) if isinstance(accident_top, list) else 0
+            control_top_count = len(control_top) if isinstance(control_top, list) else 0
+            record_count = 1
         return {
             "scope": resolved_arguments.arguments.get("scope"),
             "report_type": resolved_arguments.arguments.get("report_type"),
             "need_table": resolved_arguments.arguments.get("need_table"),
             "need_comparison": resolved_arguments.arguments.get("need_comparison"),
             "record_count": record_count,
+            "query_time": query_time,
+            "congestion_total_mile": congestion_total_mile,
+            "congestion_top_count": congestion_top_count,
+            "accident_top_count": accident_top_count,
+            "control_top_count": control_top_count,
         }
 
     @staticmethod

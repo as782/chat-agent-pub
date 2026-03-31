@@ -65,9 +65,11 @@ class _FakeToolRegistry:
         if tool_name == "live_network_overview_query":
             return dumps(
                 {
-                    "scope": "全路网",
-                    "summary": "整体运行平稳",
-                    "reportCount": 1,
+                    "queryTime": "2026-03-31 09:00:00",
+                    "congestion": {"totalMile": 12.5},
+                    "congestionTopN": [{"id": "cg-1", "roadName": "沪昆高速"}],
+                    "accidentTopN": [{"id": "ac-1", "roadName": "杭州绕城高速"}],
+                    "controlTopN": [{"id": "ct-1", "roadName": "长深高速"}],
                 },
                 ensure_ascii=False,
             )

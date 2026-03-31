@@ -41,19 +41,11 @@ async def live_service_query(keyword: str) -> str:
 
 
 @tool("live_network_overview_query")
-async def live_network_overview_query(
-    query: str,
-    scope: str = "全路网",
-    report_type: str = "ad_hoc",
-) -> str:
+async def live_network_overview_query() -> str:
     """查询整体路网概况和报表数据。"""
 
     client = LiveAgentClient()
-    result = await client.query_network_overview(
-        scope=scope,
-        query=query,
-        report_type=report_type,
-    )
+    result = await client.query_network_overview()
     return dumps(result, ensure_ascii=False)
 
 

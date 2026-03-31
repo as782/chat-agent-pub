@@ -623,10 +623,13 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
                     "tags": ["餐饮", "休息区"],
                 }
             ]
-        if path == "/agent/network-overview":
+        if path == "/agent/topN":
             return {
-                "scope": str(normalized_params.get("scope") or "全路网"),
-                "summary": "全路网整体运行平稳，北向略有缓行。",
+                "queryTime": "2026-03-31 09:00:00",
+                "congestion": {"totalMile": 12.5},
+                "congestionTopN": [{"id": "cg-1", "roadName": "沪昆高速"}],
+                "accidentTopN": [{"id": "ac-1", "roadName": "杭州绕城高速"}],
+                "controlTopN": [{"id": "ct-1", "roadName": "长深高速"}],
             }
         raise AssertionError(f"unexpected live agent path: {path}")
 
