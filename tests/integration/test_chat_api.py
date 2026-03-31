@@ -429,6 +429,46 @@ def test_chat_api_executes_report_query_via_live_tools(app_client: TestClient) -
     assert [message["role"] for message in history_payload["items"]] == ["user", "assistant"]
 
 
+def test_chat_api_returns_json_error_when_live_agent_upstream_fails(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证上游接口失败时，非流式接口会直接返回错误响应。"""
+
+    async def fake_live_agent_request(
+        self: object,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> object:
+        """模拟直播问答接口上游失败。"""
+
+        del self, method, path, params
+        raise UpstreamServiceException(
+            "直播问答接口异常。",
+            error_code="live_agent_connection_error",
+        )
+
+    monkeypatch.setattr(
+        "app.clients.live_agent_client.LiveAgentClient.request",
+        fake_live_agent_request,
+    )
+
+    response = app_client.post(
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "杭州到金华怎么走？"}],
+        },
+    )
+    response_payload = response.json()
+
+    assert response.status_code == 503
+    assert response_payload["error_code"] == "live_agent_connection_error"
+    assert response_payload["message"] == "上游接口报错，请稍后重试。"
+
+
 def test_chat_api_streams_response_when_requested(app_client: TestClient) -> None:
     """验证内部聊天接口在 stream=true 时返回 OpenAI 兼容 SSE 数据。"""
 
@@ -741,6 +781,47 @@ def test_chat_api_stream_executes_traffic_query_via_live_tools(app_client: TestC
     assert "[DONE]" in response_body
     assert [message["role"] for message in history_payload["items"]] == ["user", "assistant"]
     assert history_payload["items"][1]["content"] == "测试模型回答：根据路况查询，杭州当前整体缓行，部分高架拥堵。"
+
+
+def test_chat_api_stream_returns_json_error_when_knowledge_upstream_fails(
+    app_client: TestClient,
+    monkeypatch,
+) -> None:
+    """验证上游接口失败时，流式接口在首包前直接返回 JSON 错误。"""
+
+    async def fake_retrieve_for_agent(
+        self: object,
+        *,
+        query: str,
+        top_k: int = 4,
+    ) -> list[KnowledgeSearchResult]:
+        """模拟知识库上游失败。"""
+
+        del self, query, top_k
+        raise UpstreamServiceException(
+            "RAGFlow 连接失败。",
+            error_code="ragflow_connection_error",
+        )
+
+    monkeypatch.setattr(
+        "app.agent.nodes.ragflow_node.KnowledgeService.retrieve_for_agent",
+        fake_retrieve_for_agent,
+    )
+
+    with app_client.stream(
+        "POST",
+        "/api/v1/chat",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "知识库: 西湖在哪里？"}],
+            "stream": True,
+        },
+    ) as response:
+        response_body = response.read().decode("utf-8")
+
+    assert response.status_code == 503
+    assert '"error_code":"ragflow_connection_error"' in response_body.replace(" ", "")
+    assert "上游接口报错，请稍后重试。" in response_body
 
 
 def test_chat_api_returns_404_when_session_not_found(app_client: TestClient) -> None:

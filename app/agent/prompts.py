@@ -9,6 +9,8 @@ BASE_SINGLE_TURN_SYSTEM_PROMPT = (
     "你是基础问答助手，需要简洁、准确地回答用户。"
 )
 
+UPSTREAM_SERVICE_ERROR_REPLY = "上游接口报错，请稍后重试。"
+
 MEMORY_SUMMARY_PROMPT_PREFIX = "以下是当前会话的历史摘要，仅在不与用户本次显式输入冲突时参考：\n"
 
 KNOWLEDGE_CONTEXT_PROMPT_PREFIX = (

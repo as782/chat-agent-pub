@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from json import dumps, loads
 
-from app.agent.prompts import SERVICE_CONTEXT_PROMPT_PREFIX
+from app.agent.prompts import SERVICE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
     ExecutorResult,
@@ -17,7 +17,7 @@ from app.agent.state import (
     resolve_active_execution_step_id,
     resolve_step_arguments,
 )
-from app.core.exceptions import AppException
+from app.core.exceptions import UpstreamServiceException
 from app.tools.registry import ToolRegistry
 
 
@@ -66,24 +66,13 @@ class ServiceNode:
                 ),
                 **merge_step_result(state, result=executor_result),
             }
-        except AppException as exception:
-            executor_result = ExecutorResult(
-                step_id=step_id,
-                executor="service",
-                is_success=False,
-                raw_result={"query_arguments": dict(query_arguments)},
-                normalized_result=dict(query_arguments),
-                summary="服务区查询失败。",
-                error=exception.message,
-            )
-            return {
-                "service_context": self._build_error_context(
-                    resolved_arguments=resolved_arguments,
-                    query_arguments=query_arguments,
-                    error_message=exception.message,
-                ),
-                **merge_step_result(state, result=executor_result),
-            }
+        except UpstreamServiceException as exception:
+            raise UpstreamServiceException(
+                UPSTREAM_SERVICE_ERROR_REPLY,
+                error_code=exception.error_code,
+                status_code=exception.status_code,
+                details=exception.details,
+            ) from exception
 
     @staticmethod
     def _build_tool_arguments(resolved_arguments: ResolvedArguments) -> dict[str, object]:
@@ -144,30 +133,6 @@ class ServiceNode:
                     {
                         "query_arguments": dict(resolved_arguments.arguments),
                         "api_result": response_payload,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            ]
-        )
-
-    @staticmethod
-    def _build_error_context(
-        *,
-        resolved_arguments: ResolvedArguments,
-        query_arguments: dict[str, object],
-        error_message: str,
-    ) -> str:
-        """构造服务区查询失败时的上下文。"""
-
-        return "\n".join(
-            [
-                SERVICE_CONTEXT_PROMPT_PREFIX,
-                dumps(
-                    {
-                        "query_arguments": dict(query_arguments),
-                        "resolved_arguments": dict(resolved_arguments.arguments),
-                        "error": error_message,
                     },
                     ensure_ascii=False,
                     indent=2,

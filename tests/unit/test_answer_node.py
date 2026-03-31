@@ -100,8 +100,6 @@ async def test_answer_node_reuses_tool_completion_result_without_new_llm_call(
 
     await engine.dispose()
 
-
-@pytest.mark.asyncio
 async def test_answer_node_regenerates_summary_for_multi_step_answer(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

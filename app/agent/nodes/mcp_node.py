@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from app.agent.prompts import UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
     ExecutorResult,
@@ -12,7 +13,7 @@ from app.agent.state import (
     merge_step_result,
     resolve_active_execution_step_id,
 )
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, UpstreamServiceException
 from app.mcp.manager import McpManager
 
 
@@ -25,7 +26,15 @@ class McpNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """执行 MCP 节点主逻辑。"""
 
-        runtime_tools = await self._mcp_manager.build_runtime_tools()
+        try:
+            runtime_tools = await self._mcp_manager.build_runtime_tools()
+        except UpstreamServiceException as exception:
+            raise UpstreamServiceException(
+                UPSTREAM_SERVICE_ERROR_REPLY,
+                error_code=exception.error_code,
+                status_code=exception.status_code,
+                details=exception.details,
+            ) from exception
         if not runtime_tools:
             raise AppException(
                 "当前未发现可用的 MCP 工具。",

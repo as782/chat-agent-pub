@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.prompts import KNOWLEDGE_CONTEXT_PROMPT_PREFIX
+from app.agent.prompts import KNOWLEDGE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
     ExecutorResult,
@@ -16,6 +16,7 @@ from app.agent.state import (
     resolve_active_execution_step_id,
     resolve_step_arguments,
 )
+from app.core.exceptions import UpstreamServiceException
 from app.knowledge.service import KnowledgeService
 from app.schemas.knowledge import KnowledgeSearchResult
 
@@ -41,7 +42,15 @@ class RagflowNode:
         )
         step_arguments = resolve_step_arguments(state, step_id=step_id, executor="rag")
         normalized_query = self._resolve_query(state, step_arguments)
-        knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)
+        try:
+            knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)
+        except UpstreamServiceException as exception:
+            raise UpstreamServiceException(
+                UPSTREAM_SERVICE_ERROR_REPLY,
+                error_code=exception.error_code,
+                status_code=exception.status_code,
+                details=exception.details,
+            ) from exception
         if not knowledge_results:
             executor_result = ExecutorResult(
                 step_id=step_id,

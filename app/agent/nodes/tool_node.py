@@ -12,6 +12,7 @@ from langgraph.prebuilt import ToolNode as PrebuiltToolNode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.nodes.answer_node import AnswerNode
+from app.agent.prompts import UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
     ExecutorResult,
@@ -24,13 +25,17 @@ from app.clients.llm_client import (
     LlmInputMessage,
     LlmToolCall,
 )
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, UpstreamServiceException
 from app.mcp.manager import McpManager
 from app.mcp.models import McpRuntimeTool
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry, tool_to_langchain_format
 
 MAX_TOOL_CALL_ROUNDS = 10
+
+
+class ToolExecutionUpstreamException(UpstreamServiceException):
+    """工具执行阶段的上游接口异常。"""
 
 
 class ToolNode:
@@ -70,16 +75,24 @@ class ToolNode:
             requested_tool_names=execution_request.requested_tool_names,
             runtime_mcp_tools=runtime_mcp_tools,
         )
-        completion_result, executed_tool_calls = await self._execute_tool_completion_loop(
-            messages=prepared_context.messages,
-            model_name=execution_request.model_name,
-            session_id=str(state["session_id"]),
-            available_tools=available_tools,
-            tool_choice=execution_request.tool_choice,
-            enable_thinking=execution_request.enable_thinking,
-            runtime_mcp_tools=runtime_mcp_tools,
-            config=config,
-        )
+        try:
+            completion_result, executed_tool_calls = await self._execute_tool_completion_loop(
+                messages=prepared_context.messages,
+                model_name=execution_request.model_name,
+                session_id=str(state["session_id"]),
+                available_tools=available_tools,
+                tool_choice=execution_request.tool_choice,
+                enable_thinking=execution_request.enable_thinking,
+                runtime_mcp_tools=runtime_mcp_tools,
+                config=config,
+            )
+        except ToolExecutionUpstreamException as exception:
+            raise UpstreamServiceException(
+                UPSTREAM_SERVICE_ERROR_REPLY,
+                error_code=exception.error_code,
+                status_code=exception.status_code,
+                details=exception.details,
+            ) from exception
         return {
             **prepared_context_state,
             "tool_completion_result": completion_result,
@@ -204,10 +217,18 @@ class ToolNode:
                     tool_calls=requested_tool_calls,
                 )
             )
-            current_tool_results = await self._execute_requested_tools(
-                completion_result=completion_result,
-                runtime_mcp_tools=runtime_mcp_tools,
-            )
+            try:
+                current_tool_results = await self._execute_requested_tools(
+                    completion_result=completion_result,
+                    runtime_mcp_tools=runtime_mcp_tools,
+                )
+            except UpstreamServiceException as exception:
+                raise ToolExecutionUpstreamException(
+                    exception.message,
+                    error_code=exception.error_code,
+                    status_code=exception.status_code,
+                    details=exception.details,
+                ) from exception
             await self._persist_tool_messages(
                 session_id=session_id,
                 executed_tool_calls=current_tool_results,
@@ -305,6 +326,7 @@ class ToolNode:
             sources=[tool_call.tool_name for tool_call in executed_tool_calls],
         )
         return merge_step_result(state, result=executor_result)
+
 
     async def _execute_requested_tools(
         self,
