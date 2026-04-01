@@ -1,22 +1,19 @@
 services:
-  # 应用服务：负责启动 FastAPI，并连接 PostgreSQL 与 Redis。
   app:
-    # 使用当前仓库下的 Dockerfile 构建应用镜像。
+    image: ${APP_IMAGE:-chat-agent:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    # 以热重载模式启动，便于本地开发联调。
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    # 统一容器工作目录，和 Dockerfile 中保持一致。
+      target: runtime
+    command:
+      - sh
+      - -c
+      - exec uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8000}
     working_dir: /workspace
-    # 挂载当前目录，保证代码修改后容器可立即感知。
-    volumes:
-      - .:/workspace
-    # 暴露应用端口，默认仍使用 8000，可通过环境变量覆盖。
+    init: true
+    restart: unless-stopped
     ports:
-      - "${APP_HOST_PORT:-8000}:8000"
-    # 向应用容器注入运行配置。
-    # 这里显式指定 Docker 内部的 PostgreSQL/Redis 地址，避免复用宿主机本地地址。
+      - "${APP_HOST_PORT:-8000}:${APP_PORT:-8000}"
     environment:
       APP_NAME: ${APP_NAME:-chat-agent-backend}
       APP_ENV: ${APP_ENV:-local}
@@ -27,57 +24,65 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-chat_agent}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DSN: ${DOCKER_POSTGRES_DSN:-}
+      POSTGRES_DSN: ${POSTGRES_DSN:-}
       REDIS_URL: redis://redis:6379/0
       RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://ragflow:9380}
       RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-replace-me}
       RAGFLOW_USE_LLM: ${RAGFLOW_USE_LLM:-true}
       DEFAULT_KNOWLEDGE_DATASET_ID: ${DEFAULT_KNOWLEDGE_DATASET_ID:-}
+      LIVE_AGENT_BASE_URL: ${LIVE_AGENT_BASE_URL:-http://localhost:8081}
+      LIVE_AGENT_TIMEOUT_SECONDS: ${LIVE_AGENT_TIMEOUT_SECONDS:-15}
+      MCP_SERVERS_JSON: ${MCP_SERVERS_JSON:-[]}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
-      PLANNER_MODEL: ${PLANNER_MODEL:-qwen-plus}
-    # 等待 PostgreSQL 与 Redis 可用后再启动应用。
+      PLANNER_MODEL: ${PLANNER_MODEL:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
-  # PostgreSQL 服务：负责会话、消息和后续知识映射的持久化存储。
   postgres:
-    # 使用轻量级 PostgreSQL 16 镜像。
     image: postgres:16-alpine
-    # 初始化数据库名、账号和密码。
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-chat_agent}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    # 将宿主机端口默认改为 55432，避免与本机已有 PostgreSQL 冲突。
     ports:
       - "${POSTGRES_HOST_PORT:-55432}:5432"
-    # 挂载数据卷，避免容器重建后数据库数据丢失。
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # 使用 pg_isready 作为健康检查，确保应用连接前数据库已可用。
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-chat_agent}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # Redis 服务：负责后续短期状态、缓存和检查点能力。
   redis:
-    # 使用轻量级 Redis 7 镜像。
     image: redis:7-alpine
-    # 暴露 Redis 端口，必要时可以通过环境变量覆盖宿主机端口。
+    restart: unless-stopped
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
-    # 挂载数据卷，便于本地调试时保留缓存数据。
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-# 声明具名数据卷，供 PostgreSQL 和 Redis 复用。
 volumes:
   postgres_data:
   redis_data:

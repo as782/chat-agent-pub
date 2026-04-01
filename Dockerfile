@@ -1,32 +1,58 @@
-# 使用 Python 3.11 的精简镜像，减少基础镜像体积。
-FROM python:3.11-slim
+FROM python:3.11-slim AS builder
 
-# 关闭 pyc 文件写入并启用无缓冲输出，方便在容器内排查问题。
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
 
-# 统一容器内工作目录，避免路径分散。
-WORKDIR /workspace
+WORKDIR /build
 
-# 安装构建依赖，保证需要编译的 Python 包可以正常安装。
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends build-essential curl \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    apt-get update \
+    && apt-get install --yes --no-install-recommends build-essential \
+    && python -m venv "$VIRTUAL_ENV" \
     && rm -rf /var/lib/apt/lists/*
 
-# 先复制依赖描述文件，便于后续利用 Docker 层缓存。
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
 
-# 再复制应用代码和测试代码，保持镜像内结构与仓库一致。
-COPY app ./app
-COPY tests ./tests
+RUN python - <<'PY' > requirements.txt
+import tomllib
+from pathlib import Path
 
-# 安装项目及开发依赖，便于容器内直接执行 pytest 和 ruff。
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -e .[dev]
+project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+for dependency in project["project"]["dependencies"]:
+    print(dependency)
+PY
 
-# 暴露 FastAPI 默认端口，供 compose 或其他容器编排工具映射。
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    && pip install -r requirements.txt
+
+
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
+    APP_HOST=0.0.0.0 \
+    APP_PORT=8000
+
+WORKDIR /workspace
+
+RUN addgroup --system app \
+    && adduser --system --ingroup app app \
+    && mkdir -p /workspace \
+    && chown -R app:app /workspace
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=app:app app ./app
+
+USER app
+
 EXPOSE 8000
 
-# 默认启动 FastAPI 开发服务，便于本地联调。
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8000}"]
