@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from json import dumps, loads
+from json import dumps
 from time import perf_counter
 from typing import Any
 
@@ -30,6 +30,7 @@ from openai import (
     AuthenticationError,
     BadRequestError,
     InternalServerError,
+    NotFoundError,
     PermissionDeniedError,
     RateLimitError,
     UnprocessableEntityError,
@@ -303,6 +304,7 @@ class LlmClient:
             AuthenticationError,
             BadRequestError,
             InternalServerError,
+            NotFoundError,
             PermissionDeniedError,
             RateLimitError,
             UnprocessableEntityError,
@@ -369,6 +371,7 @@ class LlmClient:
             AuthenticationError,
             BadRequestError,
             InternalServerError,
+            NotFoundError,
             PermissionDeniedError,
             RateLimitError,
             UnprocessableEntityError,
@@ -491,6 +494,19 @@ class LlmClient:
                 message,
                 error_code=error_code,
                 status_code=503,
+                details=details,
+            )
+
+        if isinstance(exception, NotFoundError):
+            error_code = "llm_resource_not_found"
+            message = "LLM 提供方未找到请求的资源。"
+            if provider_error_code == "model_not_found":
+                error_code = "llm_model_not_found"
+                message = "指定的模型不存在，或当前账号/网关无权访问该模型。"
+            return UpstreamServiceException(
+                message,
+                error_code=error_code,
+                status_code=404,
                 details=details,
             )
 

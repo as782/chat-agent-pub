@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
-from openai import PermissionDeniedError
+from openai import NotFoundError, PermissionDeniedError
 from pytest import MonkeyPatch
 
 from app.clients.llm_client import LlmClient, LlmInputMessage
@@ -71,6 +71,29 @@ class FakePermissionDeniedModel(FakeChatModel):
                 "error": {
                     "message": "quota exceeded",
                     "code": "insufficient_user_quota",
+                }
+            },
+        )
+
+
+class FakeNotFoundModel(FakeChatModel):
+    """用于测试资源不存在错误的假模型。"""
+
+    async def ainvoke(self, _: object) -> AIMessage:
+        """抛出模拟的模型不存在异常。"""
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(status_code=404, request=request)
+        raise NotFoundError(
+            "model not found",
+            response=response,
+            body={
+                "error": {
+                    "message": (
+                        "The model `Qwen3-32B` does not exist or you do not have access "
+                        "to it."
+                    ),
+                    "code": "model_not_found",
                 }
             },
         )
@@ -156,7 +179,11 @@ async def test_llm_client_streams_chunks(monkeypatch: MonkeyPatch) -> None:
     assert streamed_chunks[0].content == "模拟"
     assert streamed_chunks[1].content == "流式回答"
     assert streamed_chunks[2].response_metadata["finish_reason"] == "stop"
-    assert streamed_chunks[2].usage_metadata == {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6}
+    assert streamed_chunks[2].usage_metadata == {
+        "input_tokens": 2,
+        "output_tokens": 4,
+        "total_tokens": 6,
+    }
 
 
 @pytest.mark.asyncio
@@ -227,6 +254,26 @@ async def test_llm_client_maps_quota_error_to_upstream_exception(
 
     assert exception_info.value.error_code == "llm_quota_exceeded"
     assert exception_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_llm_client_maps_model_not_found_to_upstream_exception(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """验证模型不存在错误会被映射为明确的上游服务异常。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeNotFoundModel)
+
+    llm_client = LlmClient()
+
+    with pytest.raises(UpstreamServiceException) as exception_info:
+        await llm_client.generate_answer("你好")
+
+    assert exception_info.value.error_code == "llm_model_not_found"
+    assert exception_info.value.status_code == 404
+    assert exception_info.value.details["provider_error_code"] == "model_not_found"
 
 
 def test_llm_client_raises_configuration_error_when_api_key_missing(

@@ -4,6 +4,8 @@
 当前阶段不负责复杂错误码治理、国际化文案和外部告警联动。
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -12,6 +14,22 @@ from fastapi.responses import JSONResponse
 from app.core.logger import get_logger
 
 LOGGER = get_logger(__name__)
+
+
+def _resolve_root_cause(exception: Exception) -> Exception:
+    """沿异常链向下查找最内层根因。"""
+
+    visited_exception_ids: set[int] = set()
+    current_exception: Exception = exception
+    while True:
+        if id(current_exception) in visited_exception_ids:
+            return current_exception
+        visited_exception_ids.add(id(current_exception))
+
+        next_exception = current_exception.__cause__ or current_exception.__context__
+        if not isinstance(next_exception, Exception):
+            return current_exception
+        current_exception = next_exception
 
 
 class AppException(Exception):
@@ -101,16 +119,20 @@ async def http_exception_handler(_: Request, exception: HTTPException) -> JSONRe
     )
 
 
-async def unhandled_exception_handler(_: Request, exception: Exception) -> JSONResponse:
+async def unhandled_exception_handler(request: Request, exception: Exception) -> JSONResponse:
     """处理未捕获异常，避免对外暴露内部堆栈。"""
 
     LOGGER.exception("发生未处理异常。", exc_info=exception)
+    root_cause = _resolve_root_cause(exception)
+    resolved_message = str(root_cause).strip() or "服务内部异常"
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "error_code": "internal_server_error",
             "message": "服务内部异常",
-            "details": {},
+            "details": {
+                "message": resolved_message,
+            },
         },
     )
 
