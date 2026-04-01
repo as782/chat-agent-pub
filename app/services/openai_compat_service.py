@@ -1,26 +1,25 @@
 """OpenAI 兼容适配服务模块。
-负责将 OpenAI Chat Completions 兼容请求转换为当前系统的大模型调用。
-当前阶段负责协议适配与真实流式输出，不负责会话持久化和内部业务状态管理。
+负责统一 OpenAI 风格消息/响应模型与 SSE 负载构造。
+当前阶段不直接承载会话持久化与内部业务状态管理。
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from json import dumps, loads
 from typing import Any, Protocol
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk
+
 from app.clients.llm_client import (
     LlmClient,
     LlmInputMessage,
     LlmToolCall,
 )
 from app.core.exceptions import AppException
-from app.core.logger import get_logger
 from app.schemas.openai_compat import (
     OpenAIChatCompletionAssistantMessage,
     OpenAIChatCompletionChoice,
@@ -32,8 +31,6 @@ from app.schemas.openai_compat import (
     OpenAIChatMessage,
 )
 from app.tools.registry import ToolRegistry
-
-LOGGER = get_logger(__name__)
 
 
 class OpenAICompatibleResult(Protocol):
@@ -165,7 +162,10 @@ class _OpenAIStreamChunkBuilder:
         )
 
     @staticmethod
-    def _build_stream_tool_call_payload(index: int, tool_call_chunk: dict[str, Any]) -> dict[str, object]:
+    def _build_stream_tool_call_payload(
+        index: int,
+        tool_call_chunk: dict[str, Any],
+    ) -> dict[str, object]:
         """构造单个流式工具调用片段。"""
 
         function_payload: dict[str, object] = {}
@@ -201,48 +201,6 @@ class OpenAICompatService:
     ) -> None:
         self._llm_client = llm_client or LlmClient()
         self._tool_registry = tool_registry or ToolRegistry()
-
-    async def create_chat_completion(
-        self,
-        request: OpenAIChatCompletionRequest,
-    ) -> OpenAIChatCompletionResponse:
-        """处理 OpenAI 兼容聊天请求。"""
-
-        completion_result = await self._execute_completion(request)
-        return self.build_chat_completion_response(completion_result)
-
-    async def stream_chat_completion(
-        self,
-        request: OpenAIChatCompletionRequest,
-    ) -> AsyncIterator[str]:
-        """以 SSE 形式输出 OpenAI 兼容流式结果。"""
-
-        input_messages = self.build_input_messages(request.messages)
-        requested_tool_names = self.extract_requested_tool_names(request)
-        if requested_tool_names is None and request.tool_choice is not None:
-            raise AppException(
-                "未传入 tools 时不能指定 tool_choice。",
-                error_code="invalid_request",
-            )
-
-        selected_tools = (
-            self._tool_registry.get_tools(requested_tool_names)
-            if requested_tool_names is not None
-            else None
-        )
-        tool_choice = self._tool_registry.normalize_tool_choice(request.tool_choice)
-        stream_iterator = self._llm_client.stream_chat_completion(
-            messages=input_messages,
-            model_name=request.model,
-            tools=selected_tools,
-            tool_choice=tool_choice,
-            enable_thinking=request.enable_thinking,
-        )
-
-        return self._stream_llm_chunks_as_openai_sse(
-            llm_chunks=stream_iterator,
-            default_model_name=request.model or self._llm_client.default_model_name,
-        )
 
     def build_chat_completion_response(
         self,
@@ -330,70 +288,6 @@ class OpenAICompatService:
                     "details": exception.details or None,
                 }
             }
-        )
-
-    async def _stream_llm_chunks_as_openai_sse(
-        self,
-        *,
-        llm_chunks: AsyncIterator[AIMessageChunk],
-        default_model_name: str,
-    ) -> AsyncIterator[str]:
-        """将统一流式增量实时转换为 OpenAI 兼容 SSE。"""
-
-        chunk_builder = self.create_stream_chunk_builder(default_model_name=default_model_name)
-        has_emitted_payload = False
-
-        try:
-            async for llm_chunk in llm_chunks:
-                for payload in chunk_builder.consume_chunk(llm_chunk):
-                    has_emitted_payload = True
-                    yield payload
-
-            for payload in chunk_builder.finalize():
-                has_emitted_payload = True
-                yield payload
-        except AppException as exception:
-            if not has_emitted_payload:
-                raise
-
-            yield self.build_stream_error_payload(exception)
-            yield "data: [DONE]\n\n"
-        except Exception as exception:
-            if not has_emitted_payload:
-                raise
-
-            LOGGER.exception("OpenAI 兼容流式输出过程中发生未处理异常。", exc_info=exception)
-            yield self.build_stream_error_payload(
-                AppException(
-                    "流式输出过程中发生内部异常。",
-                    error_code="stream_error",
-                )
-            )
-            yield "data: [DONE]\n\n"
-
-    async def _execute_completion(self, request: OpenAIChatCompletionRequest):
-        """执行一次 OpenAI 兼容补全调用。"""
-
-        input_messages = self.build_input_messages(request.messages)
-        requested_tool_names = self.extract_requested_tool_names(request)
-        if requested_tool_names is None and request.tool_choice is not None:
-            raise AppException(
-                "未传入 tools 时不能指定 tool_choice。",
-                error_code="invalid_request",
-            )
-        selected_tools = (
-            self._tool_registry.get_tools(requested_tool_names)
-            if requested_tool_names is not None
-            else None
-        )
-        tool_choice = self._tool_registry.normalize_tool_choice(request.tool_choice)
-
-        return await self._llm_client.create_chat_completion(
-            messages=input_messages,
-            model_name=request.model,
-            tools=selected_tools,
-            tool_choice=tool_choice,
-            enable_thinking=request.enable_thinking,
         )
 
     def build_input_messages(self, messages: list[OpenAIChatMessage]) -> list[LlmInputMessage]:

@@ -36,7 +36,7 @@
   - 支持知识库路由、工具调用、MCP 工具调用
 - `POST /v1/chat/completions`
   - OpenAI 兼容接口
-  - 支持非流式与流式
+  - 复用 `/api/v1/chat` 的会话、多轮记忆、工具、知识库与流式链路
 - `POST /api/v1/sessions`
   - 创建会话
 - `GET /api/v1/sessions`

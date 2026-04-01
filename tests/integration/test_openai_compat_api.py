@@ -3,15 +3,15 @@
 from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
-
 from langchain_core.messages import AIMessageChunk
+
 from app.core.exceptions import UpstreamServiceException
 
 
 def test_openai_compat_chat_completions_returns_standard_response(
     app_client: TestClient,
 ) -> None:
-    """验证兼容接口会返回 OpenAI Chat Completions 兼容结构。"""
+    """验证兼容接口复用内部聊天主链路，并暴露会话标识。"""
 
     response = app_client.post(
         "/v1/chat/completions",
@@ -25,8 +25,10 @@ def test_openai_compat_chat_completions_returns_standard_response(
         },
     )
     response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
 
     assert response.status_code == 200
+    assert session_id
     assert response_payload["id"].startswith("chatcmpl-")
     assert response_payload["object"] == "chat.completion"
     assert response_payload["model"] == "qwen-compatible-model"
@@ -41,7 +43,7 @@ def test_openai_compat_chat_completions_returns_standard_response(
 
 
 def test_openai_compat_chat_completions_returns_tool_calls(app_client: TestClient) -> None:
-    """验证兼容接口在传入 tools 时会返回 OpenAI 兼容 tool_calls。"""
+    """验证兼容接口在传入 tools 时会执行工具并返回最终回答。"""
 
     response = app_client.post(
         "/v1/chat/completions",
@@ -67,18 +69,56 @@ def test_openai_compat_chat_completions_returns_tool_calls(app_client: TestClien
         },
     )
     response_payload = response.json()
+    session_id = response.headers["X-Session-ID"]
+
+    history_response = app_client.get(f"/api/v1/messages/{session_id}")
+    history_payload = history_response.json()
 
     assert response.status_code == 200
-    assert response_payload["choices"][0]["finish_reason"] == "tool_calls"
-    assert response_payload["choices"][0]["message"]["content"] is None
+    assert response_payload["choices"][0]["finish_reason"] == "stop"
+    assert response_payload["choices"][0]["message"]["content"] == "测试模型回答：工具结果是 2"
+    assert history_response.status_code == 200
+    assert [message["role"] for message in history_payload["items"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert history_payload["items"][2]["content"] == "2"
+
+
+def test_openai_compat_chat_completions_supports_multi_turn_memory(
+    app_client: TestClient,
+) -> None:
+    """验证兼容接口支持通过 X-Session-ID 复用内部会话记忆。"""
+
+    first_response = app_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen-compatible-model",
+            "messages": [{"role": "user", "content": "我叫小王，请记住这个名字。"}],
+        },
+    )
+    session_id = first_response.headers["X-Session-ID"]
+
+    second_response = app_client.post(
+        "/v1/chat/completions",
+        headers={"X-Session-ID": session_id},
+        json={
+            "model": "qwen-compatible-model",
+            "messages": [{"role": "user", "content": "我刚刚告诉你的名字是什么？"}],
+        },
+    )
+
+    assert second_response.status_code == 200
     assert (
-        response_payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
-        == "calculator"
+        second_response.json()["choices"][0]["message"]["content"]
+        == "测试模型回答：你刚刚说你叫小王"
     )
 
 
 def test_openai_compat_chat_completions_streams_response(app_client: TestClient) -> None:
-    """验证兼容接口在 stream=true 时返回 OpenAI 兼容 SSE。"""
+    """验证兼容接口在 stream=true 时返回与内部聊天一致的 SSE。"""
 
     with app_client.stream(
         "POST",
@@ -93,6 +133,7 @@ def test_openai_compat_chat_completions_streams_response(app_client: TestClient)
 
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
+    assert response.headers["X-Session-ID"]
     assert '"object": "chat.completion.chunk"' in response_body
     assert response_body.count('"content":') >= 2
     assert "[DONE]" in response_body
