@@ -9,7 +9,6 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.agent.prompts import MEMORY_SUMMARY_PROMPT_PREFIX
-from langchain_core.messages import AIMessage
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity
@@ -110,6 +109,59 @@ def deserialize_input_messages(message_payloads: Sequence[dict[str, Any]]) -> li
 class ContextBuilder:
     """对话上下文构建器。"""
 
+    @staticmethod
+    def _split_system_messages(
+        messages: Sequence[LlmInputMessage],
+    ) -> tuple[list[LlmInputMessage], list[LlmInputMessage]]:
+        """拆分 system 与非 system 消息，确保最终上下文满足提供方顺序约束。"""
+
+        system_messages = [message for message in messages if message.role == "system"]
+        non_system_messages = [message for message in messages if message.role != "system"]
+        return system_messages, non_system_messages
+
+    @staticmethod
+    def _build_internal_system_messages(
+        *,
+        answer_instruction: str | None,
+        executor_results_context: str | None,
+        memory_summary: str | None,
+        knowledge_context: str | None,
+        route_context: str | None,
+        mcp_context: str | None,
+        traffic_context: str | None,
+        service_context: str | None,
+        report_context: str | None,
+    ) -> list[LlmInputMessage]:
+        """构建由系统内部注入的 system 消息。"""
+
+        system_messages: list[LlmInputMessage] = []
+        if answer_instruction:
+            system_messages.append(LlmInputMessage(role="system", content=answer_instruction))
+        if executor_results_context:
+            system_messages.append(
+                LlmInputMessage(role="system", content=executor_results_context)
+            )
+        if memory_summary:
+            system_messages.append(
+                LlmInputMessage(
+                    role="system",
+                    content=f"{MEMORY_SUMMARY_PROMPT_PREFIX}{memory_summary}",
+                )
+            )
+        if knowledge_context:
+            system_messages.append(LlmInputMessage(role="system", content=knowledge_context))
+        if route_context:
+            system_messages.append(LlmInputMessage(role="system", content=route_context))
+        if mcp_context:
+            system_messages.append(LlmInputMessage(role="system", content=mcp_context))
+        if traffic_context:
+            system_messages.append(LlmInputMessage(role="system", content=traffic_context))
+        if service_context:
+            system_messages.append(LlmInputMessage(role="system", content=service_context))
+        if report_context:
+            system_messages.append(LlmInputMessage(role="system", content=report_context))
+        return system_messages
+
     def build_context(
         self,
         *,
@@ -133,27 +185,27 @@ class ContextBuilder:
         - 带 session_id 的请求同时参考系统历史和本次显式 messages。
         """
 
+        internal_system_messages = self._build_internal_system_messages(
+            answer_instruction=answer_instruction,
+            executor_results_context=executor_results_context,
+            memory_summary=memory_summary if need_session_memory else None,
+            knowledge_context=knowledge_context,
+            route_context=route_context,
+            mcp_context=mcp_context,
+            traffic_context=traffic_context,
+            service_context=service_context,
+            report_context=report_context,
+        )
+        input_system_messages, input_non_system_messages = self._split_system_messages(
+            input_messages
+        )
+
         if not need_session_memory:
-            context_messages: list[LlmInputMessage] = []
-            if answer_instruction:
-                context_messages.append(LlmInputMessage(role="system", content=answer_instruction))
-            if executor_results_context:
-                context_messages.append(
-                    LlmInputMessage(role="system", content=executor_results_context)
-                )
-            if knowledge_context:
-                context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
-            if route_context:
-                context_messages.append(LlmInputMessage(role="system", content=route_context))
-            if mcp_context:
-                context_messages.append(LlmInputMessage(role="system", content=mcp_context))
-            if traffic_context:
-                context_messages.append(LlmInputMessage(role="system", content=traffic_context))
-            if service_context:
-                context_messages.append(LlmInputMessage(role="system", content=service_context))
-            if report_context:
-                context_messages.append(LlmInputMessage(role="system", content=report_context))
-            context_messages.extend(input_messages)
+            context_messages = [
+                *internal_system_messages,
+                *input_system_messages,
+                *input_non_system_messages,
+            ]
             return PreparedContext(
                 messages=context_messages,
                 used_session_memory=False,
@@ -168,43 +220,27 @@ class ContextBuilder:
                 executor_results_context=executor_results_context,
             )
 
-        context_messages: list[LlmInputMessage] = []
-        if answer_instruction:
-            context_messages.append(LlmInputMessage(role="system", content=answer_instruction))
-        if executor_results_context:
-            context_messages.append(
-                LlmInputMessage(role="system", content=executor_results_context)
-            )
-        if memory_summary:
-            context_messages.append(
-                LlmInputMessage(
-                    role="system",
-                    content=f"{MEMORY_SUMMARY_PROMPT_PREFIX}{memory_summary}",
-                )
-            )
-        if knowledge_context:
-            context_messages.append(LlmInputMessage(role="system", content=knowledge_context))
-        if route_context:
-            context_messages.append(LlmInputMessage(role="system", content=route_context))
-        if mcp_context:
-            context_messages.append(LlmInputMessage(role="system", content=mcp_context))
-        if traffic_context:
-            context_messages.append(LlmInputMessage(role="system", content=traffic_context))
-        if service_context:
-            context_messages.append(LlmInputMessage(role="system", content=service_context))
-        if report_context:
-            context_messages.append(LlmInputMessage(role="system", content=report_context))
-
-        # 历史消息放前，本次显式输入放后，同时去掉完全重叠的尾部。
-        deduplicated_recent_messages = self._drop_overlapped_recent_suffix(
-            recent_messages=recent_messages,
-            input_messages=input_messages,
+        recent_system_messages, recent_non_system_messages = self._split_system_messages(
+            recent_messages
         )
-        context_messages.extend(deduplicated_recent_messages)
-        context_messages.extend(input_messages)
+
+        # 历史非 system 消息放前，本次显式非 system 输入放后，同时去掉完全重叠的尾部。
+        deduplicated_recent_messages = self._drop_overlapped_recent_suffix(
+            recent_messages=recent_non_system_messages,
+            input_messages=input_non_system_messages,
+        )
+        context_messages = [
+            *internal_system_messages,
+            *input_system_messages,
+            *recent_system_messages,
+            *deduplicated_recent_messages,
+            *input_non_system_messages,
+        ]
         return PreparedContext(
             messages=context_messages,
-            used_session_memory=bool(memory_summary or deduplicated_recent_messages),
+            used_session_memory=bool(
+                memory_summary or recent_system_messages or deduplicated_recent_messages
+            ),
             memory_summary=memory_summary,
             knowledge_context=knowledge_context,
             route_context=route_context,

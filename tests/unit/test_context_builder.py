@@ -73,11 +73,56 @@ def test_context_builder_merges_session_history_and_explicit_messages_when_sessi
     assert "用户此前自称叫小王" in prepared_context.messages[0].content
     assert [message.content for message in prepared_context.messages] == [
         "以下是当前会话的历史摘要，仅在不与用户本次显式输入冲突时参考：\n用户此前自称叫小王。",
+        "请同时参考系统记录和本次输入。",
         "我叫小王",
         "好的，我记住了",
-        "请同时参考系统记录和本次输入。",
         "我刚刚告诉你的名字是什么？",
     ]
+
+
+def test_context_builder_moves_explicit_system_messages_before_history_when_session_exists(
+) -> None:
+    """验证带会话记忆时，显式 system 消息会被提升到所有非 system 消息之前。"""
+
+    builder = ContextBuilder()
+    prepared_context = builder.build_context(
+        input_messages=[
+            LlmInputMessage(role="user", content="我刚刚告诉你的名字是什么？"),
+            LlmInputMessage(role="system", content="如果不知道就说不知道。"),
+        ],
+        recent_messages=[
+            LlmInputMessage(role="user", content="我叫小王"),
+            LlmInputMessage(role="assistant", content="好的，我记住了"),
+        ],
+        memory_summary="用户此前自称叫小王。",
+        need_session_memory=True,
+    )
+
+    assert [message.role for message in prepared_context.messages[:2]] == ["system", "system"]
+    assert prepared_context.messages[1].content == "如果不知道就说不知道。"
+    assert [message.role for message in prepared_context.messages[2:]] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+
+
+def test_context_builder_moves_explicit_system_messages_to_front_without_session_memory() -> None:
+    """验证未启用会话记忆时，也会把散落的 system 消息统一提升到前部。"""
+
+    builder = ContextBuilder()
+    prepared_context = builder.build_context(
+        input_messages=[
+            LlmInputMessage(role="user", content="你好"),
+            LlmInputMessage(role="system", content="请简洁回答。"),
+        ],
+        recent_messages=[],
+        memory_summary=None,
+        need_session_memory=False,
+    )
+
+    assert [message.role for message in prepared_context.messages] == ["system", "user"]
+    assert [message.content for message in prepared_context.messages] == ["请简洁回答。", "你好"]
 
 
 def test_context_builder_includes_knowledge_context_as_system_message() -> None:
