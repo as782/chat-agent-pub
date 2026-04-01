@@ -46,6 +46,10 @@ _GRAPH_NODE_NAMES = {
 }
 _USER_VISIBLE_STREAM_NODES = {"answer_node"}
 _ROOT_GRAPH_RUNNABLE_NAME = "LangGraph"
+_STREAM_NODE_ROLE_MAPPING = {
+    "answer_node": "assistant",
+    "tool_node": "assistant",
+}
 
 
 @dataclass(slots=True)
@@ -206,6 +210,12 @@ class ChatService:
             return [chunk]
         return []
 
+    @staticmethod
+    def _resolve_stream_chunk_role(current_node: str | None) -> str:
+        """根据当前图节点解析对外流式 chunk 的消息角色。"""
+
+        return _STREAM_NODE_ROLE_MAPPING.get(current_node or "", "assistant")
+
     async def _emit_stream_payloads(
         self,
         *,
@@ -213,11 +223,12 @@ class ChatService:
         request_start_time: float,
         chunk_builder: Any,
         chunks: list[AIMessageChunk],
+        role: str,
     ) -> AsyncIterator[str]:
         """把 chunk 列表统一转换为 OpenAI 兼容 SSE。"""
 
         for emit_chunk in chunks:
-            for payload in chunk_builder.consume_chunk(emit_chunk):
+            for payload in chunk_builder.consume_chunk(emit_chunk, role=role):
                 if stream_state.first_payload_duration_ms is None:
                     stream_state.first_payload_duration_ms = (
                         perf_counter() - request_start_time
@@ -322,6 +333,7 @@ class ChatService:
                         request_start_time=request_start_time,
                         chunk_builder=chunk_builder,
                         chunks=chunks_to_emit,
+                        role=self._resolve_stream_chunk_role(runnable_name),
                     ):
                         yield payload
 
@@ -336,6 +348,7 @@ class ChatService:
                     request_start_time=request_start_time,
                     chunk_builder=chunk_builder,
                     chunks=chunks_to_emit,
+                    role=self._resolve_stream_chunk_role(current_node),
                 ):
                     yield payload
 

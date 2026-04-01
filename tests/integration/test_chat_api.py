@@ -1,10 +1,9 @@
 """对话接口集成测试。"""
 
-import json
 from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk
 
 from app.core.exceptions import UpstreamServiceException
 from app.mcp.models import McpRuntimeTool
@@ -487,7 +486,7 @@ def test_chat_api_streams_response_when_requested(app_client: TestClient) -> Non
     assert "text/event-stream" in response.headers["content-type"]
     assert response.headers["X-Session-ID"]
     assert '"object": "chat.completion.chunk"' in response_body
-    assert '"role": "assistant"' in response_body
+    assert response_body.count('"role": "assistant"') >= 2
     assert response_body.count('"content":') >= 2
     assert "[DONE]" in response_body
 
@@ -756,7 +755,10 @@ def test_chat_api_stream_executes_route_query_via_live_tools(app_client: TestCli
     assert response.status_code == 200
     assert "[DONE]" in response_body
     assert [message["role"] for message in history_payload["items"]] == ["user", "assistant"]
-    assert history_payload["items"][1]["content"] == "测试模型回答：推荐杭州到金华高速路线，约 2 小时。"
+    assert (
+        history_payload["items"][1]["content"]
+        == "测试模型回答：推荐杭州到金华高速路线，约 2 小时。"
+    )
 
 
 def test_chat_api_stream_executes_traffic_query_via_live_tools(app_client: TestClient) -> None:
@@ -780,7 +782,10 @@ def test_chat_api_stream_executes_traffic_query_via_live_tools(app_client: TestC
     assert response.status_code == 200
     assert "[DONE]" in response_body
     assert [message["role"] for message in history_payload["items"]] == ["user", "assistant"]
-    assert history_payload["items"][1]["content"] == "测试模型回答：根据路况查询，杭州当前整体缓行，部分高架拥堵。"
+    assert (
+        history_payload["items"][1]["content"]
+        == "测试模型回答：根据路况查询，杭州当前整体缓行，部分高架拥堵。"
+    )
 
 
 def test_chat_api_stream_returns_json_error_when_knowledge_upstream_fails(

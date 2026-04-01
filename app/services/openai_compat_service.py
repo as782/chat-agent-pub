@@ -53,7 +53,6 @@ class _OpenAIStreamChunkBuilder:
     response_id: str = ""
     created_at: int = 0
     resolved_model_name: str = ""
-    has_emitted_role: bool = False
     has_emitted_finish: bool = False
     saw_tool_call_chunk: bool = False
 
@@ -66,6 +65,7 @@ class _OpenAIStreamChunkBuilder:
         self,
         chunk: AIMessageChunk,
         *,
+        role: str = "assistant",
         include_finish_reason: bool = True,
     ) -> list[str]:
         """将 LangChain 增量块转换为一个或多个 OpenAI 兼容 chunk。"""
@@ -86,10 +86,7 @@ class _OpenAIStreamChunkBuilder:
                     content_delta += part.get("text", "")
 
         if content_delta or chunk.tool_call_chunks:
-            delta: dict[str, object] = {}
-            if not self.has_emitted_role:
-                delta["role"] = "assistant"
-                self.has_emitted_role = True
+            delta: dict[str, object] = {"role": role}
 
             if content_delta:
                 delta["content"] = content_delta

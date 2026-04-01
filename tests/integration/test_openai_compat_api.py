@@ -135,6 +135,7 @@ def test_openai_compat_chat_completions_streams_response(app_client: TestClient)
     assert "text/event-stream" in response.headers["content-type"]
     assert response.headers["X-Session-ID"]
     assert '"object": "chat.completion.chunk"' in response_body
+    assert response_body.count('"role": "assistant"') >= 2
     assert response_body.count('"content":') >= 2
     assert "[DONE]" in response_body
 
