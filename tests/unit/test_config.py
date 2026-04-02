@@ -17,8 +17,11 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("POSTGRES_PASSWORD", "secret")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
     monkeypatch.setenv("PLANNER_MODEL", "test-planner-model")
+    monkeypatch.setenv("PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("PLANNER_API_KEY", "planner-test-key")
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
     monkeypatch.setenv("LIVE_AGENT_TIMEOUT_SECONDS", "18")
@@ -36,6 +39,9 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.openai_base_url == "https://example.com/v1"
     assert settings.openai_model == "test-chat-model"
     assert settings.planner_model == "test-planner-model"
+    assert settings.planner_base_url == "https://planner.example.com/v1"
+    assert settings.planner_api_key is not None
+    assert settings.planner_api_key.get_secret_value() == "planner-test-key"
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.live_agent_base_url == "http://localhost:8081"
     assert settings.live_agent_timeout_seconds == 18.0

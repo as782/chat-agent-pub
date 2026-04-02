@@ -120,6 +120,43 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_llm_client_allows_overriding_base_url(monkeypatch: MonkeyPatch) -> None:
+    """验证调用方可以为特定模型请求覆盖 base_url。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    await llm_client.create_chat_completion(
+        messages=[LlmInputMessage(role="user", content="你好")],
+        model_name="planner-model",
+        base_url="https://planner.example.com/v1",
+    )
+
+    assert FakeChatModel.last_init_kwargs["base_url"] == "https://planner.example.com/v1"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_allows_overriding_api_key(monkeypatch: MonkeyPatch) -> None:
+    """验证调用方可以为特定模型请求覆盖 api_key。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    await llm_client.create_chat_completion(
+        messages=[LlmInputMessage(role="user", content="你好")],
+        model_name="planner-model",
+        api_key="planner-test-key",
+    )
+
+    assert FakeChatModel.last_init_kwargs["api_key"] == "planner-test-key"
+
+
+@pytest.mark.asyncio
 async def test_llm_client_disables_qwen3_thinking_for_non_stream_calls(
     monkeypatch: MonkeyPatch,
 ) -> None:

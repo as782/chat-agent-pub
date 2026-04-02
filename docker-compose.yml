@@ -37,6 +37,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-replace-me}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
       PLANNER_MODEL: ${PLANNER_MODEL:-}
+      PLANNER_BASE_URL: ${PLANNER_BASE_URL:-}
+      PLANNER_API_KEY: ${PLANNER_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

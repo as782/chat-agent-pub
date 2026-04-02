@@ -11,8 +11,10 @@ class _FakePlannerLlmClient:
 
     def __init__(self, content: str) -> None:
         self._content = content
+        self.last_kwargs: dict[str, object] | None = None
 
     async def create_chat_completion(self, **_: object) -> AIMessage:
+        self.last_kwargs = _
         if self._content == "error":
             raise RuntimeError("LLM Error")
         return AIMessage(
@@ -83,6 +85,104 @@ async def test_planner_falls_back_when_llm_raises_error() -> None:
     assert plan.primary_category == "general"
     assert plan.recommended_route == "answer"
     assert [step.executor for step in plan.steps] == ["answer"]
+
+
+async def test_planner_prefers_dedicated_base_url(monkeypatch) -> None:
+    """Planner should use its dedicated base URL when configured."""
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("PLANNER_MODEL", "planner-model")
+    fake_llm_client = _FakePlannerLlmClient(
+        """
+        {
+          "primary_category": "general",
+          "need_clarification": false,
+          "clarification_question": null,
+          "steps": [
+            {
+              "step_id": "answer_1",
+              "executor": "answer",
+              "goal": "Directly answer the user",
+              "depends_on": [],
+              "can_run_in_parallel": false,
+              "metadata": {}
+            }
+          ]
+        }
+        """
+    )
+    planner = PlannerService(llm_client=fake_llm_client)
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert fake_llm_client.last_kwargs is not None
+    assert fake_llm_client.last_kwargs["model_name"] == "planner-model"
+    assert fake_llm_client.last_kwargs["base_url"] == "https://planner.example.com/v1"
+
+
+async def test_planner_prefers_dedicated_api_key(monkeypatch) -> None:
+    """Planner should use its dedicated API key when configured."""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("PLANNER_API_KEY", "planner-test-key")
+    fake_llm_client = _FakePlannerLlmClient(
+        """
+        {
+          "primary_category": "general",
+          "need_clarification": false,
+          "clarification_question": null,
+          "steps": [
+            {
+              "step_id": "answer_1",
+              "executor": "answer",
+              "goal": "Directly answer the user",
+              "depends_on": [],
+              "can_run_in_parallel": false,
+              "metadata": {}
+            }
+          ]
+        }
+        """
+    )
+    planner = PlannerService(llm_client=fake_llm_client)
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert fake_llm_client.last_kwargs is not None
+    assert fake_llm_client.last_kwargs["api_key"] == "planner-test-key"
+
+
+async def test_planner_falls_back_to_main_api_key_when_dedicated_key_blank(monkeypatch) -> None:
+    """Planner should fall back to main API key when dedicated key is blank."""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("PLANNER_API_KEY", "   ")
+    fake_llm_client = _FakePlannerLlmClient(
+        """
+        {
+          "primary_category": "general",
+          "need_clarification": false,
+          "clarification_question": null,
+          "steps": [
+            {
+              "step_id": "answer_1",
+              "executor": "answer",
+              "goal": "Directly answer the user",
+              "depends_on": [],
+              "can_run_in_parallel": false,
+              "metadata": {}
+            }
+          ]
+        }
+        """
+    )
+    planner = PlannerService(llm_client=fake_llm_client)
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert fake_llm_client.last_kwargs is not None
+    assert fake_llm_client.last_kwargs["api_key"] is None
 
 
 async def test_planner_fallback_handles_explicit_tools() -> None:

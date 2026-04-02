@@ -89,13 +89,15 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         self: object,
         messages: list[object],
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
     ) -> AIMessage:
         """为集成测试返回稳定的假模型结果。"""
 
-        del self, tool_choice, enable_thinking
+        del self, api_key, base_url, tool_choice, enable_thinking
         latest_user_message = ""
         latest_tool_output = ""
         all_message_contents: list[str] = []
@@ -355,13 +357,15 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         self: object,
         messages: list[object],
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
     ) -> AsyncIterator[AIMessageChunk]:
         """为流式集成测试返回稳定的增量结果。"""
 
-        del self, tool_choice, enable_thinking
+        del self, api_key, base_url, tool_choice, enable_thinking
         latest_user_message = ""
         latest_tool_output = ""
         user_messages: list[str] = []
@@ -502,12 +506,15 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         self: Any,
         *,
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
         is_stream: bool = False,
     ) -> Any:
         """为集成测试返回假 Runnable，并确保它调用实例上的补全方法以便支持测试特定的 monkeypatch。"""
+        del api_key, base_url, is_stream
         llm_instance = self
 
         class FakeLLM(BaseChatModel):

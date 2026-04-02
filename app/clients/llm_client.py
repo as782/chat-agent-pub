@@ -198,13 +198,22 @@ class LlmClient:
         self,
         model_name: str | None = None,
         *,
+        api_key: str | None = None,
+        base_url: str | None = None,
         is_stream: bool = False,
         enable_thinking: bool | None = None,
     ) -> BaseChatModel:
         """根据环境配置创建 LangChain 聊天模型客户端。"""
 
-        api_key = self._settings.openai_api_key
-        if api_key is None or not api_key.get_secret_value().strip():
+        resolved_api_key = api_key
+        if resolved_api_key is None:
+            configured_api_key = self._settings.openai_api_key
+            resolved_api_key = (
+                configured_api_key.get_secret_value()
+                if configured_api_key is not None
+                else None
+            )
+        if resolved_api_key is None or not resolved_api_key.strip():
             raise ConfigurationException(
                 "未配置 OPENAI_API_KEY，无法调用大模型。",
                 details={"config_key": "OPENAI_API_KEY"},
@@ -220,8 +229,8 @@ class LlmClient:
         return init_chat_model(
             model=resolved_model_name,
             model_provider="openai",
-            api_key=api_key.get_secret_value(),
-            base_url=self._settings.openai_base_url or None,
+            api_key=resolved_api_key,
+            base_url=base_url if base_url is not None else (self._settings.openai_base_url or None),
             extra_body=provider_extra_body or None,
         )
 
@@ -229,6 +238,8 @@ class LlmClient:
         self,
         *,
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         is_stream: bool = False,
@@ -238,6 +249,8 @@ class LlmClient:
 
         chat_model = self._create_chat_model(
             model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
             is_stream=is_stream,
             enable_thinking=enable_thinking,
         )
@@ -268,6 +281,8 @@ class LlmClient:
         self,
         messages: Sequence[LlmInputMessage],
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
@@ -287,6 +302,8 @@ class LlmClient:
         
         runnable = self.create_runnable(
             model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
             tools=tools,
             tool_choice=tool_choice,
             is_stream=False,
@@ -382,6 +399,8 @@ class LlmClient:
         self,
         messages: Sequence[LlmInputMessage],
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
@@ -398,6 +417,8 @@ class LlmClient:
         )
         runnable = self.create_runnable(
             model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
             tools=tools,
             tool_choice=tool_choice,
             is_stream=True,

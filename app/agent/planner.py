@@ -77,9 +77,16 @@ class PlannerService:
         if self._llm_client is None:
             raise RuntimeError("LLM planner 未注入 llm_client。")
 
+        planner_api_key = self._settings.planner_api_key
         completion_result = await self._llm_client.create_chat_completion(
             messages=self._build_planner_messages(state),
             model_name=self._settings.planner_model or state.get("model_name"),
+            base_url=self._settings.planner_base_url or self._settings.openai_base_url,
+            api_key=(
+                planner_api_key.get_secret_value().strip() or None
+                if planner_api_key is not None
+                else None
+            ),
             enable_thinking=False,
         )
         return self._parse_llm_plan(state, completion_result)
