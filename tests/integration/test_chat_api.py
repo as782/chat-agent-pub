@@ -548,11 +548,14 @@ def test_chat_api_stream_hides_tool_node_reasoning_text(
         self: object,
         messages: list[object],
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
     ) -> AsyncIterator[AIMessageChunk]:
-        del self, tool_choice, enable_thinking
+        del self, api_key, base_url, timeout_seconds, tool_choice, enable_thinking
         latest_user_message = ""
         latest_tool_output = ""
 
@@ -855,13 +858,16 @@ def test_chat_api_stream_returns_json_error_when_first_chunk_fails(
         self: object,
         messages: list[object],
         model_name: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
     ) -> AsyncIterator[AIMessageChunk]:
         """模拟首个流式块生成前发生限流错误。"""
 
-        del self, messages, model_name, tools, tool_choice, enable_thinking
+        del self, messages, model_name, api_key, base_url, timeout_seconds, tools, tool_choice, enable_thinking
 
         async def iterator() -> AsyncIterator[AIMessageChunk]:
             raise UpstreamServiceException(

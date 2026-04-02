@@ -11,6 +11,7 @@ from json import dumps
 from time import perf_counter
 from typing import Any
 
+import httpx
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -145,6 +146,20 @@ class LlmClient:
 
         return {}
 
+    def _resolve_base_url(self, base_url: str | None) -> str | None:
+        """解析本次请求最终使用的 base_url。"""
+
+        return base_url if base_url is not None else (self._settings.openai_base_url or None)
+
+    def _resolve_timeout_seconds(self, timeout_seconds: float | None) -> float:
+        """解析本次请求最终使用的超时时间。"""
+
+        return timeout_seconds if timeout_seconds is not None else self._settings.openai_timeout_seconds
+
+    @staticmethod
+    def _build_httpx_timeout(connect_timeout_seconds: float) -> httpx.Timeout:
+        return httpx.Timeout(None, connect=connect_timeout_seconds)
+
     def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""
 
@@ -200,6 +215,7 @@ class LlmClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
         is_stream: bool = False,
         enable_thinking: bool | None = None,
     ) -> BaseChatModel:
@@ -220,6 +236,8 @@ class LlmClient:
             )
 
         resolved_model_name = model_name or self._settings.openai_model
+        resolved_base_url = self._resolve_base_url(base_url)
+        resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         provider_extra_body = self._build_provider_extra_body(
             model_name=resolved_model_name,
             is_stream=is_stream,
@@ -230,7 +248,8 @@ class LlmClient:
             model=resolved_model_name,
             model_provider="openai",
             api_key=resolved_api_key,
-            base_url=base_url if base_url is not None else (self._settings.openai_base_url or None),
+            base_url=resolved_base_url,
+            timeout=self._build_httpx_timeout(resolved_timeout_seconds),
             extra_body=provider_extra_body or None,
         )
 
@@ -240,6 +259,7 @@ class LlmClient:
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         is_stream: bool = False,
@@ -251,6 +271,7 @@ class LlmClient:
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
+            timeout_seconds=timeout_seconds,
             is_stream=is_stream,
             enable_thinking=enable_thinking,
         )
@@ -283,6 +304,7 @@ class LlmClient:
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
@@ -290,10 +312,14 @@ class LlmClient:
         """使用统一消息结构创建一次聊天补全。"""
 
         request_start_time = perf_counter()
+        resolved_base_url = self._resolve_base_url(base_url)
+        resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         # 记录输入
         self._log_chat_request(
             messages=messages,
             model_name=model_name,
+            base_url=resolved_base_url,
+            timeout_seconds=resolved_timeout_seconds,
             tools=tools,
             tool_choice=tool_choice,
             is_stream=False,
@@ -304,6 +330,7 @@ class LlmClient:
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
+            timeout_seconds=resolved_timeout_seconds,
             tools=tools,
             tool_choice=tool_choice,
             is_stream=False,
@@ -326,16 +353,29 @@ class LlmClient:
             RateLimitError,
             UnprocessableEntityError,
         ) as exception:
+            LOGGER.warning(
+                (
+                    "LLM 璇锋眰澶辫触锛歮ode=non_stream model=%s duration_ms=%.2f "
+                    "base_url=%s connect_timeout_seconds=%.2f error_type=%s"
+                ),
+                model_name or self._settings.openai_model,
+                (perf_counter() - request_start_time) * 1000,
+                resolved_base_url or "default",
+                resolved_timeout_seconds,
+                type(exception).__name__,
+            )
             raise self._convert_openai_exception(exception) from exception
 
         LOGGER.info(
             (
                 "LLM 请求完成：mode=non_stream model=%s duration_ms=%.2f "
-                "tool_call_count=%d"
+                "tool_call_count=%d base_url=%s connect_timeout_seconds=%.2f"
             ),
             model_name or self._settings.openai_model,
             (perf_counter() - request_start_time) * 1000,
             len(completion_result.tool_calls),
+            resolved_base_url or "default",
+            resolved_timeout_seconds,
         )
         return completion_result
 
@@ -345,6 +385,8 @@ class LlmClient:
         runnable: Any,
         llm_messages: list[BaseMessage],
         requested_model_name: str | None,
+        requested_base_url: str | None,
+        timeout_seconds: float,
     ) -> AsyncIterator[AIMessageChunk]:
         """遍历 LangChain 流式输出并转换为统一增量结构。"""
 
@@ -369,7 +411,7 @@ class LlmClient:
                 (
                     "LLM 请求完成：mode=stream model=%s first_chunk_ms=%s "
                     "total_ms=%.2f finish_reason=%s chunks=%s prompt_tokens=%s "
-                    "completion_tokens=%s total_tokens=%s"
+                    "completion_tokens=%s total_tokens=%s base_url=%s connect_timeout_seconds=%.2f"
                 ),
                 resolved_model_name,
                 f"{first_chunk_duration_ms:.2f}" if first_chunk_duration_ms is not None else "none",
@@ -379,6 +421,8 @@ class LlmClient:
                 final_prompt_tokens,
                 final_completion_tokens,
                 final_total_tokens,
+                requested_base_url or "default",
+                timeout_seconds,
             )
         except AppException:
             raise
@@ -393,6 +437,17 @@ class LlmClient:
             RateLimitError,
             UnprocessableEntityError,
         ) as exception:
+            LOGGER.warning(
+                (
+                    "LLM 璇锋眰澶辫触锛歮ode=stream model=%s duration_ms=%.2f "
+                    "base_url=%s connect_timeout_seconds=%.2f error_type=%s"
+                ),
+                resolved_model_name,
+                (perf_counter() - request_start_time) * 1000,
+                requested_base_url or "default",
+                timeout_seconds,
+                type(exception).__name__,
+            )
             raise self._convert_openai_exception(exception) from exception
 
     def stream_chat_completion(
@@ -401,15 +456,20 @@ class LlmClient:
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
     ) -> AsyncIterator[AIMessageChunk]:
         """以真实流式方式输出聊天补全增量。"""
 
+        resolved_base_url = self._resolve_base_url(base_url)
+        resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         self._log_chat_request(
             messages=messages,
             model_name=model_name,
+            base_url=resolved_base_url,
+            timeout_seconds=resolved_timeout_seconds,
             tools=tools,
             tool_choice=tool_choice,
             is_stream=True,
@@ -419,6 +479,7 @@ class LlmClient:
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
+            timeout_seconds=resolved_timeout_seconds,
             tools=tools,
             tool_choice=tool_choice,
             is_stream=True,
@@ -429,6 +490,8 @@ class LlmClient:
             runnable=runnable,
             llm_messages=llm_messages,
             requested_model_name=model_name,
+            requested_base_url=resolved_base_url,
+            timeout_seconds=resolved_timeout_seconds,
         )
 
     def _log_chat_request(
@@ -436,6 +499,8 @@ class LlmClient:
         *,
         messages: Sequence[LlmInputMessage],
         model_name: str | None,
+        base_url: str | None,
+        timeout_seconds: float,
         tools: Sequence[LlmBindableTool] | None,
         tool_choice: str | dict[str, Any] | None,
         is_stream: bool,
@@ -475,6 +540,8 @@ class LlmClient:
         LOGGER.info("向 LLM 发起请求：\n %s", dumps({
             "mode": "stream" if is_stream else "non_stream",
             "model": model_name or self._settings.openai_model,
+            "base_url": base_url or "default",
+            "connect_timeout_seconds": timeout_seconds,
             "tool_choice": tool_choice,
             "enable_thinking": enable_thinking,
             "tools": serialized_tool_names,

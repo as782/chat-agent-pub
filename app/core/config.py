@@ -57,10 +57,34 @@ class Settings(BaseSettings):
     mcp_servers_json: str | None = Field(default=None, validation_alias="MCP_SERVERS_JSON")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openai_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias="OPENAI_TIMEOUT_SECONDS",
+    )
     openai_model: str = Field(default="gpt-4.1-mini", validation_alias="OPENAI_MODEL")
     planner_model: str | None = Field(default=None, validation_alias="PLANNER_MODEL")
     planner_base_url: str | None = Field(default=None, validation_alias="PLANNER_BASE_URL")
     planner_api_key: SecretStr | None = Field(default=None, validation_alias="PLANNER_API_KEY")
+    planner_timeout_seconds: float | None = Field(
+        default=None,
+        validation_alias="PLANNER_TIMEOUT_SECONDS",
+    )
+    ragflow_timeout_seconds: float = Field(
+        default=15.0,
+        validation_alias="RAGFLOW_TIMEOUT_SECONDS",
+    )
+    mcp_http_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias="MCP_HTTP_TIMEOUT_SECONDS",
+    )
+    mcp_sse_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias="MCP_SSE_TIMEOUT_SECONDS",
+    )
+    mcp_sse_read_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias="MCP_SSE_READ_TIMEOUT_SECONDS",
+    )
 
     @property
     def database_url(self) -> str:

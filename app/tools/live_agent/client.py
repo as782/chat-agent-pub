@@ -1,35 +1,33 @@
-"""直播问答接口客户端模块。
-
-负责封装直播问答智能体文档中的 HTTP 接口，并提供统一的请求发送与响应拆包能力。
-当前阶段优先支持路线、路况、服务区和整体路网四类查询，不负责复杂鉴权和重试编排。
-"""
+"""HTTP client for live-agent tools."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from time import perf_counter
 from typing import Any
 
 import httpx
 
 from app.core.config import get_settings
 from app.core.exceptions import UpstreamServiceException
+from app.core.logger import get_logger
 
 DRIVING_PATH = "/agent/driving"
 EVENT_PATH = "/agent/event"
 SERVICE_PATH = "/agent/service"
 NETWORK_OVERVIEW_PATH = "/agent/topN"
 
+LOGGER = get_logger(__name__)
+
 
 class LiveAgentClient:
-    """直播问答接口 HTTP 客户端。"""
+    """HTTP client for live-agent endpoints."""
 
     def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
         self._settings = get_settings()
         self._http_client = http_client
 
     async def query_driving_plan(self, *, start: str, end: str) -> dict[str, Any]:
-        """查询路线规划结果。"""
-
         response_payload = await self.request(
             "GET",
             DRIVING_PATH,
@@ -37,15 +35,13 @@ class LiveAgentClient:
         )
         if not isinstance(response_payload, dict):
             raise UpstreamServiceException(
-                "路线查询接口返回了意外的响应结构。",
+                "Route planning endpoint returned an unexpected response structure.",
                 error_code="live_agent_invalid_response",
                 details={"path": DRIVING_PATH},
             )
         return response_payload
 
     async def query_road_events(self, *, road: str) -> list[dict[str, Any]]:
-        """查询指定道路的路况事件。"""
-
         response_payload = await self.request(
             "GET",
             EVENT_PATH,
@@ -53,15 +49,13 @@ class LiveAgentClient:
         )
         if not isinstance(response_payload, list):
             raise UpstreamServiceException(
-                "路况查询接口返回了意外的响应结构。",
+                "Road event endpoint returned an unexpected response structure.",
                 error_code="live_agent_invalid_response",
                 details={"path": EVENT_PATH},
             )
         return [item for item in response_payload if isinstance(item, dict)]
 
     async def query_services(self, *, keyword: str) -> list[dict[str, Any]]:
-        """查询服务区相关信息。"""
-
         response_payload = await self.request(
             "GET",
             SERVICE_PATH,
@@ -69,19 +63,17 @@ class LiveAgentClient:
         )
         if not isinstance(response_payload, list):
             raise UpstreamServiceException(
-                "服务区查询接口返回了意外的响应结构。",
+                "Service endpoint returned an unexpected response structure.",
                 error_code="live_agent_invalid_response",
                 details={"path": SERVICE_PATH},
             )
         return [item for item in response_payload if isinstance(item, dict)]
 
     async def query_network_overview(self) -> dict[str, Any]:
-        """查询整体路网概况。"""
-
         response_payload = await self.request("GET", NETWORK_OVERVIEW_PATH)
         if not isinstance(response_payload, dict):
             raise UpstreamServiceException(
-                "整体路网查询接口返回了意外的响应结构。",
+                "Network overview endpoint returned an unexpected response structure.",
                 error_code="live_agent_invalid_response",
                 details={"path": NETWORK_OVERVIEW_PATH},
             )
@@ -94,37 +86,74 @@ class LiveAgentClient:
         *,
         params: Mapping[str, Any] | None = None,
     ) -> Any:
-        """发送直播问答接口请求并返回 data 字段。"""
-
         normalized_params = self._drop_none_values(params)
+        connect_timeout_seconds = self._settings.live_agent_timeout_seconds
+        request_start_time = perf_counter()
+        base_url = self._resolve_base_url()
+
+        LOGGER.info(
+            "Live Agent request started: method=%s path=%s base_url=%s connect_timeout_seconds=%.2f params=%s",
+            method,
+            path,
+            base_url,
+            connect_timeout_seconds,
+            normalized_params,
+        )
+
         try:
             if self._http_client is not None:
                 response = await self._http_client.request(
                     method=method,
                     url=path,
                     params=normalized_params,
+                    timeout=self._build_http_timeout(connect_timeout_seconds),
                 )
             else:
                 async with httpx.AsyncClient(
                     base_url=self._settings.live_agent_base_url.rstrip("/"),
-                    timeout=self._settings.live_agent_timeout_seconds,
+                    timeout=self._build_http_timeout(connect_timeout_seconds),
                 ) as http_client:
                     response = await http_client.request(
                         method=method,
                         url=path,
                         params=normalized_params,
+                        timeout=self._build_http_timeout(connect_timeout_seconds),
                     )
             response.raise_for_status()
         except httpx.HTTPStatusError as exception:
+            LOGGER.warning(
+                (
+                    "Live Agent request failed: method=%s path=%s base_url=%s duration_ms=%.2f "
+                    "connect_timeout_seconds=%.2f status_code=%s"
+                ),
+                method,
+                path,
+                base_url,
+                (perf_counter() - request_start_time) * 1000,
+                connect_timeout_seconds,
+                exception.response.status_code,
+            )
             raise UpstreamServiceException(
-                "直播问答接口返回了非成功状态码。",
+                "Live-agent endpoint returned a non-success status code.",
                 error_code="live_agent_http_error",
                 status_code=exception.response.status_code,
                 details={"path": path, "response_text": exception.response.text},
             ) from exception
         except httpx.HTTPError as exception:
+            LOGGER.warning(
+                (
+                    "Live Agent request failed: method=%s path=%s base_url=%s duration_ms=%.2f "
+                    "connect_timeout_seconds=%.2f error_type=%s"
+                ),
+                method,
+                path,
+                base_url,
+                (perf_counter() - request_start_time) * 1000,
+                connect_timeout_seconds,
+                type(exception).__name__,
+            )
             raise UpstreamServiceException(
-                "调用直播问答接口失败，请检查服务地址或网络。",
+                "Failed to call live-agent endpoint. Please check the service address or network.",
                 error_code="live_agent_connection_error",
                 details={"path": path},
             ) from exception
@@ -132,18 +161,49 @@ class LiveAgentClient:
         try:
             response_payload = response.json()
         except ValueError as exception:
+            LOGGER.warning(
+                (
+                    "Live Agent response parsing failed: method=%s path=%s base_url=%s "
+                    "duration_ms=%.2f connect_timeout_seconds=%.2f"
+                ),
+                method,
+                path,
+                base_url,
+                (perf_counter() - request_start_time) * 1000,
+                connect_timeout_seconds,
+            )
             raise UpstreamServiceException(
-                "直播问答接口返回了无法解析的 JSON。",
+                "Live-agent endpoint returned invalid JSON.",
                 error_code="live_agent_invalid_response",
                 details={"path": path},
             ) from exception
 
+        LOGGER.info(
+            (
+                "Live Agent request completed: method=%s path=%s base_url=%s status_code=%s "
+                "duration_ms=%.2f connect_timeout_seconds=%.2f"
+            ),
+            method,
+            path,
+            base_url,
+            response.status_code,
+            (perf_counter() - request_start_time) * 1000,
+            connect_timeout_seconds,
+        )
         return self._extract_envelope_data(response_payload, path=path)
+
+    def _resolve_base_url(self) -> str:
+        if self._http_client is not None:
+            injected_base_url = str(getattr(self._http_client, "base_url", "")).rstrip("/")
+            return injected_base_url or "injected-client"
+        return self._settings.live_agent_base_url.rstrip("/")
+
+    @staticmethod
+    def _build_http_timeout(connect_timeout_seconds: float) -> httpx.Timeout:
+        return httpx.Timeout(None, connect=connect_timeout_seconds)
 
     @staticmethod
     def _drop_none_values(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
-        """移除顶层值为 None 的请求参数。"""
-
         if payload is None:
             return None
         normalized_payload = {
@@ -155,11 +215,9 @@ class LiveAgentClient:
 
     @staticmethod
     def _extract_envelope_data(response_payload: Any, *, path: str) -> Any:
-        """解析通用响应包并提取 data 字段。"""
-
         if not isinstance(response_payload, dict):
             raise UpstreamServiceException(
-                "直播问答接口返回了意外的响应结构。",
+                "Live-agent endpoint returned an unexpected response structure.",
                 error_code="live_agent_invalid_response",
                 details={"path": path},
             )
@@ -167,7 +225,7 @@ class LiveAgentClient:
         response_code = response_payload.get("code", 0)
         if response_code not in {0, 200}:
             raise UpstreamServiceException(
-                str(response_payload.get("message") or "直播问答接口返回了业务错误。"),
+                str(response_payload.get("message") or "Live-agent endpoint returned a business error."),
                 error_code="live_agent_business_error",
                 details={"path": path, "response": response_payload},
             )

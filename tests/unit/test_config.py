@@ -18,13 +18,19 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
     monkeypatch.setenv("PLANNER_MODEL", "test-planner-model")
     monkeypatch.setenv("PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("PLANNER_API_KEY", "planner-test-key")
+    monkeypatch.setenv("PLANNER_TIMEOUT_SECONDS", "12")
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
     monkeypatch.setenv("LIVE_AGENT_TIMEOUT_SECONDS", "18")
+    monkeypatch.setenv("RAGFLOW_TIMEOUT_SECONDS", "22")
+    monkeypatch.setenv("MCP_HTTP_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("MCP_SSE_TIMEOUT_SECONDS", "11")
+    monkeypatch.setenv("MCP_SSE_READ_TIMEOUT_SECONDS", "66")
     monkeypatch.setenv(
         "MCP_SERVERS_JSON",
         '[{"name":"demo","transport":"http","endpoint":"https://mcp.example.com"}]',
@@ -37,14 +43,20 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.database_url == "postgresql+asyncpg://tester:secret@localhost:65432/test_db"
     assert settings.redis_url.endswith("/1")
     assert settings.openai_base_url == "https://example.com/v1"
+    assert settings.openai_timeout_seconds == 45.0
     assert settings.openai_model == "test-chat-model"
     assert settings.planner_model == "test-planner-model"
     assert settings.planner_base_url == "https://planner.example.com/v1"
     assert settings.planner_api_key is not None
     assert settings.planner_api_key.get_secret_value() == "planner-test-key"
+    assert settings.planner_timeout_seconds == 12.0
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.live_agent_base_url == "http://localhost:8081"
     assert settings.live_agent_timeout_seconds == 18.0
+    assert settings.ragflow_timeout_seconds == 22.0
+    assert settings.mcp_http_timeout_seconds == 9.0
+    assert settings.mcp_sse_timeout_seconds == 11.0
+    assert settings.mcp_sse_read_timeout_seconds == 66.0
     assert settings.mcp_servers_json is not None
     assert settings.is_debug is True
 

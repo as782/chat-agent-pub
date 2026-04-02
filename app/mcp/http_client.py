@@ -1,24 +1,27 @@
-"""MCP HTTP 客户端模块。
-负责通过官方 MCP Python SDK 与 streamable-http 类型服务建立标准会话。
-当前阶段保留 `http` 作为 `streamable_http` 的兼容别名。
-"""
+"""HTTP transport client for MCP streamable-http services."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Any
 
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
 
+from app.core.config import get_settings
 from app.core.exceptions import UpstreamServiceException
+from app.core.logger import get_logger
 from app.mcp.models import McpClientToolCallResult, McpClientToolDefinition
 
-DEFAULT_MCP_HTTP_TIMEOUT_SECONDS = 10.0
+LOGGER = get_logger(__name__)
 
 
 class McpHttpClient:
-    """基于官方 SDK 的 streamable-http MCP 客户端。"""
+    """Client for MCP streamable-http services."""
+
+    def __init__(self) -> None:
+        self._settings = get_settings()
 
     async def probe(
         self,
@@ -26,14 +29,12 @@ class McpHttpClient:
         *,
         headers: dict[str, str] | None = None,
     ) -> tuple[bool, str]:
-        """通过标准 initialize 与 tools/list 探测 HTTP MCP 服务。"""
-
         try:
             tools = await self.list_tools(endpoint=endpoint, headers=headers)
         except UpstreamServiceException as exception:
             return False, exception.message
 
-        return True, f"HTTP MCP 服务可用，共发现 {len(tools)} 个工具"
+        return True, f"HTTP MCP service is available and exposes {len(tools)} tools."
 
     async def list_tools(
         self,
@@ -41,12 +42,27 @@ class McpHttpClient:
         endpoint: str,
         headers: dict[str, str] | None = None,
     ) -> list[McpClientToolDefinition]:
-        """列出 HTTP MCP 服务暴露的工具。"""
+        request_start_time = perf_counter()
+        timeout_seconds = self._settings.mcp_http_timeout_seconds
+        LOGGER.info(
+            "MCP HTTP list_tools started: endpoint=%s connect_timeout_seconds=%.2f",
+            endpoint,
+            timeout_seconds,
+        )
 
-        async with self._open_session(endpoint=endpoint, headers=headers) as session:
-            list_result = await session.list_tools()
+        try:
+            async with self._open_session(endpoint=endpoint, headers=headers) as session:
+                list_result = await session.list_tools()
+        except Exception:
+            LOGGER.warning(
+                "MCP HTTP list_tools failed: endpoint=%s duration_ms=%.2f connect_timeout_seconds=%.2f",
+                endpoint,
+                (perf_counter() - request_start_time) * 1000,
+                timeout_seconds,
+            )
+            raise
 
-        return [
+        tool_definitions = [
             McpClientToolDefinition(
                 name=tool.name,
                 description=tool.description,
@@ -55,6 +71,14 @@ class McpHttpClient:
             )
             for tool in list_result.tools
         ]
+        LOGGER.info(
+            "MCP HTTP list_tools completed: endpoint=%s duration_ms=%.2f connect_timeout_seconds=%.2f tool_count=%s",
+            endpoint,
+            (perf_counter() - request_start_time) * 1000,
+            timeout_seconds,
+            len(tool_definitions),
+        )
+        return tool_definitions
 
     async def call_tool(
         self,
@@ -64,12 +88,44 @@ class McpHttpClient:
         arguments: dict[str, Any],
         headers: dict[str, str] | None = None,
     ) -> McpClientToolCallResult:
-        """调用 HTTP MCP 服务中的指定工具。"""
+        request_start_time = perf_counter()
+        timeout_seconds = self._settings.mcp_http_timeout_seconds
+        LOGGER.info(
+            "MCP HTTP call_tool started: endpoint=%s tool=%s connect_timeout_seconds=%.2f",
+            endpoint,
+            tool_name,
+            timeout_seconds,
+        )
 
-        async with self._open_session(endpoint=endpoint, headers=headers) as session:
-            call_result = await session.call_tool(tool_name, arguments=arguments)
+        try:
+            async with self._open_session(endpoint=endpoint, headers=headers) as session:
+                call_result = await session.call_tool(tool_name, arguments=arguments)
+        except Exception:
+            LOGGER.warning(
+                (
+                    "MCP HTTP call_tool failed: endpoint=%s tool=%s duration_ms=%.2f "
+                    "connect_timeout_seconds=%.2f"
+                ),
+                endpoint,
+                tool_name,
+                (perf_counter() - request_start_time) * 1000,
+                timeout_seconds,
+            )
+            raise
 
-        return self._normalize_call_result(call_result)
+        normalized_result = self._normalize_call_result(call_result)
+        LOGGER.info(
+            (
+                "MCP HTTP call_tool completed: endpoint=%s tool=%s duration_ms=%.2f "
+                "connect_timeout_seconds=%.2f is_error=%s"
+            ),
+            endpoint,
+            tool_name,
+            (perf_counter() - request_start_time) * 1000,
+            timeout_seconds,
+            normalized_result.is_error,
+        )
+        return normalized_result
 
     @asynccontextmanager
     async def _open_session(
@@ -78,13 +134,12 @@ class McpHttpClient:
         endpoint: str,
         headers: dict[str, str] | None = None,
     ):
-        """打开一次标准 MCP HTTP 会话。"""
-
+        timeout_seconds = self._settings.mcp_http_timeout_seconds
         try:
             async with streamablehttp_client(
                 endpoint,
                 headers=headers,
-                timeout=DEFAULT_MCP_HTTP_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             ) as (read_stream, write_stream, _session_id_callback):
                 async with ClientSession(
                     read_stream,
@@ -99,16 +154,20 @@ class McpHttpClient:
         except UpstreamServiceException:
             raise
         except Exception as exception:
+            LOGGER.warning(
+                "MCP HTTP session init failed: endpoint=%s connect_timeout_seconds=%.2f error_type=%s",
+                endpoint,
+                timeout_seconds,
+                type(exception).__name__,
+            )
             raise UpstreamServiceException(
-                "HTTP MCP 服务初始化失败。",
+                "HTTP MCP session initialization failed.",
                 error_code="mcp_http_session_error",
                 details={"endpoint": endpoint},
             ) from exception
 
     @staticmethod
     def _normalize_call_result(call_result: types.CallToolResult) -> McpClientToolCallResult:
-        """标准化 MCP tool 调用结果，便于 API 和 Agent 共用。"""
-
         serialized_content = [
             content_item.model_dump(mode="json") for content_item in call_result.content
         ]

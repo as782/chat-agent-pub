@@ -30,13 +30,14 @@ async def test_conversation_graph_reuses_session_history(
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
     ) -> AIMessage:
         """根据上下文中的历史用户消息生成稳定回答。"""
 
-        del self, model_name, api_key, base_url, tools, tool_choice, enable_thinking
+        del self, model_name, api_key, base_url, timeout_seconds, tools, tool_choice, enable_thinking
         message_texts = [str(getattr(message, "content", "")) for message in messages]
         if any("生成分类与执行计划" in message for message in message_texts):
             return AIMessage(
@@ -162,13 +163,14 @@ async def test_conversation_graph_routes_ragflow_directly_to_answer(
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
     ) -> AIMessage:
         """为 planner 和 answer 返回稳定结果。"""
 
-        del self, model_name, api_key, base_url, tools, tool_choice, enable_thinking
+        del self, model_name, api_key, base_url, timeout_seconds, tools, tool_choice, enable_thinking
         message_texts = [str(getattr(message, "content", "")) for message in messages]
         if any("生成分类与执行计划" in message for message in message_texts):
             return AIMessage(

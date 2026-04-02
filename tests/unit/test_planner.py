@@ -153,6 +153,38 @@ async def test_planner_prefers_dedicated_api_key(monkeypatch) -> None:
     assert fake_llm_client.last_kwargs["api_key"] == "planner-test-key"
 
 
+async def test_planner_prefers_dedicated_timeout(monkeypatch) -> None:
+    """Planner should use its dedicated timeout when configured."""
+
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("PLANNER_TIMEOUT_SECONDS", "15")
+    fake_llm_client = _FakePlannerLlmClient(
+        """
+        {
+          "primary_category": "general",
+          "need_clarification": false,
+          "clarification_question": null,
+          "steps": [
+            {
+              "step_id": "answer_1",
+              "executor": "answer",
+              "goal": "Directly answer the user",
+              "depends_on": [],
+              "can_run_in_parallel": false,
+              "metadata": {}
+            }
+          ]
+        }
+        """
+    )
+    planner = PlannerService(llm_client=fake_llm_client)
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert fake_llm_client.last_kwargs is not None
+    assert fake_llm_client.last_kwargs["timeout_seconds"] == 15.0
+
+
 async def test_planner_falls_back_to_main_api_key_when_dedicated_key_blank(monkeypatch) -> None:
     """Planner should fall back to main API key when dedicated key is blank."""
 
@@ -183,6 +215,37 @@ async def test_planner_falls_back_to_main_api_key_when_dedicated_key_blank(monke
 
     assert fake_llm_client.last_kwargs is not None
     assert fake_llm_client.last_kwargs["api_key"] is None
+
+
+async def test_planner_falls_back_to_main_timeout_when_dedicated_timeout_missing(monkeypatch) -> None:
+    """Planner should fall back to main timeout when dedicated timeout is missing."""
+
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
+    fake_llm_client = _FakePlannerLlmClient(
+        """
+        {
+          "primary_category": "general",
+          "need_clarification": false,
+          "clarification_question": null,
+          "steps": [
+            {
+              "step_id": "answer_1",
+              "executor": "answer",
+              "goal": "Directly answer the user",
+              "depends_on": [],
+              "can_run_in_parallel": false,
+              "metadata": {}
+            }
+          ]
+        }
+        """
+    )
+    planner = PlannerService(llm_client=fake_llm_client)
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert fake_llm_client.last_kwargs is not None
+    assert fake_llm_client.last_kwargs["timeout_seconds"] == 60.0
 
 
 async def test_planner_fallback_handles_explicit_tools() -> None:

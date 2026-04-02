@@ -1,24 +1,27 @@
-"""MCP SSE 客户端模块。负责通过官方 MCP Python SDK 连接标准 SSE 类型服务。
-当前阶段聚焦外部第三方 MCP 服务接入，不负责连接池复用和复杂认证流程编排。
-"""
+"""SSE transport client for MCP services."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Any
 
 from mcp import ClientSession, types
 from mcp.client.sse import sse_client
 
+from app.core.config import get_settings
 from app.core.exceptions import UpstreamServiceException
+from app.core.logger import get_logger
 from app.mcp.models import McpClientToolCallResult, McpClientToolDefinition
 
-DEFAULT_MCP_SSE_TIMEOUT_SECONDS = 10.0
-DEFAULT_MCP_SSE_READ_TIMEOUT_SECONDS = 60.0
+LOGGER = get_logger(__name__)
 
 
 class McpSseClient:
-    """基于官方 SDK 的 MCP SSE 客户端。"""
+    """Client for MCP SSE services."""
+
+    def __init__(self) -> None:
+        self._settings = get_settings()
 
     async def probe(
         self,
@@ -26,14 +29,12 @@ class McpSseClient:
         *,
         headers: dict[str, str] | None = None,
     ) -> tuple[bool, str]:
-        """通过标准 initialize 与 tools/list 探测 SSE MCP 服务。"""
-
         try:
             tools = await self.list_tools(endpoint=endpoint, headers=headers)
         except UpstreamServiceException as exception:
             return False, exception.message
 
-        return True, f"SSE MCP 服务可用，共发现 {len(tools)} 个工具"
+        return True, f"SSE MCP service is available and exposes {len(tools)} tools."
 
     async def list_tools(
         self,
@@ -41,12 +42,36 @@ class McpSseClient:
         endpoint: str,
         headers: dict[str, str] | None = None,
     ) -> list[McpClientToolDefinition]:
-        """列出 SSE MCP 服务暴露的工具。"""
+        request_start_time = perf_counter()
+        connect_timeout = self._settings.mcp_sse_timeout_seconds
+        read_timeout = self._settings.mcp_sse_read_timeout_seconds
+        LOGGER.info(
+            (
+                "MCP SSE list_tools started: endpoint=%s connect_timeout_seconds=%.2f "
+                "read_timeout_seconds=%.2f"
+            ),
+            endpoint,
+            connect_timeout,
+            read_timeout,
+        )
 
-        async with self._open_session(endpoint=endpoint, headers=headers) as session:
-            list_result = await session.list_tools()
+        try:
+            async with self._open_session(endpoint=endpoint, headers=headers) as session:
+                list_result = await session.list_tools()
+        except Exception:
+            LOGGER.warning(
+                (
+                    "MCP SSE list_tools failed: endpoint=%s duration_ms=%.2f connect_timeout_seconds=%.2f "
+                    "read_timeout_seconds=%.2f"
+                ),
+                endpoint,
+                (perf_counter() - request_start_time) * 1000,
+                connect_timeout,
+                read_timeout,
+            )
+            raise
 
-        return [
+        tool_definitions = [
             McpClientToolDefinition(
                 name=tool.name,
                 description=tool.description,
@@ -55,6 +80,18 @@ class McpSseClient:
             )
             for tool in list_result.tools
         ]
+        LOGGER.info(
+            (
+                    "MCP SSE list_tools completed: endpoint=%s duration_ms=%.2f connect_timeout_seconds=%.2f "
+                "read_timeout_seconds=%.2f tool_count=%s"
+            ),
+            endpoint,
+            (perf_counter() - request_start_time) * 1000,
+            connect_timeout,
+            read_timeout,
+            len(tool_definitions),
+        )
+        return tool_definitions
 
     async def call_tool(
         self,
@@ -64,12 +101,51 @@ class McpSseClient:
         arguments: dict[str, Any],
         headers: dict[str, str] | None = None,
     ) -> McpClientToolCallResult:
-        """调用 SSE MCP 服务中的指定工具。"""
+        request_start_time = perf_counter()
+        connect_timeout = self._settings.mcp_sse_timeout_seconds
+        read_timeout = self._settings.mcp_sse_read_timeout_seconds
+        LOGGER.info(
+            (
+                "MCP SSE call_tool started: endpoint=%s tool=%s connect_timeout_seconds=%.2f "
+                "read_timeout_seconds=%.2f"
+            ),
+            endpoint,
+            tool_name,
+            connect_timeout,
+            read_timeout,
+        )
 
-        async with self._open_session(endpoint=endpoint, headers=headers) as session:
-            call_result = await session.call_tool(tool_name, arguments=arguments)
+        try:
+            async with self._open_session(endpoint=endpoint, headers=headers) as session:
+                call_result = await session.call_tool(tool_name, arguments=arguments)
+        except Exception:
+            LOGGER.warning(
+                (
+                    "MCP SSE call_tool failed: endpoint=%s tool=%s duration_ms=%.2f "
+                    "connect_timeout_seconds=%.2f read_timeout_seconds=%.2f"
+                ),
+                endpoint,
+                tool_name,
+                (perf_counter() - request_start_time) * 1000,
+                connect_timeout,
+                read_timeout,
+            )
+            raise
 
-        return self._normalize_call_result(call_result)
+        normalized_result = self._normalize_call_result(call_result)
+        LOGGER.info(
+            (
+                "MCP SSE call_tool completed: endpoint=%s tool=%s duration_ms=%.2f "
+                "connect_timeout_seconds=%.2f read_timeout_seconds=%.2f is_error=%s"
+            ),
+            endpoint,
+            tool_name,
+            (perf_counter() - request_start_time) * 1000,
+            connect_timeout,
+            read_timeout,
+            normalized_result.is_error,
+        )
+        return normalized_result
 
     @asynccontextmanager
     async def _open_session(
@@ -78,14 +154,14 @@ class McpSseClient:
         endpoint: str,
         headers: dict[str, str] | None = None,
     ):
-        """打开一次标准 MCP SSE 会话。"""
-
+        connect_timeout = self._settings.mcp_sse_timeout_seconds
+        read_timeout = self._settings.mcp_sse_read_timeout_seconds
         try:
             async with sse_client(
                 endpoint,
                 headers=headers,
-                timeout=DEFAULT_MCP_SSE_TIMEOUT_SECONDS,
-                sse_read_timeout=DEFAULT_MCP_SSE_READ_TIMEOUT_SECONDS,
+                timeout=connect_timeout,
+                sse_read_timeout=read_timeout,
             ) as (read_stream, write_stream):
                 async with ClientSession(
                     read_stream,
@@ -100,16 +176,24 @@ class McpSseClient:
         except UpstreamServiceException:
             raise
         except Exception as exception:
+            LOGGER.warning(
+                (
+                    "MCP SSE session init failed: endpoint=%s connect_timeout_seconds=%.2f "
+                    "read_timeout_seconds=%.2f error_type=%s"
+                ),
+                endpoint,
+                connect_timeout,
+                read_timeout,
+                type(exception).__name__,
+            )
             raise UpstreamServiceException(
-                "SSE MCP 服务初始化失败。",
+                "SSE MCP session initialization failed.",
                 error_code="mcp_sse_session_error",
                 details={"endpoint": endpoint},
             ) from exception
 
     @staticmethod
     def _normalize_call_result(call_result: types.CallToolResult) -> McpClientToolCallResult:
-        """标准化 MCP tool 调用结果，便于 API 和 Agent 共用。"""
-
         serialized_content = [
             content_item.model_dump(mode="json") for content_item in call_result.content
         ]

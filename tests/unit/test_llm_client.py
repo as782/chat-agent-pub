@@ -116,6 +116,8 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
     assert FakeChatModel.last_init_kwargs["model_provider"] == "openai"
     assert FakeChatModel.last_init_kwargs["api_key"] == "unit-test-key"
     assert FakeChatModel.last_init_kwargs["base_url"] == "https://example.com/v1"
+    assert isinstance(FakeChatModel.last_init_kwargs["timeout"], httpx.Timeout)
+    assert FakeChatModel.last_init_kwargs["timeout"].connect == 60.0
     assert FakeChatModel.last_init_kwargs["extra_body"] is None
 
 
@@ -154,6 +156,26 @@ async def test_llm_client_allows_overriding_api_key(monkeypatch: MonkeyPatch) ->
     )
 
     assert FakeChatModel.last_init_kwargs["api_key"] == "planner-test-key"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_allows_overriding_timeout(monkeypatch: MonkeyPatch) -> None:
+    """验证调用方可以为特定模型请求覆盖 timeout。"""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    await llm_client.create_chat_completion(
+        messages=[LlmInputMessage(role="user", content="你好")],
+        model_name="planner-model",
+        timeout_seconds=18,
+    )
+
+    assert isinstance(FakeChatModel.last_init_kwargs["timeout"], httpx.Timeout)
+    assert FakeChatModel.last_init_kwargs["timeout"].connect == 18
 
 
 @pytest.mark.asyncio

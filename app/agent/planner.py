@@ -78,6 +78,7 @@ class PlannerService:
             raise RuntimeError("LLM planner 未注入 llm_client。")
 
         planner_api_key = self._settings.planner_api_key
+        planner_timeout_seconds = self._settings.planner_timeout_seconds
         completion_result = await self._llm_client.create_chat_completion(
             messages=self._build_planner_messages(state),
             model_name=self._settings.planner_model or state.get("model_name"),
@@ -86,6 +87,11 @@ class PlannerService:
                 planner_api_key.get_secret_value().strip() or None
                 if planner_api_key is not None
                 else None
+            ),
+            timeout_seconds=(
+                planner_timeout_seconds
+                if planner_timeout_seconds is not None
+                else self._settings.openai_timeout_seconds
             ),
             enable_thinking=False,
         )
