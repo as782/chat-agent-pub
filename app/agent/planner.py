@@ -44,6 +44,34 @@ _VALID_EXECUTORS: set[ExecutorType] = {
     "service",
     "report",
 }
+_NETWORK_SCOPE_KEYWORDS: tuple[str, ...] = (
+    "全路网",
+    "路网",
+    "全省",
+    "省内",
+    "整体",
+    "总体",
+    "总体情况",
+    "全省内",
+    "全部线路",
+    "所有线路",
+    "全域",
+    "全网",
+    "概况",
+    "汇总",
+    "汇总情况",
+)
+_NETWORK_TRAFFIC_KEYWORDS: tuple[str, ...] = (
+    "路况",
+    "高速",
+    "通行",
+    "拥堵",
+    "事故",
+    "施工",
+    "封闭",
+    "缓行",
+    "实时",
+)
 
 
 class PlannerService:
@@ -141,10 +169,16 @@ class PlannerService:
 
         payload = self._extract_json_payload(completion_result.content)
         requested_tool_names = state.get("requested_tool_names") or []
+        latest_user_message = str(state.get("latest_user_message", ""))
+        force_network_report = self._should_force_network_report(latest_user_message)
   
         primary_category = self._coerce_primary_category(payload.get("primary_category"))
         if primary_category is None:
             primary_category = "general"
+        primary_category = self._normalize_primary_category(
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
+        )
 
         # 构建默认步骤
         fallback_steps = self._build_steps(
@@ -152,7 +186,11 @@ class PlannerService:
             has_requested_tools=bool(requested_tool_names)
         )
         # LLM 输出的步骤可能不完整，使用默认步骤填充。
-        steps = self._coerce_steps(payload.get("steps"), fallback_steps=fallback_steps)
+        steps = (
+            fallback_steps
+            if force_network_report
+            else self._coerce_steps(payload.get("steps"), fallback_steps=fallback_steps)
+        )
         recommended_route = self._derive_recommended_route(
             steps=steps,
             primary_category=primary_category,
@@ -452,9 +490,14 @@ class PlannerService:
         """在 LLM planner 不可用时，使用规则生成保底计划。"""
 
         requested_tool_names = state.get("requested_tool_names") or []
+        latest_user_message = str(state.get("latest_user_message", ""))
         primary_category = self._infer_primary_category(
-            latest_user_message=str(state.get("latest_user_message", "")),
+            latest_user_message=latest_user_message,
             has_requested_tools=bool(requested_tool_names),
+        )
+        primary_category = self._normalize_primary_category(
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
         )
         steps = self._build_steps(
             primary_category=primary_category,
@@ -511,4 +554,24 @@ class PlannerService:
         ):
             return "route_planning"
         return "general"
+
+    @staticmethod
+    def _normalize_primary_category(
+        *,
+        latest_user_message: str,
+        primary_category: ProblemCategory,
+    ) -> ProblemCategory:
+        """对全省/整体类路况问题做兜底纠偏。"""
+
+        if PlannerService._should_force_network_report(latest_user_message):
+            return "network_report"
+        return primary_category
+
+    @staticmethod
+    def _should_force_network_report(latest_user_message: str) -> bool:
+        """识别更适合走全路网报表分支的问题。"""
+
+        return any(keyword in latest_user_message for keyword in _NETWORK_SCOPE_KEYWORDS) and any(
+            keyword in latest_user_message for keyword in _NETWORK_TRAFFIC_KEYWORDS
+        )
 

@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage
 
 from app.agent.planner import PlannerService
 from app.agent.state import AgentState
+from app.core.config import Settings
 
 
 class _FakePlannerLlmClient:
@@ -220,7 +221,6 @@ async def test_planner_falls_back_to_main_api_key_when_dedicated_key_blank(monke
 async def test_planner_falls_back_to_main_timeout_when_dedicated_timeout_missing(monkeypatch) -> None:
     """Planner should fall back to main timeout when dedicated timeout is missing."""
 
-    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
     fake_llm_client = _FakePlannerLlmClient(
         """
         {
@@ -240,7 +240,16 @@ async def test_planner_falls_back_to_main_timeout_when_dedicated_timeout_missing
         }
         """
     )
-    planner = PlannerService(llm_client=fake_llm_client)
+    planner = PlannerService(
+        llm_client=fake_llm_client,
+        settings=Settings.model_construct(
+            openai_timeout_seconds=60.0,
+            planner_timeout_seconds=None,
+            planner_api_key=None,
+            planner_base_url=None,
+            planner_model=None,
+        ),
+    )
 
     await planner.build_plan_async(AgentState(latest_user_message="hello"))
 
@@ -274,3 +283,59 @@ async def test_planner_fallback_can_classify_service_area() -> None:
     assert plan.primary_category == "service_area"
     assert plan.recommended_route == "service"
     assert [step.executor for step in plan.steps] == ["service", "answer"]
+
+
+async def test_planner_normalizes_province_wide_traffic_to_network_report() -> None:
+    """全省整体路况类问题应纠偏到 network_report。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "traffic_status",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "traffic_1",
+                  "executor": "traffic",
+                  "goal": "查询路况",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "输出结果",
+                  "depends_on": ["traffic_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="请提供浙江省内高速实时路况")
+    )
+
+    assert plan.primary_category == "network_report"
+    assert plan.recommended_route == "report"
+    assert [step.executor for step in plan.steps] == ["report", "answer"]
+
+
+async def test_planner_fallback_normalizes_province_wide_traffic_to_network_report() -> None:
+    """兜底规则下也应把全省整体路况问题归入 network_report。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="请对比给出浙江省内整体高速路况")
+    )
+
+    assert plan.primary_category == "network_report"
+    assert plan.recommended_route == "report"
+    assert [step.executor for step in plan.steps] == ["report", "answer"]

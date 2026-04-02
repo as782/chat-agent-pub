@@ -43,6 +43,17 @@ def test_answer_node_builds_executor_results_context() -> None:
     assert "12.5" in context
 
 
+def test_answer_node_resolves_prompt_name_from_category() -> None:
+    assert (
+        AnswerNode._resolve_answer_prompt_name({"primary_category": "traffic_status"})
+        == "TRAFFIC_SUMMARY_PROMPT"
+    )
+    assert (
+        AnswerNode._resolve_answer_prompt_name({"primary_category": "network_report"})
+        == "NETWORK_REPORT_SUMMARY_PROMPT"
+    )
+
+
 @pytest.mark.asyncio
 async def test_answer_node_reuses_tool_completion_result_without_new_llm_call(
     tmp_path: Path,

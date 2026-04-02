@@ -37,6 +37,14 @@ from app.tools.registry import ExecutedToolCall, ToolRegistry
 LOGGER = get_logger(__name__)
 
 RECENT_CONTEXT_WINDOW_SIZE = 8
+_PROMPT_NAME_BY_CATEGORY = {
+    "policy": "POLICY_SUMMARY_PROMPT",
+    "route_planning": "ROUTE_SUMMARY_PROMPT",
+    "traffic_status": "TRAFFIC_SUMMARY_PROMPT",
+    "service_area": "SERVICE_SUMMARY_PROMPT",
+    "network_report": "NETWORK_REPORT_SUMMARY_PROMPT",
+    "general": "GENERAL_ANSWER_PROMPT",
+}
 
 
 class AnswerNode:
@@ -158,9 +166,16 @@ class AnswerNode:
         """根据状态准备上下文。"""
 
         execution_request = self._build_execution_request_from_state(state)
+        answer_instruction = self._resolve_answer_instruction(state)
+        LOGGER.info(
+            "Answer prompt selected: category=%s prompt=%s current_step_id=%s",
+            state.get("primary_category", "general"),
+            self._resolve_answer_prompt_name(state),
+            state.get("current_step_id"),
+        )
         prepared_context = await self._prepare_context(
             execution_request=execution_request,
-            answer_instruction=self._resolve_answer_instruction(state),
+            answer_instruction=answer_instruction,
             executor_results_context=self._build_executor_results_context(
                 state.get("step_results", {})
                 if isinstance(state.get("step_results", {}), dict)
@@ -423,3 +438,8 @@ class AnswerNode:
         if category == "network_report":
             return NETWORK_REPORT_SUMMARY_PROMPT
         return GENERAL_ANSWER_PROMPT
+
+    @staticmethod
+    def _resolve_answer_prompt_name(state: AgentState) -> str:
+        category = str(state.get("primary_category", "general"))
+        return _PROMPT_NAME_BY_CATEGORY.get(category, "GENERAL_ANSWER_PROMPT")
