@@ -71,6 +71,7 @@ class ToolNode:
         execution_request = self._answer_node.build_execution_request_from_state(state)
         runtime_mcp_tools = self._extract_runtime_mcp_tools(state)
         available_tools = self._build_available_tools(
+            state=state,
             route=str(state.get("route", "answer")),
             requested_tool_names=execution_request.requested_tool_names,
             runtime_mcp_tools=runtime_mcp_tools,
@@ -107,6 +108,7 @@ class ToolNode:
     def build_available_tools(
         self,
         *,
+        state: AgentState,
         route: str,
         requested_tool_names: list[str] | None,
         runtime_mcp_tools: list[McpRuntimeTool],
@@ -114,6 +116,7 @@ class ToolNode:
         """构造当前轮次可绑定给模型的工具集合。"""
 
         return self._build_available_tools(
+            state=state,
             route=route,
             requested_tool_names=requested_tool_names,
             runtime_mcp_tools=runtime_mcp_tools,
@@ -257,19 +260,19 @@ class ToolNode:
     def _build_available_tools(
         self,
         *,
+        state: AgentState,
         route: str,
         requested_tool_names: list[str] | None,
         runtime_mcp_tools: list[McpRuntimeTool],
     ) -> list[LlmBindableTool]:
         """根据路由和状态构造当前轮次允许使用的工具集合。"""
 
-        builtin_tools = (
-            []
-            if route in {"mcp", "route"}
-            else self._tool_registry.get_tools(requested_tool_names)
-            if requested_tool_names is not None
-            else []
+        builtin_tool_names = self._resolve_builtin_tool_names(
+            state=state,
+            route=route,
+            requested_tool_names=requested_tool_names,
         )
+        builtin_tools = self._tool_registry.get_tools(builtin_tool_names) if builtin_tool_names else []
         mcp_tools = [runtime_tool.to_openai_tool() for runtime_tool in runtime_mcp_tools]
         available_tools = [*builtin_tools, *mcp_tools]
         if not available_tools:
@@ -278,6 +281,36 @@ class ToolNode:
                 error_code="no_available_tools",
             )
         return available_tools
+
+    def _resolve_builtin_tool_names(
+        self,
+        *,
+        state: AgentState,
+        route: str,
+        requested_tool_names: list[str] | None,
+    ) -> list[str] | None:
+        """解析当前轮次允许模型使用的内置工具集合。"""
+
+        if route in {"mcp", "route"}:
+            return []
+        if requested_tool_names is not None:
+            return requested_tool_names
+        if route != "tool":
+            return []
+
+        current_step = get_execution_step(
+            state,
+            step_id=(str(state["current_step_id"]) if state.get("current_step_id") is not None else None),
+        )
+        if current_step is None:
+            return ["calculator", "current_datetime"]
+
+        preferred_tool = current_step.metadata.get("preferred_tool")
+        if isinstance(preferred_tool, str) and preferred_tool:
+            return [preferred_tool]
+        if isinstance(preferred_tool, list):
+            return [tool_name for tool_name in preferred_tool if isinstance(tool_name, str)]
+        return ["calculator", "current_datetime"]
 
     def _build_tool_step_result(
         self,

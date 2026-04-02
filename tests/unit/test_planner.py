@@ -339,3 +339,104 @@ async def test_planner_fallback_normalizes_province_wide_traffic_to_network_repo
     assert plan.primary_category == "network_report"
     assert plan.recommended_route == "report"
     assert [step.executor for step in plan.steps] == ["report", "answer"]
+
+
+async def test_planner_routes_current_time_to_builtin_tool() -> None:
+    """当前时间类问题应保持 general 分类，但走 tool -> answer。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "general",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "直接回答用户",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="当前时间"))
+
+    assert plan.primary_category == "general"
+    assert plan.recommended_route == "tool"
+    assert [step.executor for step in plan.steps] == ["tool", "answer"]
+    assert plan.steps[0].metadata["preferred_tool"] == "current_datetime"
+
+
+async def test_planner_routes_calculation_to_builtin_tool() -> None:
+    """简单计算问题应保持 general 分类，但走 tool -> answer。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "general",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "直接回答用户",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="1+2"))
+
+    assert plan.primary_category == "general"
+    assert plan.recommended_route == "tool"
+    assert [step.executor for step in plan.steps] == ["tool", "answer"]
+    assert plan.steps[0].metadata["preferred_tool"] == "calculator"
+
+
+async def test_planner_routes_expression_with_chinese_symbols_to_builtin_tool() -> None:
+    """带中文破折号和问号的纯算式也应走计算工具。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "general",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "直接回答用户",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="120—4+44*73*12=？")
+    )
+
+    assert plan.primary_category == "general"
+    assert plan.recommended_route == "tool"
+    assert [step.executor for step in plan.steps] == ["tool", "answer"]
+    assert plan.steps[0].metadata["preferred_tool"] == "calculator"

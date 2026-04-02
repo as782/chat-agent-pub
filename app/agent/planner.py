@@ -72,6 +72,25 @@ _NETWORK_TRAFFIC_KEYWORDS: tuple[str, ...] = (
     "缓行",
     "实时",
 )
+_TIME_QUERY_KEYWORDS: tuple[str, ...] = (
+    "当前时间",
+    "现在时间",
+    "现在几点",
+    "几点了",
+    "多少点",
+    "现在多少点",
+    "日期",
+    "今天几号",
+    "今天日期",
+    "现在日期",
+    "当前日期",
+    "时间",
+)
+_CALCULATION_KEYWORDS: tuple[str, ...] = (
+    "计算",
+    "算一下",
+    "帮我算",
+)
 
 
 class PlannerService:
@@ -179,16 +198,22 @@ class PlannerService:
             latest_user_message=latest_user_message,
             primary_category=primary_category,
         )
+        general_tool_name = (
+            self._resolve_general_tool_name(latest_user_message)
+            if primary_category == "general" and not requested_tool_names
+            else None
+        )
 
         # 构建默认步骤
         fallback_steps = self._build_steps(
             primary_category=primary_category,
-            has_requested_tools=bool(requested_tool_names)
+            has_requested_tools=bool(requested_tool_names),
+            general_tool_name=general_tool_name,
         )
         # LLM 输出的步骤可能不完整，使用默认步骤填充。
         steps = (
             fallback_steps
-            if force_network_report
+            if force_network_report or general_tool_name is not None
             else self._coerce_steps(payload.get("steps"), fallback_steps=fallback_steps)
         )
         recommended_route = self._derive_recommended_route(
@@ -383,7 +408,8 @@ class PlannerService:
     def _build_steps(
         *,
         primary_category: ProblemCategory,
-        has_requested_tools: bool
+        has_requested_tools: bool,
+        general_tool_name: str | None = None,
     ) -> list[ExecutionStep]:
         """根据主分类生成最小可执行步骤。"""
 
@@ -393,6 +419,22 @@ class PlannerService:
                     step_id="tool_1",
                     executor="tool",
                     goal="执行用户显式开放的工具",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="根据工具结果生成最终回答",
+                    depends_on=["tool_1"],
+                ),
+            ]
+
+        if primary_category == "general" and general_tool_name is not None:
+            return [
+                ExecutionStep(
+                    step_id="tool_1",
+                    executor="tool",
+                    goal=f"调用内置工具 {general_tool_name} 获取结果",
+                    metadata={"preferred_tool": general_tool_name},
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -499,9 +541,15 @@ class PlannerService:
             latest_user_message=latest_user_message,
             primary_category=primary_category,
         )
+        general_tool_name = (
+            self._resolve_general_tool_name(latest_user_message)
+            if primary_category == "general" and not requested_tool_names
+            else None
+        )
         steps = self._build_steps(
             primary_category=primary_category,
             has_requested_tools=bool(requested_tool_names),
+            general_tool_name=general_tool_name,
         )
         return ExecutionPlan(
             primary_category=primary_category,
@@ -574,4 +622,47 @@ class PlannerService:
         return any(keyword in latest_user_message for keyword in _NETWORK_SCOPE_KEYWORDS) and any(
             keyword in latest_user_message for keyword in _NETWORK_TRAFFIC_KEYWORDS
         )
+
+    @staticmethod
+    def _resolve_general_tool_name(latest_user_message: str) -> str | None:
+        normalized_message = latest_user_message.strip().lower()
+        normalized_expression = PlannerService._normalize_expression_text(normalized_message)
+        if PlannerService._looks_like_time_query(latest_user_message, normalized_message):
+            return "current_datetime"
+        if PlannerService._looks_like_calculation_query(latest_user_message, normalized_expression):
+            return "calculator"
+        return None
+
+    @staticmethod
+    def _looks_like_time_query(latest_user_message: str, normalized_message: str) -> bool:
+        return any(keyword in latest_user_message for keyword in _TIME_QUERY_KEYWORDS) or any(
+            keyword in normalized_message for keyword in ("what time", "current time", "date")
+        )
+
+    @staticmethod
+    def _looks_like_calculation_query(latest_user_message: str, normalized_message: str) -> bool:
+        if any(keyword in latest_user_message for keyword in _CALCULATION_KEYWORDS):
+            return True
+        return search(r"^\s*[\d\.\(\)\+\-\*/%\s]+\s*$", normalized_message) is not None
+
+    @staticmethod
+    def _normalize_expression_text(message: str) -> str:
+        """将常见中文算式符号规整成便于识别的表达式文本。"""
+
+        normalized_message = (
+            message.replace("（", "(")
+            .replace("）", ")")
+            .replace("＋", "+")
+            .replace("－", "-")
+            .replace("—", "-")
+            .replace("–", "-")
+            .replace("×", "*")
+            .replace("x", "*")
+            .replace("÷", "/")
+            .replace("／", "/")
+            .replace("％", "%")
+        )
+        while normalized_message and normalized_message[-1] in {"=", "＝", "?", "？", "。", "."}:
+            normalized_message = normalized_message[:-1].rstrip()
+        return normalized_message
 
