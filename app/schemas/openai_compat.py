@@ -1,7 +1,4 @@
-"""OpenAI 兼容接口数据模型。
-负责定义 OpenAI Chat Completions 兼容请求与响应结构。
-当前阶段只覆盖文本消息、工具调用和流式 chunk，不负责 Responses API 与音频输出。
-"""
+"""OpenAI-compatible chat completion schemas."""
 
 from __future__ import annotations
 
@@ -11,140 +8,173 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class OpenAITextContentPart(BaseModel):
-    """OpenAI 文本内容分片模型。"""
+    """Text content part."""
 
     model_config = ConfigDict(extra="ignore")
 
-    type: Literal["text"] = Field(default="text", description="内容分片类型。")
-    text: str = Field(description="文本内容。")
+    type: Literal["text"] = Field(default="text", description="Content part type.")
+    text: str = Field(description="Text content.")
 
 
 class OpenAIChatCompletionToolFunction(BaseModel):
-    """OpenAI 兼容函数工具定义。"""
+    """Function tool definition."""
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str = Field(description="工具名称。")
-    description: str | None = Field(default=None, description="工具说明。")
-    parameters: dict[str, Any] = Field(default_factory=dict, description="工具参数 JSON Schema。")
+    name: str = Field(description="Tool name.")
+    description: str | None = Field(default=None, description="Tool description.")
+    parameters: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON schema for tool parameters.",
+    )
 
 
 class OpenAIChatCompletionTool(BaseModel):
-    """OpenAI 兼容工具定义。"""
+    """Tool definition."""
 
     model_config = ConfigDict(extra="ignore")
 
-    type: Literal["function"] = Field(default="function", description="工具类型。")
-    function: OpenAIChatCompletionToolFunction = Field(description="函数工具定义。")
+    type: Literal["function"] = Field(default="function", description="Tool type.")
+    function: OpenAIChatCompletionToolFunction = Field(description="Function tool payload.")
 
 
 class OpenAIChatCompletionToolCallFunction(BaseModel):
-    """OpenAI 兼容工具调用中的函数体。"""
+    """Function payload inside a tool call."""
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str = Field(description="函数名称。")
-    arguments: str = Field(description="JSON 字符串格式的函数参数。")
+    name: str = Field(description="Function name.")
+    arguments: str = Field(description="JSON string of function arguments.")
 
 
 class OpenAIChatCompletionToolCall(BaseModel):
-    """OpenAI 兼容工具调用模型。"""
+    """Tool call payload."""
 
     model_config = ConfigDict(extra="ignore")
 
-    id: str = Field(description="工具调用标识。")
-    type: Literal["function"] = Field(default="function", description="工具调用类型。")
-    function: OpenAIChatCompletionToolCallFunction = Field(description="函数调用负载。")
+    id: str = Field(description="Tool call identifier.")
+    type: Literal["function"] = Field(default="function", description="Tool call type.")
+    function: OpenAIChatCompletionToolCallFunction = Field(
+        description="Function call payload.",
+    )
 
 
 class OpenAIChatMessage(BaseModel):
-    """OpenAI 兼容消息模型。"""
+    """Chat message."""
 
     model_config = ConfigDict(extra="ignore")
 
     role: Literal["system", "developer", "user", "assistant", "tool"] = Field(
-        description="消息角色。"
+        description="Message role.",
     )
     content: str | list[OpenAITextContentPart] | None = Field(
         default=None,
-        description="消息内容，当前仅处理纯文本。",
+        description="Message content.",
     )
-    name: str | None = Field(default=None, description="消息发送方名称。")
-    tool_call_id: str | None = Field(default=None, description="tool 消息对应的工具调用标识。")
+    name: str | None = Field(default=None, description="Optional message name.")
+    tool_call_id: str | None = Field(default=None, description="Related tool call id.")
     tool_calls: list[OpenAIChatCompletionToolCall] | None = Field(
         default=None,
-        description="assistant 消息携带的工具调用列表。",
+        description="Tool calls carried by the assistant message.",
+    )
+
+
+class OpenAIChatTemplateKwargs(BaseModel):
+    """Nested chat_template_kwargs payload."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enable_thinking: bool | None = Field(
+        default=None,
+        description="Optional thinking toggle for compatible upstream gateways.",
     )
 
 
 class OpenAIChatCompletionRequest(BaseModel):
-    """OpenAI Chat Completions 兼容请求模型。"""
+    """OpenAI-compatible chat completion request."""
 
     model_config = ConfigDict(extra="ignore")
 
-    model: str = Field(description="请求使用的模型名称。")
-    messages: list[OpenAIChatMessage] = Field(min_length=1, description="对话消息列表。")
-    stream: bool = Field(default=False, description="是否使用流式输出。")
-    user: str | None = Field(default=None, description="调用方用户标识。")
+    model: str = Field(description="Requested model name.")
+    messages: list[OpenAIChatMessage] = Field(
+        min_length=1,
+        description="Conversation messages.",
+    )
+    stream: bool = Field(default=False, description="Whether to stream the response.")
+    user: str | None = Field(default=None, description="Caller user identifier.")
     tools: list[OpenAIChatCompletionTool] | None = Field(
         default=None,
-        description="允许模型使用的工具列表。",
+        description="Available tools.",
     )
     tool_choice: str | dict[str, Any] | None = Field(
         default=None,
-        description="工具选择策略，可为 auto、none、required 或指定函数。",
+        description="Tool selection strategy.",
     )
     enable_thinking: bool | None = Field(
         default=None,
-        description="兼容部分 Qwen 系列模型的思考模式开关。",
+        description="Top-level thinking toggle for compatible Qwen-style models.",
     )
+    chat_template_kwargs: OpenAIChatTemplateKwargs | None = Field(
+        default=None,
+        description="Optional nested chat_template_kwargs forwarded upstream.",
+    )
+
+    @property
+    def resolved_enable_thinking(self) -> bool | None:
+        """Resolve the effective thinking flag, preferring the top-level field."""
+
+        if self.enable_thinking is not None:
+            return self.enable_thinking
+        if self.chat_template_kwargs is not None:
+            return self.chat_template_kwargs.enable_thinking
+        return None
 
 
 class OpenAIChatCompletionAssistantMessage(BaseModel):
-    """OpenAI 兼容助手消息模型。"""
+    """Assistant message in the response."""
 
     model_config = ConfigDict(extra="ignore")
 
-    role: Literal["assistant"] = Field(default="assistant", description="助手角色。")
-    content: str | None = Field(default=None, description="助手回答内容。")
+    role: Literal["assistant"] = Field(default="assistant", description="Assistant role.")
+    content: str | None = Field(default=None, description="Assistant response content.")
     tool_calls: list[OpenAIChatCompletionToolCall] | None = Field(
         default=None,
-        description="助手返回的工具调用列表。",
+        description="Tool calls returned by the assistant.",
     )
 
 
 class OpenAIChatCompletionChoice(BaseModel):
-    """OpenAI 兼容候选回答模型。"""
+    """Completion choice."""
 
     model_config = ConfigDict(extra="ignore")
 
-    index: int = Field(default=0, description="候选回答索引。")
-    message: OpenAIChatCompletionAssistantMessage = Field(description="候选回答消息。")
-    finish_reason: str = Field(default="stop", description="完成原因。")
+    index: int = Field(default=0, description="Choice index.")
+    message: OpenAIChatCompletionAssistantMessage = Field(description="Choice message.")
+    finish_reason: str = Field(default="stop", description="Reason the completion stopped.")
 
 
 class OpenAIChatCompletionUsage(BaseModel):
-    """OpenAI 兼容 token 使用量模型。"""
+    """Token usage payload."""
 
     model_config = ConfigDict(extra="ignore")
 
-    prompt_tokens: int = Field(default=0, ge=0, description="提示词 token 数。")
-    completion_tokens: int = Field(default=0, ge=0, description="生成 token 数。")
-    total_tokens: int = Field(default=0, ge=0, description="总 token 数。")
+    prompt_tokens: int = Field(default=0, ge=0, description="Prompt token count.")
+    completion_tokens: int = Field(default=0, ge=0, description="Completion token count.")
+    total_tokens: int = Field(default=0, ge=0, description="Total token count.")
 
 
 class OpenAIChatCompletionResponse(BaseModel):
-    """OpenAI Chat Completions 兼容响应模型。"""
+    """OpenAI-compatible chat completion response."""
 
     model_config = ConfigDict(extra="ignore")
 
-    id: str = Field(description="响应唯一标识。")
+    id: str = Field(description="Response identifier.")
     object: Literal["chat.completion"] = Field(
         default="chat.completion",
-        description="响应对象类型。",
+        description="Response object type.",
     )
-    created: int = Field(description="响应创建时间戳。")
-    model: str = Field(description="实际使用的模型名称。")
-    choices: list[OpenAIChatCompletionChoice] = Field(description="候选回答列表。")
-    usage: OpenAIChatCompletionUsage = Field(description="token 使用量。")
-    system_fingerprint: str | None = Field(default=None, description="系统指纹。")
+    created: int = Field(description="Unix timestamp when the response was created.")
+    model: str = Field(description="Actual model name used.")
+    choices: list[OpenAIChatCompletionChoice] = Field(description="Completion choices.")
+    usage: OpenAIChatCompletionUsage = Field(description="Token usage.")
+    system_fingerprint: str | None = Field(default=None, description="System fingerprint.")

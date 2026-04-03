@@ -112,6 +112,45 @@ def _build_turn_result(*, finish_reason: str = "stop") -> ChatTurnResult:
     )
 
 
+def test_build_execution_request_uses_nested_chat_template_kwargs_enable_thinking() -> None:
+    """Nested chat_template_kwargs.enable_thinking should reach the execution request."""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    request = OpenAIChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "浣犲ソ"}],
+        chat_template_kwargs={"enable_thinking": False},
+    )
+
+    execution_request = service._build_execution_request(
+        chat_request=request,
+        session_id=None,
+    )
+
+    assert execution_request.enable_thinking is False
+
+
+def test_build_execution_request_prefers_top_level_enable_thinking() -> None:
+    """Top-level enable_thinking should win over nested chat_template_kwargs."""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    request = OpenAIChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "浣犲ソ"}],
+        enable_thinking=True,
+        chat_template_kwargs={"enable_thinking": False},
+    )
+
+    execution_request = service._build_execution_request(
+        chat_request=request,
+        session_id=None,
+    )
+
+    assert execution_request.enable_thinking is True
+
+
 @pytest.mark.asyncio
 async def test_prepare_chat_execution_resolves_session_and_persists_user_message_once() -> None:
     """公共准备流程应解析会话并且只持久化一次用户消息。"""

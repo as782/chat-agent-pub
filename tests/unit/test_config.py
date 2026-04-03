@@ -20,9 +20,11 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("OPENAI_MODEL", "test-chat-model")
+    monkeypatch.setenv("OPENAI_ENABLE_THINKING", "true")
     monkeypatch.setenv("PLANNER_MODEL", "test-planner-model")
     monkeypatch.setenv("PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("PLANNER_API_KEY", "planner-test-key")
+    monkeypatch.setenv("PLANNER_ENABLE_THINKING", "false")
     monkeypatch.setenv("PLANNER_TIMEOUT_SECONDS", "12")
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
@@ -45,10 +47,12 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.openai_base_url == "https://example.com/v1"
     assert settings.openai_timeout_seconds == 45.0
     assert settings.openai_model == "test-chat-model"
+    assert settings.openai_enable_thinking is True
     assert settings.planner_model == "test-planner-model"
     assert settings.planner_base_url == "https://planner.example.com/v1"
     assert settings.planner_api_key is not None
     assert settings.planner_api_key.get_secret_value() == "planner-test-key"
+    assert settings.planner_enable_thinking is False
     assert settings.planner_timeout_seconds == 12.0
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.live_agent_base_url == "http://localhost:8081"
@@ -71,3 +75,15 @@ def test_get_settings_prefers_explicit_postgres_dsn(monkeypatch: MonkeyPatch) ->
     settings = get_settings()
 
     assert settings.database_url == "sqlite+aiosqlite:///override.db"
+
+
+def test_get_settings_treats_blank_optional_thinking_flags_as_none(monkeypatch: MonkeyPatch) -> None:
+    """Blank optional thinking flags should be treated as unset."""
+
+    monkeypatch.setenv("OPENAI_ENABLE_THINKING", "   ")
+    monkeypatch.setenv("PLANNER_ENABLE_THINKING", "")
+
+    settings = get_settings()
+
+    assert settings.openai_enable_thinking is None
+    assert settings.planner_enable_thinking is None

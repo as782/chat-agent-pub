@@ -135,16 +135,25 @@ class LlmClient:
     ) -> dict[str, Any]:
         """构造兼容提供方所需的额外请求体参数。"""
 
-        if enable_thinking is not None:
-            return {"enable_thinking": enable_thinking}
+        resolved_enable_thinking = (
+            enable_thinking
+            if enable_thinking is not None
+            else self._settings.openai_enable_thinking
+        )
 
         normalized_model_name = model_name.lower()
-        if normalized_model_name.startswith("qwen3") and not is_stream:
+        if resolved_enable_thinking is None and normalized_model_name.startswith("qwen3") and not is_stream:
             # 部分 OpenAI 兼容网关在非流式调用 Qwen3 时要求显式关闭 thinking 模式，
             # 否则会直接返回 400 invalid_parameter_error。
-            return {"enable_thinking": False}
+            resolved_enable_thinking = False
 
-        return {}
+        if resolved_enable_thinking is None:
+            return {}
+
+        return {
+            "enable_thinking": resolved_enable_thinking,
+            "chat_template_kwargs": {"enable_thinking": resolved_enable_thinking},
+        }
 
     def _resolve_base_url(self, base_url: str | None) -> str | None:
         """解析本次请求最终使用的 base_url。"""

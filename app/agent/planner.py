@@ -140,7 +140,11 @@ class PlannerService:
                 if planner_timeout_seconds is not None
                 else self._settings.openai_timeout_seconds
             ),
-            enable_thinking=False,
+            enable_thinking=(
+                self._settings.planner_enable_thinking
+                if self._settings.planner_enable_thinking is not None
+                else False
+            ),
         )
         return self._parse_llm_plan(state, completion_result)
 

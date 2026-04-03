@@ -1,4 +1,4 @@
-"""LLM 客户端单元测试。"""
+"""Unit tests for the LLM client."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.core.exceptions import ConfigurationException, UpstreamServiceException
 
 
 class FakeChatModel:
-    """用于测试的假聊天模型。"""
+    """Minimal fake chat model used by the tests."""
 
     last_init_kwargs: dict[str, object] = {}
     last_tool_choice: str | dict[str, object] | None = None
@@ -31,22 +31,22 @@ class FakeChatModel:
         tool_choice: str | dict[str, object] | None = None,
         **__: object,
     ) -> FakeChatModel:
-        """记录工具绑定参数并返回自身。"""
+        """Record tool binding arguments and return itself."""
 
         self.__class__.last_tool_choice = tool_choice
         return self
 
     async def ainvoke(self, _: object) -> AIMessage:
-        """返回稳定的假模型响应。"""
+        """Return a stable fake model response."""
 
-        return AIMessage(content="模拟大模型回答")
+        return AIMessage(content="mock model answer")
 
     async def astream(self, _: object) -> AsyncIterator[AIMessageChunk]:
-        """返回稳定的假流式响应。"""
+        """Return a stable fake streaming response."""
 
-        yield AIMessageChunk(content="模拟", response_metadata={"model_name": "unit-test-model"})
+        yield AIMessageChunk(content="mock", response_metadata={"model_name": "unit-test-model"})
         yield AIMessageChunk(
-            content="流式回答",
+            content=" stream answer",
             response_metadata={"model_name": "unit-test-model"},
         )
         yield AIMessageChunk(
@@ -57,11 +57,9 @@ class FakeChatModel:
 
 
 class FakePermissionDeniedModel(FakeChatModel):
-    """用于测试额度不足错误的假模型。"""
+    """Fake model used to simulate quota errors."""
 
     async def ainvoke(self, _: object) -> AIMessage:
-        """抛出模拟的额度不足异常。"""
-
         request = httpx.Request("POST", "https://example.com/v1/chat/completions")
         response = httpx.Response(status_code=403, request=request)
         raise PermissionDeniedError(
@@ -77,11 +75,9 @@ class FakePermissionDeniedModel(FakeChatModel):
 
 
 class FakeNotFoundModel(FakeChatModel):
-    """用于测试资源不存在错误的假模型。"""
+    """Fake model used to simulate missing model errors."""
 
     async def ainvoke(self, _: object) -> AIMessage:
-        """抛出模拟的模型不存在异常。"""
-
         request = httpx.Request("POST", "https://example.com/v1/chat/completions")
         response = httpx.Response(status_code=404, request=request)
         raise NotFoundError(
@@ -101,17 +97,16 @@ class FakeNotFoundModel(FakeChatModel):
 
 @pytest.mark.asyncio
 async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPatch) -> None:
-    """验证 LLM 客户端会按配置组装 LangChain 模型初始化参数。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
-    answer = await llm_client.generate_answer("你好")
+    answer = await llm_client.generate_answer("hello")
 
-    assert answer == "模拟大模型回答"
+    assert answer == "mock model answer"
     assert FakeChatModel.last_init_kwargs["model"] == "unit-test-model"
     assert FakeChatModel.last_init_kwargs["model_provider"] == "openai"
     assert FakeChatModel.last_init_kwargs["api_key"] == "unit-test-key"
@@ -123,8 +118,6 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
 
 @pytest.mark.asyncio
 async def test_llm_client_allows_overriding_base_url(monkeypatch: MonkeyPatch) -> None:
-    """验证调用方可以为特定模型请求覆盖 base_url。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
@@ -132,7 +125,7 @@ async def test_llm_client_allows_overriding_base_url(monkeypatch: MonkeyPatch) -
 
     llm_client = LlmClient()
     await llm_client.create_chat_completion(
-        messages=[LlmInputMessage(role="user", content="你好")],
+        messages=[LlmInputMessage(role="user", content="hello")],
         model_name="planner-model",
         base_url="https://planner.example.com/v1",
     )
@@ -142,15 +135,13 @@ async def test_llm_client_allows_overriding_base_url(monkeypatch: MonkeyPatch) -
 
 @pytest.mark.asyncio
 async def test_llm_client_allows_overriding_api_key(monkeypatch: MonkeyPatch) -> None:
-    """验证调用方可以为特定模型请求覆盖 api_key。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
     await llm_client.create_chat_completion(
-        messages=[LlmInputMessage(role="user", content="你好")],
+        messages=[LlmInputMessage(role="user", content="hello")],
         model_name="planner-model",
         api_key="planner-test-key",
     )
@@ -160,8 +151,6 @@ async def test_llm_client_allows_overriding_api_key(monkeypatch: MonkeyPatch) ->
 
 @pytest.mark.asyncio
 async def test_llm_client_allows_overriding_timeout(monkeypatch: MonkeyPatch) -> None:
-    """验证调用方可以为特定模型请求覆盖 timeout。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
@@ -169,7 +158,7 @@ async def test_llm_client_allows_overriding_timeout(monkeypatch: MonkeyPatch) ->
 
     llm_client = LlmClient()
     await llm_client.create_chat_completion(
-        messages=[LlmInputMessage(role="user", content="你好")],
+        messages=[LlmInputMessage(role="user", content="hello")],
         model_name="planner-model",
         timeout_seconds=18,
     )
@@ -182,34 +171,52 @@ async def test_llm_client_allows_overriding_timeout(monkeypatch: MonkeyPatch) ->
 async def test_llm_client_disables_qwen3_thinking_for_non_stream_calls(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """验证非流式调用 Qwen3 时会自动关闭 thinking 模式。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "qwen3-32b")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
     await llm_client.create_chat_completion(
-        messages=[LlmInputMessage(role="user", content="你好")],
+        messages=[LlmInputMessage(role="user", content="hello")],
         model_name="qwen3-32b",
     )
 
-    assert FakeChatModel.last_init_kwargs["extra_body"] == {"enable_thinking": False}
+    assert FakeChatModel.last_init_kwargs["extra_body"] == {
+        "enable_thinking": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+@pytest.mark.asyncio
+async def test_llm_client_uses_default_thinking_from_settings(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("OPENAI_ENABLE_THINKING", "true")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+
+    llm_client = LlmClient()
+    await llm_client.create_chat_completion(
+        messages=[LlmInputMessage(role="user", content="hello")],
+        model_name="unit-test-model",
+    )
+
+    assert FakeChatModel.last_init_kwargs["extra_body"] == {
+        "enable_thinking": True,
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
 
 
 @pytest.mark.asyncio
 async def test_llm_client_keeps_qwen3_stream_without_default_thinking_override(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """验证流式 Qwen3 调用不会默认注入 enable_thinking=false。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "qwen3-32b")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
     async for _ in llm_client.stream_chat_completion(
-        messages=[LlmInputMessage(role="user", content="你好")],
+        messages=[LlmInputMessage(role="user", content="hello")],
         model_name="qwen3-32b",
     ):
         pass
@@ -219,8 +226,6 @@ async def test_llm_client_keeps_qwen3_stream_without_default_thinking_override(
 
 @pytest.mark.asyncio
 async def test_llm_client_streams_chunks(monkeypatch: MonkeyPatch) -> None:
-    """验证 LLM 客户端会直接透传真实流式 chunk。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
@@ -235,8 +240,8 @@ async def test_llm_client_streams_chunks(monkeypatch: MonkeyPatch) -> None:
     ]
 
     assert len(streamed_chunks) == 3
-    assert streamed_chunks[0].content == "模拟"
-    assert streamed_chunks[1].content == "流式回答"
+    assert streamed_chunks[0].content == "mock"
+    assert streamed_chunks[1].content == " stream answer"
     assert streamed_chunks[2].response_metadata["finish_reason"] == "stop"
     assert streamed_chunks[2].usage_metadata == {
         "input_tokens": 2,
@@ -250,8 +255,6 @@ async def test_llm_client_logs_non_stream_request_messages(
     monkeypatch: MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """验证非流式调用前会打印完整的 LLM 输入消息。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
@@ -260,16 +263,16 @@ async def test_llm_client_logs_non_stream_request_messages(
     llm_client = LlmClient()
     await llm_client.create_chat_completion(
         messages=[
-            LlmInputMessage(role="system", content="你是测试助手"),
-            LlmInputMessage(role="user", content="请回答杭州在哪里"),
+            LlmInputMessage(role="system", content="you are a test assistant"),
+            LlmInputMessage(role="user", content="where is hangzhou"),
         ],
         model_name="unit-test-model",
     )
 
-    assert "向 LLM 发起请求" in caplog.text
+    assert "LLM" in caplog.text
     assert '"mode": "non_stream"' in caplog.text
-    assert "你是测试助手" in caplog.text
-    assert "请回答杭州在哪里" in caplog.text
+    assert "you are a test assistant" in caplog.text
+    assert "where is hangzhou" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -277,8 +280,6 @@ async def test_llm_client_logs_stream_request_messages(
     monkeypatch: MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """验证流式调用前也会打印完整的 LLM 输入消息。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
@@ -286,22 +287,20 @@ async def test_llm_client_logs_stream_request_messages(
 
     llm_client = LlmClient()
     async for _ in llm_client.stream_chat_completion(
-        messages=[LlmInputMessage(role="user", content="请流式回答这个问题")],
+        messages=[LlmInputMessage(role="user", content="stream this answer")],
         model_name="unit-test-model",
     ):
         pass
 
-    assert "向 LLM 发起请求" in caplog.text
+    assert "LLM" in caplog.text
     assert '"mode": "stream"' in caplog.text
-    assert "请流式回答这个问题" in caplog.text
+    assert "stream this answer" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_llm_client_maps_quota_error_to_upstream_exception(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """验证额度不足错误会被映射为明确的上游服务异常。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakePermissionDeniedModel)
@@ -309,7 +308,7 @@ async def test_llm_client_maps_quota_error_to_upstream_exception(
     llm_client = LlmClient()
 
     with pytest.raises(UpstreamServiceException) as exception_info:
-        await llm_client.generate_answer("你好")
+        await llm_client.generate_answer("hello")
 
     assert exception_info.value.error_code == "llm_quota_exceeded"
     assert exception_info.value.status_code == 503
@@ -319,8 +318,6 @@ async def test_llm_client_maps_quota_error_to_upstream_exception(
 async def test_llm_client_maps_model_not_found_to_upstream_exception(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """验证模型不存在错误会被映射为明确的上游服务异常。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeNotFoundModel)
@@ -328,7 +325,7 @@ async def test_llm_client_maps_model_not_found_to_upstream_exception(
     llm_client = LlmClient()
 
     with pytest.raises(UpstreamServiceException) as exception_info:
-        await llm_client.generate_answer("你好")
+        await llm_client.generate_answer("hello")
 
     assert exception_info.value.error_code == "llm_model_not_found"
     assert exception_info.value.status_code == 404
@@ -338,8 +335,6 @@ async def test_llm_client_maps_model_not_found_to_upstream_exception(
 def test_llm_client_raises_configuration_error_when_api_key_missing(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """验证未配置 API Key 时会抛出明确异常。"""
-
     monkeypatch.setenv("OPENAI_API_KEY", "   ")
 
     llm_client = LlmClient()

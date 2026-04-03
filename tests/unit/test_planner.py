@@ -186,6 +186,37 @@ async def test_planner_prefers_dedicated_timeout(monkeypatch) -> None:
     assert fake_llm_client.last_kwargs["timeout_seconds"] == 15.0
 
 
+async def test_planner_uses_configured_thinking_flag(monkeypatch) -> None:
+    """Planner should respect its dedicated thinking toggle when configured."""
+
+    monkeypatch.setenv("PLANNER_ENABLE_THINKING", "true")
+    fake_llm_client = _FakePlannerLlmClient(
+        """
+        {
+          "primary_category": "general",
+          "need_clarification": false,
+          "clarification_question": null,
+          "steps": [
+            {
+              "step_id": "answer_1",
+              "executor": "answer",
+              "goal": "Directly answer the user",
+              "depends_on": [],
+              "can_run_in_parallel": false,
+              "metadata": {}
+            }
+          ]
+        }
+        """
+    )
+    planner = PlannerService(llm_client=fake_llm_client)
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert fake_llm_client.last_kwargs is not None
+    assert fake_llm_client.last_kwargs["enable_thinking"] is True
+
+
 async def test_planner_falls_back_to_main_api_key_when_dedicated_key_blank(monkeypatch) -> None:
     """Planner should fall back to main API key when dedicated key is blank."""
 
@@ -244,10 +275,12 @@ async def test_planner_falls_back_to_main_timeout_when_dedicated_timeout_missing
         llm_client=fake_llm_client,
         settings=Settings.model_construct(
             openai_timeout_seconds=60.0,
+            openai_enable_thinking=None,
             planner_timeout_seconds=None,
             planner_api_key=None,
             planner_base_url=None,
             planner_model=None,
+            planner_enable_thinking=None,
         ),
     )
 

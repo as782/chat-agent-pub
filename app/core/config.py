@@ -7,7 +7,7 @@
 from functools import lru_cache
 from urllib.parse import quote_plus
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,9 +62,17 @@ class Settings(BaseSettings):
         validation_alias="OPENAI_TIMEOUT_SECONDS",
     )
     openai_model: str = Field(default="gpt-4.1-mini", validation_alias="OPENAI_MODEL")
+    openai_enable_thinking: bool | None = Field(
+        default=None,
+        validation_alias="OPENAI_ENABLE_THINKING",
+    )
     planner_model: str | None = Field(default=None, validation_alias="PLANNER_MODEL")
     planner_base_url: str | None = Field(default=None, validation_alias="PLANNER_BASE_URL")
     planner_api_key: SecretStr | None = Field(default=None, validation_alias="PLANNER_API_KEY")
+    planner_enable_thinking: bool | None = Field(
+        default=None,
+        validation_alias="PLANNER_ENABLE_THINKING",
+    )
     planner_timeout_seconds: float | None = Field(
         default=None,
         validation_alias="PLANNER_TIMEOUT_SECONDS",
@@ -110,6 +118,15 @@ class Settings(BaseSettings):
         """根据运行环境判断是否启用调试级日志。"""
 
         return self.app_env.lower() in {"local", "dev", "test"}
+
+    @field_validator("openai_enable_thinking", "planner_enable_thinking", mode="before")
+    @classmethod
+    def _normalize_optional_boolean(cls, value: object) -> object:
+        """Treat blank env values as unset for optional boolean settings."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 @lru_cache(maxsize=1)

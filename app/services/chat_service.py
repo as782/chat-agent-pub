@@ -443,7 +443,7 @@ class ChatService:
             model_name=chat_request.model,
             requested_tool_names=requested_tool_names,
             tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
-            enable_thinking=chat_request.enable_thinking,
+            enable_thinking=chat_request.resolved_enable_thinking,
             user_id=chat_request.user,
         )
 
