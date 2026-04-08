@@ -25,13 +25,17 @@ from app.clients.llm_client import (
     LlmInputMessage,
     LlmToolCall,
 )
+from app.core.config import get_settings
 from app.core.exceptions import AppException, UpstreamServiceException
+from app.core.logger import get_logger
 from app.mcp.manager import McpManager
 from app.mcp.models import McpRuntimeTool
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry, tool_to_langchain_format
 
 MAX_TOOL_CALL_ROUNDS = 10
+
+LOGGER = get_logger(__name__)
 
 
 class ToolExecutionUpstreamException(UpstreamServiceException):
@@ -55,6 +59,7 @@ class ToolNode:
         self._tool_registry = tool_registry or ToolRegistry()
         self._mcp_manager = mcp_manager or McpManager()
         self._message_repository = MessageRepository(db_session)
+        self._settings = get_settings()
         self._builtin_tool_node = PrebuiltToolNode(
             [tool_to_langchain_format(tool) for tool in self._tool_registry.get_tools()]
         )
@@ -175,7 +180,15 @@ class ToolNode:
         executed_tool_calls: list[ExecutedToolCall] = []
 
         runnable = self._llm_client.create_runnable(
+            messages=conversation_messages,
             model_name=model_name,
+            api_key=(
+                self._settings.openai_api_key.get_secret_value()
+                if self._settings.openai_api_key
+                else None
+            ),
+            base_url=self._settings.openai_base_url,
+            timeout_seconds=self._settings.openai_timeout_seconds,
             tools=available_tools,
             tool_choice=normalized_tool_choice,
             enable_thinking=enable_thinking,
@@ -184,17 +197,70 @@ class ToolNode:
         for tool_round in range(MAX_TOOL_CALL_ROUNDS):
             llm_messages = self._llm_client._build_langchain_messages(conversation_messages)
             completion_result: AIMessageChunk | None = None
+            received_any_chunk = False
+            accumulated_content = ""
+            accumulated_reasoning = ""
+            has_reasoning_field = False
+            
             async for chunk in runnable.astream(llm_messages, config=config):
+                received_any_chunk = True
                 if completion_result is None:
                     completion_result = chunk
                 else:
                     completion_result = completion_result + chunk
+                
+                # 累积内容用于检查
+                if hasattr(chunk, 'content') and chunk.content:
+                    accumulated_content += chunk.content
+                if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
+                    if 'reasoning_content' in chunk.additional_kwargs:
+                        has_reasoning_field = True
+                        reasoning = chunk.additional_kwargs['reasoning_content']
+                        if reasoning:  # 只有非空时才累积
+                            accumulated_reasoning += reasoning
+
+            # 检查是否有实际内容或reasoning字段
+            has_content_or_reasoning = bool(accumulated_content or accumulated_reasoning or has_reasoning_field)
 
             if completion_result is None:
-                raise AppException(
-                    "大模型未返回有效响应。",
-                    error_code="invalid_llm_response",
-                )
+                if received_any_chunk:
+                    # 收到了 chunks 但都被过滤/为空（可能是纯 thinking 模式）
+                    LOGGER.warning(
+                        "tool_node 工具循环 %d：大模型返回了 chunks 但无法构建 completion_result。"
+                        "这可能是因为启用了 thinking 模式且模型只返回了思考内容。",
+                        tool_round + 1
+                    )
+                    raise AppException(
+                        f"工具循环 {tool_round + 1}：大模型返回了响应但无法处理（可能是纯思考内容）。",
+                        error_code="invalid_llm_response",
+                    )
+                else:
+                    # 完全没收到任何 chunk
+                    raise AppException(
+                        f"工具循环 {tool_round + 1}：大模型未返回任何响应内容。",
+                        error_code="invalid_llm_response",
+                    )
+            
+            # 如果只有 reasoning_content 没有 content，也认为是有效的响应
+            if not has_content_or_reasoning and completion_result:
+                # 再次检查最终结果（以防万一）
+                if hasattr(completion_result, 'additional_kwargs') and completion_result.additional_kwargs:
+                    if 'reasoning_content' in completion_result.additional_kwargs and completion_result.additional_kwargs['reasoning_content']:
+                        has_content_or_reasoning = True
+                
+                if not has_content_or_reasoning:
+                    LOGGER.warning(
+                        "tool_node 工具循环 %d：大模型返回的响应不包含有效内容（content 或 reasoning_content 都为空，且没有 reasoning_content 字段）。"
+                        "累积内容: content='%s', reasoning='%s', has_reasoning_field=%s",
+                        tool_round + 1,
+                        accumulated_content[:100],
+                        accumulated_reasoning[:100],
+                        has_reasoning_field
+                    )
+                    raise AppException(
+                        f"tool_node 工具循环 {tool_round + 1}：大模型返回的响应不包含有效内容（content 或 reasoning_content 都为空，且没有 reasoning_content 字段）。",
+                        error_code="invalid_llm_response",
+                    )
 
             if not completion_result.tool_calls:
                 return completion_result, executed_tool_calls

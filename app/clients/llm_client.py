@@ -265,6 +265,7 @@ class LlmClient:
     def create_runnable(
         self,
         *,
+        messages: Sequence[LlmInputMessage] | None = None,
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
@@ -275,6 +276,19 @@ class LlmClient:
         enable_thinking: bool | None = None,
     ) -> Any:
         """创建一个可直接执行的 LangChain Runnable 对象。"""
+
+        resolved_base_url = self._resolve_base_url(base_url)
+        resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
+        self._log_chat_request(
+            messages=messages or [],
+            model_name=model_name,
+            base_url=resolved_base_url,
+            timeout_seconds=resolved_timeout_seconds,
+            tools=tools,
+            tool_choice=tool_choice,
+            is_stream=is_stream,
+            enable_thinking=enable_thinking,
+        )
 
         chat_model = self._create_chat_model(
             model_name=model_name,
@@ -517,6 +531,17 @@ class LlmClient:
     ) -> None:
         """记录发往大模型的完整输入，便于后续调试上下文构造。"""
 
+        # 构造完整 endpoint 路径：如果 base_url 已经包含 /v1，则只追加 /chat/completions
+        endpoint_path = "/chat/completions"
+        if base_url:
+            normalized_base_url = base_url.rstrip("/")
+            if normalized_base_url.endswith("/v1"):
+                full_url = normalized_base_url + endpoint_path
+            else:
+                full_url = normalized_base_url + "/v1" + endpoint_path
+        else:
+            full_url = "(default base_url)/v1" + endpoint_path
+
         serialized_messages = [
             {
                 "index": index,
@@ -546,16 +571,19 @@ class LlmClient:
             else:
                 serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
 
-        LOGGER.info("向 LLM 发起请求：\n %s", dumps({
-            "mode": "stream" if is_stream else "non_stream",
-            "model": model_name or self._settings.openai_model,
-            "base_url": base_url or "default",
-            "connect_timeout_seconds": timeout_seconds,
-            "tool_choice": tool_choice,
-            "enable_thinking": enable_thinking,
-            "tools": serialized_tool_names,
-            "messages": serialized_messages,
-        }, ensure_ascii=False))
+        LOGGER.info("向 LLM 发起请求：\n完整URL: %s\n参数: %s",
+            full_url,
+            dumps({
+                "mode": "stream" if is_stream else "non_stream",
+                "model": model_name or self._settings.openai_model,
+                "base_url": base_url or "default",
+                "connect_timeout_seconds": timeout_seconds,
+                "tool_choice": tool_choice,
+                "enable_thinking": enable_thinking,
+                "tools": serialized_tool_names,
+                "messages": serialized_messages,
+            }, ensure_ascii=False)
+        )
 
     def _convert_openai_exception(self, exception: Exception) -> UpstreamServiceException:
         """将 OpenAI 客户端异常映射为统一业务异常。"""

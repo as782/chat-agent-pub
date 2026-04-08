@@ -128,7 +128,7 @@ class PlannerService:
         planner_timeout_seconds = self._settings.planner_timeout_seconds
         completion_result = await self._llm_client.create_chat_completion(
             messages=self._build_planner_messages(state),
-            model_name=self._settings.planner_model or state.get("model_name"),
+            model_name=self._settings.planner_model,
             base_url=self._settings.planner_base_url or self._settings.openai_base_url,
             api_key=(
                 planner_api_key.get_secret_value().strip() or None

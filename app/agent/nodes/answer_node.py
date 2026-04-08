@@ -28,6 +28,7 @@ from app.agent.state import (
     get_execution_step,
 )
 from app.clients.llm_client import LlmClient, LlmInputMessage
+from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.core.logger import get_logger
 from app.memory.manager import MemoryManager
@@ -64,6 +65,7 @@ class AnswerNode:
         self._context_builder = context_builder or ContextBuilder()
         self._memory_manager = memory_manager or MemoryManager(db_session)
         self._message_repository = MessageRepository(db_session)
+        self._settings = get_settings()
 
     async def run(
         self,
@@ -91,25 +93,85 @@ class AnswerNode:
 
         if not should_reuse_existing_completion:
             execution_request = self.build_execution_request_from_state(state)
+            llm_messages = self._llm_client._build_langchain_messages(prepared_context.messages)
             runnable = self._llm_client.create_runnable(
+                messages=prepared_context.messages,
                 model_name=execution_request.model_name,
+                api_key=(
+                    self._settings.openai_api_key.get_secret_value()
+                    if self._settings.openai_api_key
+                    else None
+                ),
+                base_url=self._settings.openai_base_url,
+                timeout_seconds=self._settings.openai_timeout_seconds,
                 enable_thinking=execution_request.enable_thinking,
                 is_stream=True,
             )
-            llm_messages = self._llm_client._build_langchain_messages(prepared_context.messages)
 
             completion_result: AIMessageChunk | None = None
+            received_any_chunk = False
+            accumulated_content = ""
+            accumulated_reasoning = ""
+            has_reasoning_field = False
+            
             async for chunk in runnable.astream(llm_messages, config=config):
+                received_any_chunk = True
                 if completion_result is None:
                     completion_result = chunk
                 else:
                     completion_result = completion_result + chunk
+                
+                # 累积内容用于检查
+                if hasattr(chunk, 'content') and chunk.content:
+                    accumulated_content += chunk.content
+                if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
+                    if 'reasoning_content' in chunk.additional_kwargs:
+                        has_reasoning_field = True
+                        reasoning = chunk.additional_kwargs['reasoning_content']
+                        if reasoning:  # 只有非空时才累积
+                            accumulated_reasoning += reasoning
 
+            # 检查是否有实际内容或reasoning字段
+            has_content_or_reasoning = bool(accumulated_content or accumulated_reasoning or has_reasoning_field)
+
+            # 区分 "没收到任何chunk" 和 "只收到thinking chunks的情况"
             if completion_result is None:
-                raise AppException(
-                    "大模型未返回有效响应。",
-                    error_code="invalid_llm_response",
-                )
+                if received_any_chunk:
+                    # 收到了 chunks 但都被过滤/为空（可能是纯 thinking 模式）
+                    LOGGER.warning(
+                        "大模型返回了 chunks 但无法构建 completion_result。"
+                        "这可能是因为启用了 thinking 模式且模型只返回了思考内容。"
+                    )
+                    raise AppException(
+                        "大模型返回了响应但无法处理（可能是纯思考内容）。",
+                        error_code="invalid_llm_response",
+                    )
+                else:
+                    # 完全没收到任何 chunk
+                    raise AppException(
+                        "大模型未返回任何响应内容。",
+                        error_code="invalid_llm_response",
+                    )
+            
+            # 如果只有 reasoning_content 没有 content，也认为是有效的响应
+            if not has_content_or_reasoning and completion_result:
+                # 再次检查最终结果（以防万一）
+                if hasattr(completion_result, 'additional_kwargs') and completion_result.additional_kwargs:
+                    if 'reasoning_content' in completion_result.additional_kwargs and completion_result.additional_kwargs['reasoning_content']:
+                        has_content_or_reasoning = True
+                
+                if not has_content_or_reasoning:
+                    LOGGER.warning(
+                        "大模型返回的响应不包含有效内容（content 或 reasoning_content 都为空，且没有 reasoning_content 字段）。"
+                        "累积内容: content='%s', reasoning='%s', has_reasoning_field=%s",
+                        accumulated_content[:100],
+                        accumulated_reasoning[:100],
+                        has_reasoning_field
+                    )
+                    raise AppException(
+                        "大模型返回的响应不包含有效内容。",
+                        error_code="invalid_llm_response",
+                    )
         else:
             # 当复用现有完成结果时，仍然需要处理已执行的工具调用
             completion_result = existing_tool_completion_result
@@ -251,7 +313,13 @@ class AnswerNode:
         return self._build_execution_request_from_state(state)
 
     def _build_execution_request_from_state(self, state: AgentState) -> ChatExecutionRequest:
-        """从状态构建执行请求。"""
+        """从状态构建执行请求。
+        
+        优先级：请求中的 model_name > OPENAI_MODEL 配置
+        """
+
+        # 优先使用请求中的 model_name，次选 OPENAI_MODEL 配置
+        model_name = state.get("model_name") or self._settings.openai_model
 
         return ChatExecutionRequest(
             session_id=state.get("session_id"),
@@ -259,7 +327,7 @@ class AnswerNode:
             user_id=state.get("user_id"),
             latest_user_message=state.get("latest_user_message", ""),
             input_messages=state.get("input_messages", []),
-            model_name=state.get("model_name"),
+            model_name=model_name,
             requested_tool_names=state.get("requested_tool_names"),
             tool_choice=state.get("tool_choice"),
             enable_thinking=state.get("enable_thinking"),
