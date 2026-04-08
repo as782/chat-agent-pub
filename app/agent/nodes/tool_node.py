@@ -195,7 +195,10 @@ class ToolNode:
             is_stream=True,
         )
         for tool_round in range(MAX_TOOL_CALL_ROUNDS):
-            llm_messages = self._llm_client._build_langchain_messages(conversation_messages)
+            llm_messages = self._llm_client._build_langchain_messages(
+                conversation_messages,
+                model_name=model_name,
+            )
             completion_result: AIMessageChunk | None = None
             received_any_chunk = False
             accumulated_content = ""

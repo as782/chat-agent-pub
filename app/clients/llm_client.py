@@ -126,6 +126,52 @@ class LlmClient:
 
         return content.strip()
 
+    def _normalize_outbound_messages(
+        self,
+        messages: Sequence[LlmInputMessage],
+        *,
+        model_name: str | None,
+    ) -> list[LlmInputMessage]:
+        """Normalize provider-bound messages before sending them upstream."""
+
+        _ = model_name
+        normalized_messages = list(messages)
+        merged_messages: list[LlmInputMessage] = []
+        pending_system_messages: list[LlmInputMessage] = []
+
+        def flush_pending_system_messages() -> None:
+            if not pending_system_messages:
+                return
+            if len(pending_system_messages) == 1:
+                merged_messages.append(pending_system_messages[0])
+            else:
+                merged_content = "\n\n".join(
+                    content
+                    for content in (
+                        self._normalize_message_content(message.content)
+                        for message in pending_system_messages
+                    )
+                    if content
+                )
+                merged_messages.append(
+                    LlmInputMessage(
+                        role="system",
+                        content=merged_content,
+                        name=pending_system_messages[0].name,
+                    )
+                )
+            pending_system_messages.clear()
+
+        for message in normalized_messages:
+            if message.role == "system":
+                pending_system_messages.append(message)
+                continue
+            flush_pending_system_messages()
+            merged_messages.append(message)
+
+        flush_pending_system_messages()
+        return merged_messages
+
     def _build_provider_extra_body(
         self,
         *,
@@ -169,11 +215,17 @@ class LlmClient:
     def _build_httpx_timeout(connect_timeout_seconds: float) -> httpx.Timeout:
         return httpx.Timeout(None, connect=connect_timeout_seconds)
 
-    def _build_langchain_messages(self, messages: Sequence[LlmInputMessage]) -> list[BaseMessage]:
+    def _build_langchain_messages(
+        self,
+        messages: Sequence[LlmInputMessage],
+        *,
+        model_name: str | None = None,
+    ) -> list[BaseMessage]:
         """将统一消息列表转换为 LangChain 消息对象。"""
 
         langchain_messages: list[BaseMessage] = []
-        for message in messages:
+        normalized_messages = self._normalize_outbound_messages(messages, model_name=model_name)
+        for message in normalized_messages:
             normalized_content = self._normalize_message_content(message.content)
             if message.role == "user":
                 langchain_messages.append(
@@ -279,8 +331,12 @@ class LlmClient:
 
         resolved_base_url = self._resolve_base_url(base_url)
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
+        normalized_messages = self._normalize_outbound_messages(
+            messages or [],
+            model_name=model_name or self._settings.openai_model,
+        )
         self._log_chat_request(
-            messages=messages or [],
+            messages=normalized_messages,
             model_name=model_name,
             base_url=resolved_base_url,
             timeout_seconds=resolved_timeout_seconds,
@@ -337,19 +393,12 @@ class LlmClient:
         request_start_time = perf_counter()
         resolved_base_url = self._resolve_base_url(base_url)
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
-        # 记录输入
-        self._log_chat_request(
-            messages=messages,
-            model_name=model_name,
-            base_url=resolved_base_url,
-            timeout_seconds=resolved_timeout_seconds,
-            tools=tools,
-            tool_choice=tool_choice,
-            is_stream=False,
-            enable_thinking=enable_thinking,
+        normalized_messages = self._normalize_outbound_messages(
+            messages,
+            model_name=model_name or self._settings.openai_model,
         )
-        
         runnable = self.create_runnable(
+            messages=normalized_messages,
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
@@ -359,7 +408,10 @@ class LlmClient:
             is_stream=False,
             enable_thinking=enable_thinking,
         )
-        llm_messages = self._build_langchain_messages(messages)
+        llm_messages = self._build_langchain_messages(
+            normalized_messages,
+            model_name=model_name or self._settings.openai_model,
+        )
 
         try:
             completion_result = await runnable.ainvoke(llm_messages)
@@ -488,17 +540,12 @@ class LlmClient:
 
         resolved_base_url = self._resolve_base_url(base_url)
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
-        self._log_chat_request(
-            messages=messages,
-            model_name=model_name,
-            base_url=resolved_base_url,
-            timeout_seconds=resolved_timeout_seconds,
-            tools=tools,
-            tool_choice=tool_choice,
-            is_stream=True,
-            enable_thinking=enable_thinking,
+        normalized_messages = self._normalize_outbound_messages(
+            messages,
+            model_name=model_name or self._settings.openai_model,
         )
         runnable = self.create_runnable(
+            messages=normalized_messages,
             model_name=model_name,
             api_key=api_key,
             base_url=base_url,
@@ -508,7 +555,10 @@ class LlmClient:
             is_stream=True,
             enable_thinking=enable_thinking,
         )
-        llm_messages = self._build_langchain_messages(messages)
+        llm_messages = self._build_langchain_messages(
+            normalized_messages,
+            model_name=model_name or self._settings.openai_model,
+        )
         return self._iterate_stream_chunks(
             runnable=runnable,
             llm_messages=llm_messages,

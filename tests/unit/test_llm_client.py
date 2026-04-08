@@ -321,6 +321,49 @@ async def test_llm_client_logs_extra_body_for_explicit_thinking_toggle(
     assert '"extra_body": {"enable_thinking": false, "chat_template_kwargs": {"enable_thinking": false}}' in caplog.text
 
 
+def test_llm_client_merges_consecutive_system_messages_for_all_models(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+
+    llm_client = LlmClient()
+    normalized_messages = llm_client._normalize_outbound_messages(
+        [
+            LlmInputMessage(role="system", content="system prompt 1"),
+            LlmInputMessage(role="system", content="system prompt 2"),
+            LlmInputMessage(role="user", content="hello"),
+        ],
+        model_name="unit-test-model",
+    )
+
+    assert len(normalized_messages) == 2
+    assert normalized_messages[0].role == "system"
+    assert normalized_messages[0].content == "system prompt 1\n\nsystem prompt 2"
+    assert normalized_messages[1].role == "user"
+
+
+def test_llm_client_only_merges_adjacent_system_messages(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+
+    llm_client = LlmClient()
+    normalized_messages = llm_client._normalize_outbound_messages(
+        [
+            LlmInputMessage(role="system", content="system prompt 1"),
+            LlmInputMessage(role="user", content="hello"),
+            LlmInputMessage(role="system", content="system prompt 2"),
+        ],
+        model_name="unit-test-model",
+    )
+
+    assert [message.role for message in normalized_messages] == ["system", "user", "system"]
+    assert normalized_messages[0].content == "system prompt 1"
+    assert normalized_messages[2].content == "system prompt 2"
+
+
 @pytest.mark.asyncio
 async def test_llm_client_maps_quota_error_to_upstream_exception(
     monkeypatch: MonkeyPatch,

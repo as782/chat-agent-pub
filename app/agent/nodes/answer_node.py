@@ -93,7 +93,10 @@ class AnswerNode:
 
         if not should_reuse_existing_completion:
             execution_request = self.build_execution_request_from_state(state)
-            llm_messages = self._llm_client._build_langchain_messages(prepared_context.messages)
+            llm_messages = self._llm_client._build_langchain_messages(
+                prepared_context.messages,
+                model_name=execution_request.model_name,
+            )
             runnable = self._llm_client.create_runnable(
                 messages=prepared_context.messages,
                 model_name=execution_request.model_name,
