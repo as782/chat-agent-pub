@@ -532,6 +532,12 @@ class LlmClient:
         """记录发往大模型的完整输入，便于后续调试上下文构造。"""
 
         # 构造完整 endpoint 路径：如果 base_url 已经包含 /v1，则只追加 /chat/completions
+        resolved_model_name = model_name or self._settings.openai_model
+        provider_extra_body = self._build_provider_extra_body(
+            model_name=resolved_model_name,
+            is_stream=is_stream,
+            enable_thinking=enable_thinking,
+        )
         endpoint_path = "/chat/completions"
         if base_url:
             normalized_base_url = base_url.rstrip("/")
@@ -575,11 +581,12 @@ class LlmClient:
             full_url,
             dumps({
                 "mode": "stream" if is_stream else "non_stream",
-                "model": model_name or self._settings.openai_model,
+                "model": resolved_model_name,
                 "base_url": base_url or "default",
                 "connect_timeout_seconds": timeout_seconds,
                 "tool_choice": tool_choice,
                 "enable_thinking": enable_thinking,
+                "extra_body": provider_extra_body or None,
                 "tools": serialized_tool_names,
                 "messages": serialized_messages,
             }, ensure_ascii=False)

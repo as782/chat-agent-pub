@@ -101,6 +101,7 @@ async def test_llm_client_builds_chat_model_from_settings(monkeypatch: MonkeyPat
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("OPENAI_ENABLE_THINKING", "")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
@@ -173,6 +174,7 @@ async def test_llm_client_disables_qwen3_thinking_for_non_stream_calls(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "qwen3-32b")
+    monkeypatch.setenv("OPENAI_ENABLE_THINKING", "")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
@@ -212,6 +214,7 @@ async def test_llm_client_keeps_qwen3_stream_without_default_thinking_override(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
     monkeypatch.setenv("OPENAI_MODEL", "qwen3-32b")
+    monkeypatch.setenv("OPENAI_ENABLE_THINKING", "")
     monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
 
     llm_client = LlmClient()
@@ -295,6 +298,27 @@ async def test_llm_client_logs_stream_request_messages(
     assert "LLM" in caplog.text
     assert '"mode": "stream"' in caplog.text
     assert "stream this answer" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_llm_client_logs_extra_body_for_explicit_thinking_toggle(
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "qwen3535ba3b")
+    monkeypatch.setattr("app.clients.llm_client.init_chat_model", FakeChatModel)
+    caplog.set_level(logging.INFO, logger="app.clients.llm_client")
+
+    llm_client = LlmClient()
+    async for _ in llm_client.stream_chat_completion(
+        messages=[LlmInputMessage(role="user", content="stream this answer")],
+        model_name="qwen3535ba3b",
+        enable_thinking=False,
+    ):
+        pass
+
+    assert '"extra_body": {"enable_thinking": false, "chat_template_kwargs": {"enable_thinking": false}}' in caplog.text
 
 
 @pytest.mark.asyncio
