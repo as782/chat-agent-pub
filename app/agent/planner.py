@@ -146,6 +146,11 @@ class PlannerService:
                 else False
             ),
         )
+        LOGGER.info(
+            "Planner LLM response received: content=%s reasoning_content=%s",
+            self._extract_message_text(completion_result),
+            self._extract_reasoning_text(completion_result) or "",
+        )
         return self._parse_llm_plan(state, completion_result)
 
     def _build_planner_messages(self, state: AgentState) -> list[LlmInputMessage]:
@@ -182,6 +187,32 @@ class PlannerService:
             ),
             LlmInputMessage(role="user", content="\n".join(user_prompt_lines)),
         ]
+
+    @staticmethod
+    def _extract_message_text(message: AIMessage) -> str:
+        """稳定提取 planner LLM 的文本内容用于日志打印。"""
+
+        if isinstance(message.content, str):
+            return message.content
+        if isinstance(message.content, list):
+            text_parts: list[str] = []
+            for part in message.content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                else:
+                    text_parts.append(str(part))
+            return "".join(text_parts)
+        return str(message.content)
+
+    @staticmethod
+    def _extract_reasoning_text(message: AIMessage) -> str | None:
+        """提取 planner LLM 的 reasoning_content，便于联调排查。"""
+
+        additional_kwargs = getattr(message, "additional_kwargs", None) or {}
+        reasoning_content = additional_kwargs.get("reasoning_content")
+        if isinstance(reasoning_content, str):
+            return reasoning_content or None
+        return None
 
     def _parse_llm_plan(
         self,

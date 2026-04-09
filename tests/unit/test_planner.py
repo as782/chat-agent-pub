@@ -1,5 +1,7 @@
 """Planner 服务单元测试。"""
 
+import logging
+
 from langchain_core.messages import AIMessage
 
 from app.agent.planner import PlannerService
@@ -473,3 +475,35 @@ async def test_planner_routes_expression_with_chinese_symbols_to_builtin_tool() 
     assert plan.recommended_route == "tool"
     assert [step.executor for step in plan.steps] == ["tool", "answer"]
     assert plan.steps[0].metadata["preferred_tool"] == "calculator"
+
+
+async def test_planner_logs_llm_response_content(caplog) -> None:
+    """Planner should log the raw LLM response content for debugging."""
+
+    caplog.set_level(logging.INFO, logger="app.agent.planner")
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "general",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "Directly answer the user",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    await planner.build_plan_async(AgentState(latest_user_message="hello"))
+
+    assert "Planner LLM response received:" in caplog.text
+    assert '"primary_category": "general"' in caplog.text
