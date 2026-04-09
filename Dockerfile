@@ -49,7 +49,32 @@ RUN addgroup --system app \
     && chown -R app:app /workspace
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --chown=app:app pyproject.toml ./pyproject.toml
 COPY --chown=app:app app ./app
+
+RUN python - <<'PY'
+from hashlib import sha256
+from json import dumps
+from pathlib import Path
+
+workspace = Path("/workspace")
+digest = sha256()
+for path in sorted((workspace / "app").rglob("*")):
+    if path.is_file():
+        digest.update(path.relative_to(workspace).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+
+(workspace / ".build-info.json").write_text(
+    dumps(
+        {
+            "app_source_sha256": digest.hexdigest(),
+        },
+        ensure_ascii=False,
+        indent=2,
+    ),
+    encoding="utf-8",
+)
+PY
 
 USER app
 
