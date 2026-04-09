@@ -196,7 +196,20 @@ class ArgumentResolver:
         """清理路线提取结果中的尾部语气词。"""
 
         cleaned_value = value.strip()
-        for suffix in ("怎么走", "怎么去", "如何走", "如何去", "路线", "路况"):
+        for suffix in (
+            "怎么走",
+            "怎么去",
+            "如何走",
+            "如何去",
+            "路线",
+            "路况",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "是否拥堵",
+            "会不会堵",
+            "通畅吗",
+        ):
             if cleaned_value.endswith(suffix):
                 cleaned_value = cleaned_value[: -len(suffix)].strip()
         return cleaned_value

@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from json import JSONDecodeError, loads
-from re import DOTALL, search
+from json import JSONDecodeError, dumps, loads
+from re import DOTALL, compile as re_compile, search
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -91,6 +91,9 @@ _CALCULATION_KEYWORDS: tuple[str, ...] = (
     "算一下",
     "帮我算",
 )
+_OD_ROUTE_PATTERN = re_compile(
+    r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9\-]{2,20})到(?P<destination>[\u4e00-\u9fffA-Za-z0-9\-]{2,20})"
+)
 
 
 class PlannerService:
@@ -110,13 +113,19 @@ class PlannerService:
     async def build_plan_async(self, state: AgentState) -> ExecutionPlan:
         """根据当前状态生成分类与执行计划。"""
         try:
-            return await self._build_plan_with_llm(state)
+            plan = await self._build_plan_with_llm(state)
         except Exception as exception:  # noqa: BLE001
             LOGGER.warning(
                 "LLM planner 规划失败, error=%s",
                 str(exception)
             )
-            return self._build_fallback_plan(state)
+            plan = self._build_fallback_plan(state)
+
+        LOGGER.info(
+            "Planner final execution plan: %s",
+            dumps(self._serialize_execution_plan(plan), ensure_ascii=False),
+        )
+        return plan
 
     async def _build_plan_with_llm(self, state: AgentState) -> ExecutionPlan:
         """调用 LLM 生成规划结果。"""
@@ -224,33 +233,24 @@ class PlannerService:
         payload = self._extract_json_payload(completion_result.content)
         requested_tool_names = state.get("requested_tool_names") or []
         latest_user_message = str(state.get("latest_user_message", ""))
-        force_network_report = self._should_force_network_report(latest_user_message)
-  
+
         primary_category = self._coerce_primary_category(payload.get("primary_category"))
         if primary_category is None:
             primary_category = "general"
-        primary_category = self._normalize_primary_category(
-            latest_user_message=latest_user_message,
-            primary_category=primary_category,
-        )
         general_tool_name = (
             self._resolve_general_tool_name(latest_user_message)
             if primary_category == "general" and not requested_tool_names
             else None
         )
 
-        # 构建默认步骤
-        fallback_steps = self._build_steps(
-            primary_category=primary_category,
-            has_requested_tools=bool(requested_tool_names),
-            general_tool_name=general_tool_name,
-        )
-        # LLM 输出的步骤可能不完整，使用默认步骤填充。
-        steps = (
-            fallback_steps
-            if force_network_report or general_tool_name is not None
-            else self._coerce_steps(payload.get("steps"), fallback_steps=fallback_steps)
-        )
+        steps = self._coerce_steps(payload.get("steps"))
+        if not steps:
+            steps = self._build_steps(
+                primary_category=primary_category,
+                has_requested_tools=bool(requested_tool_names),
+                general_tool_name=general_tool_name,
+                latest_user_message=latest_user_message,
+            )
         recommended_route = self._derive_recommended_route(
             steps=steps,
             primary_category=primary_category,
@@ -269,6 +269,29 @@ class PlannerService:
             clarification_question=clarification_question,
             steps=steps,
         )
+
+    @staticmethod
+    def _serialize_execution_plan(plan: ExecutionPlan) -> dict[str, object]:
+        """Convert execution plan into a log-friendly JSON payload."""
+
+        return {
+            "primary_category": plan.primary_category,
+            "execution_mode": plan.execution_mode,
+            "recommended_route": plan.recommended_route,
+            "need_clarification": plan.need_clarification,
+            "clarification_question": plan.clarification_question,
+            "steps": [
+                {
+                    "step_id": step.step_id,
+                    "executor": step.executor,
+                    "goal": step.goal,
+                    "depends_on": list(step.depends_on),
+                    "can_run_in_parallel": step.can_run_in_parallel,
+                    "metadata": dict(step.metadata),
+                }
+                for step in plan.steps
+            ],
+        }
 
     @staticmethod
     def _extract_json_payload(raw_content: str) -> dict[str, Any]:
@@ -305,13 +328,11 @@ class PlannerService:
     def _coerce_steps(
         self,
         value: object,
-        *,
-        fallback_steps: list[ExecutionStep],
     ) -> list[ExecutionStep]:
         """把 LLM 输出的 steps 规整为统一步骤对象。"""
 
         if not isinstance(value, list):
-            return fallback_steps
+            return []
 
         steps: list[ExecutionStep] = []
         # 规范化大模型生成内容中提取 JSON 中的 step
@@ -351,7 +372,7 @@ class PlannerService:
             )
 
         if not steps:
-            return fallback_steps
+            return []
 
         # 防止步骤中缺少answer步骤，无法路由到最终的终结节点
         if all(step.executor != "answer" for step in steps):
@@ -445,6 +466,7 @@ class PlannerService:
         primary_category: ProblemCategory,
         has_requested_tools: bool,
         general_tool_name: str | None = None,
+        latest_user_message: str = "",
     ) -> list[ExecutionStep]:
         """根据主分类生成最小可执行步骤。"""
 
@@ -480,6 +502,25 @@ class PlannerService:
             ]
 
         if primary_category == "policy":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询起点到终点的推荐路线",
+                    ),
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索相关政策、收费或通行规则",
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="综合路线和政策结果回答用户",
+                        depends_on=["route_1", "rag_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="rag_1",
@@ -510,6 +551,26 @@ class PlannerService:
             ]
 
         if primary_category == "traffic_status":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="规划起点到终点的路线并提取沿途道路",
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="根据路线查询主线路况和拥堵信息",
+                        depends_on=["route_1"],
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路线和路况结果回答用户",
+                        depends_on=["traffic_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="traffic_1",
@@ -525,6 +586,26 @@ class PlannerService:
             ]
 
         if primary_category == "service_area":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="规划起点到终点的路线并提取沿途服务区",
+                    ),
+                    ExecutionStep(
+                        step_id="service_1",
+                        executor="service",
+                        goal="根据路线查询沿途服务区、充电和配套信息",
+                        depends_on=["route_1"],
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="综合路线和服务区结果回答用户",
+                        depends_on=["service_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="service_1",
@@ -585,6 +666,7 @@ class PlannerService:
             primary_category=primary_category,
             has_requested_tools=bool(requested_tool_names),
             general_tool_name=general_tool_name,
+            latest_user_message=latest_user_message,
         )
         return ExecutionPlan(
             primary_category=primary_category,
@@ -628,9 +710,11 @@ class PlannerService:
             return "network_report"
         if any(
             keyword in latest_user_message
-            for keyword in ("路况", "拥堵", "封闭", "施工", "事故", "缓行", "通行情况")
+            for keyword in ("路况", "拥堵", "堵不堵", "堵吗", "堵", "封闭", "施工", "事故", "缓行", "通行情况", "通畅吗")
         ):
             return "traffic_status"
+        if PlannerService._looks_like_od_query(latest_user_message):
+            return "route_planning"
         if (
             "到" in latest_user_message
             and any(keyword in latest_user_message for keyword in ("怎么走", "怎么去", "路线", "导航"))
@@ -648,6 +732,12 @@ class PlannerService:
 
         if PlannerService._should_force_network_report(latest_user_message):
             return "network_report"
+        inferred_primary_category = PlannerService._infer_primary_category(
+            latest_user_message=latest_user_message,
+            has_requested_tools=False,
+        )
+        if primary_category in {"general", "route_planning"} and inferred_primary_category != "general":
+            return inferred_primary_category
         return primary_category
 
     @staticmethod
@@ -700,4 +790,24 @@ class PlannerService:
         while normalized_message and normalized_message[-1] in {"=", "＝", "?", "？", "。", "."}:
             normalized_message = normalized_message[:-1].rstrip()
         return normalized_message
+
+    @staticmethod
+    def _looks_like_od_query(latest_user_message: str) -> bool:
+        """Detect origin-destination style queries that need route context."""
+
+        return _OD_ROUTE_PATTERN.search(latest_user_message.strip()) is not None
+
+    @staticmethod
+    def _should_prefer_fallback_steps(
+        *,
+        steps: list[ExecutionStep],
+        fallback_steps: list[ExecutionStep],
+    ) -> bool:
+        """Prefer fallback steps when LLM output misses required worker types."""
+
+        planned_executors = {step.executor for step in steps if step.executor != "answer"}
+        fallback_executors = {step.executor for step in fallback_steps if step.executor != "answer"}
+        if not fallback_executors:
+            return False
+        return not fallback_executors.issubset(planned_executors)
 

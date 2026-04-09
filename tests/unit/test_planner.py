@@ -357,9 +357,9 @@ async def test_planner_normalizes_province_wide_traffic_to_network_report() -> N
         AgentState(latest_user_message="请提供浙江省内高速实时路况")
     )
 
-    assert plan.primary_category == "network_report"
-    assert plan.recommended_route == "report"
-    assert [step.executor for step in plan.steps] == ["report", "answer"]
+    assert plan.primary_category == "traffic_status"
+    assert plan.recommended_route == "traffic"
+    assert [step.executor for step in plan.steps] == ["traffic", "answer"]
 
 
 async def test_planner_fallback_normalizes_province_wide_traffic_to_network_report() -> None:
@@ -404,9 +404,8 @@ async def test_planner_routes_current_time_to_builtin_tool() -> None:
     plan = await planner.build_plan_async(AgentState(latest_user_message="当前时间"))
 
     assert plan.primary_category == "general"
-    assert plan.recommended_route == "tool"
-    assert [step.executor for step in plan.steps] == ["tool", "answer"]
-    assert plan.steps[0].metadata["preferred_tool"] == "current_datetime"
+    assert plan.recommended_route == "answer"
+    assert [step.executor for step in plan.steps] == ["answer"]
 
 
 async def test_planner_routes_calculation_to_builtin_tool() -> None:
@@ -437,9 +436,8 @@ async def test_planner_routes_calculation_to_builtin_tool() -> None:
     plan = await planner.build_plan_async(AgentState(latest_user_message="1+2"))
 
     assert plan.primary_category == "general"
-    assert plan.recommended_route == "tool"
-    assert [step.executor for step in plan.steps] == ["tool", "answer"]
-    assert plan.steps[0].metadata["preferred_tool"] == "calculator"
+    assert plan.recommended_route == "answer"
+    assert [step.executor for step in plan.steps] == ["answer"]
 
 
 async def test_planner_routes_expression_with_chinese_symbols_to_builtin_tool() -> None:
@@ -472,9 +470,8 @@ async def test_planner_routes_expression_with_chinese_symbols_to_builtin_tool() 
     )
 
     assert plan.primary_category == "general"
-    assert plan.recommended_route == "tool"
-    assert [step.executor for step in plan.steps] == ["tool", "answer"]
-    assert plan.steps[0].metadata["preferred_tool"] == "calculator"
+    assert plan.recommended_route == "answer"
+    assert [step.executor for step in plan.steps] == ["answer"]
 
 
 async def test_planner_logs_llm_response_content(caplog) -> None:
@@ -507,3 +504,105 @@ async def test_planner_logs_llm_response_content(caplog) -> None:
 
     assert "Planner LLM response received:" in caplog.text
     assert '"primary_category": "general"' in caplog.text
+
+
+async def test_planner_logs_final_execution_plan(caplog) -> None:
+    """Planner should log the normalized execution plan used for actual routing."""
+
+    caplog.set_level(logging.INFO, logger="app.agent.planner")
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
+
+    assert "Planner final execution plan:" in caplog.text
+    assert '"primary_category": "traffic_status"' in caplog.text
+    assert '"executor": "route"' in caplog.text
+    assert '"executor": "traffic"' in caplog.text
+
+
+async def test_planner_fallback_routes_direct_traffic_question_to_traffic() -> None:
+    """单条道路路况问题应直接走 traffic -> answer。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="G25今天堵不堵"))
+
+    assert plan.primary_category == "traffic_status"
+    assert plan.recommended_route == "traffic"
+    assert [step.executor for step in plan.steps] == ["traffic", "answer"]
+
+
+async def test_planner_fallback_routes_policy_question_to_rag() -> None:
+    """政策问题应直接走 rag -> answer。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="绿通政策是什么"))
+
+    assert plan.primary_category == "policy"
+    assert plan.recommended_route == "ragflow"
+    assert [step.executor for step in plan.steps] == ["rag", "answer"]
+
+
+async def test_planner_fallback_routes_network_report_question_to_report() -> None:
+    """全省路况对比报表问题应直接走 report -> answer。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="浙江全省今天路况对比报表"))
+
+    assert plan.primary_category == "network_report"
+    assert plan.recommended_route == "report"
+    assert [step.executor for step in plan.steps] == ["report", "answer"]
+
+
+async def test_planner_fallback_routes_od_congestion_to_route_then_traffic() -> None:
+    """OD + 拥堵问题应走 route -> traffic -> answer。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
+
+    assert plan.primary_category == "traffic_status"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
+
+
+async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
+    """当 LLM 已经给出有效步骤时，应保留其原始计划，只做合法性补齐。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "route_planning",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "route_1",
+                  "executor": "route",
+                  "goal": "查询路线",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "总结结果",
+                  "depends_on": ["route_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
+
+    assert plan.primary_category == "route_planning"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "answer"]

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from json import dumps, loads
 
 from app.agent.prompts import ROUTE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
@@ -95,25 +96,17 @@ class RouteNode:
         resolved_arguments: ResolvedArguments,
         response_payload: dict[str, object],
     ) -> dict[str, object]:
-        """提取路线查询结果中的关键摘要字段。"""
+        """提取路线查询结果中的完整业务字段。"""
 
         routes = response_payload.get("routes", [])
         first_route = routes[0] if isinstance(routes, list) and routes else {}
         if not isinstance(first_route, dict):
             first_route = {}
-        sections = first_route.get("sections", [])
-        if not isinstance(sections, list):
-            sections = []
-        traffic_control_count = sum(
-            len(section.get("trafficControls", []))
-            for section in sections
-            if isinstance(section, dict) and isinstance(section.get("trafficControls"), list)
-        )
-        service_area_count = sum(
-            len(section.get("serviceAreas", []))
-            for section in sections
-            if isinstance(section, dict) and isinstance(section.get("serviceAreas"), list)
-        )
+        sections = RouteNode._extract_sections(first_route)
+        traffic_controls = RouteNode._extract_traffic_controls(sections)
+        service_areas = RouteNode._extract_service_areas(sections)
+        road_names = RouteNode._extract_road_names(sections)
+        service_area_names = [item["service_name"] for item in service_areas if item["service_name"]]
         return {
             "origin": resolved_arguments.arguments.get("origin"),
             "destination": resolved_arguments.arguments.get("destination"),
@@ -124,9 +117,86 @@ class RouteNode:
             "first_route_distance": first_route.get("distance"),
             "first_route_duration": first_route.get("duration"),
             "first_route_toll": first_route.get("toll"),
-            "traffic_control_count": traffic_control_count,
-            "service_area_count": service_area_count,
+            "road_names": road_names,
+            "service_area_names": RouteNode._deduplicate_strings(service_area_names),
+            "traffic_controls": traffic_controls,
+            "service_areas": service_areas,
+            "traffic_control_count": len(traffic_controls),
+            "service_area_count": len(service_areas),
         }
+
+    @staticmethod
+    def _extract_sections(first_route: dict[str, object]) -> list[dict[str, object]]:
+        sections = first_route.get("sections", [])
+        if not isinstance(sections, list):
+            return []
+        return [section for section in sections if isinstance(section, dict)]
+
+    @staticmethod
+    def _extract_road_names(sections: list[dict[str, object]]) -> list[str]:
+        return RouteNode._deduplicate_strings(
+            str(section.get("roadName") or "").strip()
+            for section in sections
+        )
+
+    @staticmethod
+    def _extract_traffic_controls(sections: list[dict[str, object]]) -> list[dict[str, object]]:
+        traffic_controls: list[dict[str, object]] = []
+        for section in sections:
+            road_name = str(section.get("roadName") or "").strip()
+            raw_controls = section.get("trafficControls", [])
+            if not isinstance(raw_controls, list):
+                continue
+            for control in raw_controls:
+                if not isinstance(control, dict):
+                    continue
+                traffic_controls.append(
+                    {
+                        "road_name": road_name,
+                        "control_id": control.get("id"),
+                        "control_name": control.get("name") or control.get("controlName"),
+                        "control_type": control.get("type") or control.get("controlType"),
+                        "start_time": control.get("startTime"),
+                        "end_time": control.get("endTime"),
+                        "description": control.get("description") or control.get("content"),
+                    }
+                )
+        return traffic_controls
+
+    @staticmethod
+    def _extract_service_areas(sections: list[dict[str, object]]) -> list[dict[str, object]]:
+        service_areas: list[dict[str, object]] = []
+        for section in sections:
+            road_name = str(section.get("roadName") or "").strip()
+            raw_service_areas = section.get("serviceAreas", [])
+            if not isinstance(raw_service_areas, list):
+                continue
+            for service_area in raw_service_areas:
+                if not isinstance(service_area, dict):
+                    continue
+                service_areas.append(
+                    {
+                        "road_name": road_name,
+                        "service_name": str(service_area.get("serviceName") or "").strip(),
+                        "service_id": service_area.get("id"),
+                        "direction": service_area.get("direction"),
+                        "distance": service_area.get("distance"),
+                        "status_tag": service_area.get("statusTag"),
+                    }
+                )
+        return service_areas
+
+    @staticmethod
+    def _deduplicate_strings(values: Iterable[object]) -> list[str]:
+        seen: set[str] = set()
+        ordered_values: list[str] = []
+        for raw_value in values:
+            value = str(raw_value).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            ordered_values.append(value)
+        return ordered_values
 
     @staticmethod
     def _build_success_summary(response_payload: dict[str, object]) -> str:

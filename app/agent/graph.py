@@ -158,10 +158,10 @@ class ConversationGraph:
                 "report_node": "report_node",
             },
         )
-        graph_builder.add_edge("route_node", "answer_node")
-        graph_builder.add_edge("traffic_node", "answer_node")
-        graph_builder.add_edge("service_node", "answer_node")
-        graph_builder.add_edge("report_node", "answer_node")
+        graph_builder.add_edge("route_node", "scheduler_node")
+        graph_builder.add_edge("traffic_node", "scheduler_node")
+        graph_builder.add_edge("service_node", "scheduler_node")
+        graph_builder.add_edge("report_node", "scheduler_node")
 
         # 添加工具节点的条件边，实现工具循环
         graph_builder.add_conditional_edges(
@@ -170,7 +170,7 @@ class ConversationGraph:
             {"tool_node": "tool_node", "answer_node": "answer_node"},
         )
 
-        graph_builder.add_edge("ragflow_node", "answer_node")
+        graph_builder.add_edge("ragflow_node", "scheduler_node")
         graph_builder.add_edge("mcp_node", "tool_node")
         graph_builder.add_edge("answer_node", "memory_node")
         graph_builder.add_edge("memory_node", END)

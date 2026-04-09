@@ -52,9 +52,17 @@ PLANNER_PROMPT = """你是问答系统的任务规划器。
 
 输出要求：
 1. 优先给出主分类，而不是技术实现方式。
-2. 如果需要多个数据来源，请输出多步骤计划。
+2. 如果需要多个数据来源，请输出完整多步骤计划，不要省略前置依赖步骤。
 3. 如果缺少必要参数，请标记 need_clarification=true。
 4. 不直接生成最终用户答案。
+5. 对于复合问题要显式展开依赖链，例如：
+   - OD + 拥堵/路况：route -> traffic -> answer
+   - OD + 服务区：route -> service -> answer
+   - OD + 政策：route -> rag -> answer
+   - 单条道路路况：traffic -> answer
+   - 单纯政策：rag -> answer
+   - 单纯报表：report -> answer
+6. steps 必须包含所有需要的 executor 和最终 answer 步骤，不能只返回中间步骤。
 """
 
 PLANNER_JSON_OUTPUT_PROMPT = """请只输出一个 JSON 对象，不要输出额外解释。
@@ -72,6 +80,11 @@ steps 中每个元素字段：
 - depends_on: string[]
 - can_run_in_parallel: boolean
 - metadata: object
+
+请确保：
+- steps 表示完整执行链路，而不是单个意图标签。
+- 如果问题需要前置步骤，必须在 steps 中体现。
+- 最后一个 answer 步骤必须依赖所有需要汇总的前置步骤。
 """
 
 POLICY_SUMMARY_PROMPT = """

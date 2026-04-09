@@ -96,7 +96,7 @@ class ReportNode:
         *,
         response_payload: dict[str, object] | list[dict[str, object]],
     ) -> dict[str, object]:
-        """提取整体路网查询结果中的关键摘要字段。"""
+        """提取整体路网查询结果中的完整业务字段。"""
 
         if isinstance(response_payload, list):
             record_count = len(response_payload)
@@ -105,6 +105,9 @@ class ReportNode:
             congestion_top_count = 0
             accident_top_count = 0
             control_top_count = 0
+            congestion_top_items: list[dict[str, object]] = []
+            accident_top_items: list[dict[str, object]] = []
+            control_top_items: list[dict[str, object]] = []
         else:
             congestion_payload = response_payload.get("congestion", {})
             congestion_total_mile = (
@@ -119,6 +122,21 @@ class ReportNode:
             congestion_top_count = len(congestion_top) if isinstance(congestion_top, list) else 0
             accident_top_count = len(accident_top) if isinstance(accident_top, list) else 0
             control_top_count = len(control_top) if isinstance(control_top, list) else 0
+            congestion_top_items = (
+                [item for item in congestion_top if isinstance(item, dict)]
+                if isinstance(congestion_top, list)
+                else []
+            )
+            accident_top_items = (
+                [item for item in accident_top if isinstance(item, dict)]
+                if isinstance(accident_top, list)
+                else []
+            )
+            control_top_items = (
+                [item for item in control_top if isinstance(item, dict)]
+                if isinstance(control_top, list)
+                else []
+            )
             record_count = 1
         return {
             "record_count": record_count,
@@ -127,6 +145,9 @@ class ReportNode:
             "congestion_top_count": congestion_top_count,
             "accident_top_count": accident_top_count,
             "control_top_count": control_top_count,
+            "congestion_top_items": congestion_top_items,
+            "accident_top_items": accident_top_items,
+            "control_top_items": control_top_items,
         }
 
     @staticmethod

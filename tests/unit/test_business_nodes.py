@@ -8,7 +8,7 @@ from app.agent.nodes.report_node import ReportNode
 from app.agent.nodes.route_node import RouteNode
 from app.agent.nodes.service_node import ServiceNode
 from app.agent.nodes.traffic_node import TrafficNode
-from app.agent.state import ExecutionPlan, ResolvedArguments
+from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, ResolvedArguments
 
 
 class _FakeToolRegistry:
@@ -26,8 +26,14 @@ class _FakeToolRegistry:
                             "toll": 85,
                             "sections": [
                                 {
+                                    "roadName": "杭金衢高速",
                                     "trafficControls": [{"id": "tc-1"}],
                                     "serviceAreas": [{"serviceName": "诸暨服务区"}],
+                                },
+                                {
+                                    "roadName": "沪昆高速",
+                                    "trafficControls": [{"id": "tc-2"}],
+                                    "serviceAreas": [{"serviceName": "金华服务区"}],
                                 }
                             ],
                         }
@@ -104,6 +110,15 @@ async def test_route_node_builds_business_context() -> None:
     assert "杭州" in result["route_context"]
     assert result["step_results"]["route_1"].executor == "route"
     assert result["step_results"]["route_1"].normalized_result["destination"] == "金华"
+    assert result["step_results"]["route_1"].normalized_result["road_names"] == [
+        "杭金衢高速",
+        "沪昆高速",
+    ]
+    assert result["step_results"]["route_1"].normalized_result["service_area_names"] == [
+        "诸暨服务区",
+        "金华服务区",
+    ]
+    assert result["step_results"]["route_1"].normalized_result["traffic_controls"][0]["control_id"] == "tc-1"
 
 
 @pytest.mark.asyncio
@@ -165,6 +180,64 @@ async def test_traffic_node_builds_business_context() -> None:
     assert "杭金衢高速" in result["traffic_context"]
     assert result["step_results"]["traffic_1"].executor == "traffic"
     assert result["step_results"]["traffic_1"].normalized_result["road"] == "杭金衢高速"
+    assert result["step_results"]["traffic_1"].normalized_result["has_congestion"] is True
+    assert result["step_results"]["traffic_1"].normalized_result["matched_road_names"] == ["杭金衢高速"]
+    assert result["step_results"]["traffic_1"].normalized_result["exit_items"][0]["toll_name"] == "杭州南"
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_prefers_route_derived_road_names() -> None:
+    """当 traffic 步骤依赖 route 时，应优先消费 route 产出的 road_names。"""
+
+    node = TrafficNode(tool_registry=_FakeToolRegistry())
+
+    result = await node.run(
+        {
+            "current_step_id": "traffic_1",
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="multi_step",
+                recommended_route="route",
+                steps=[
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询路线",
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路况",
+                        depends_on=["route_1"],
+                    ),
+                ],
+            ),
+            "step_results": {
+                "route_1": ExecutorResult(
+                    step_id="route_1",
+                    executor="route",
+                    is_success=True,
+                    normalized_result={"road_names": ["杭金衢高速", "沪昆高速"]},
+                )
+            },
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={"target": "错误道路"},
+            ),
+            "step_arguments": {
+                "traffic_1": ResolvedArguments(
+                    category="traffic_status",
+                    arguments={"target": "错误道路"},
+                )
+            },
+        }
+    )
+
+    assert result["step_results"]["traffic_1"].normalized_result["road"] == "杭金衢高速"
+    assert result["step_results"]["traffic_1"].normalized_result["queried_roads"] == [
+        "杭金衢高速",
+        "沪昆高速",
+    ]
 
 
 @pytest.mark.asyncio
@@ -191,6 +264,10 @@ async def test_service_node_builds_business_context() -> None:
     assert "杭州东服务区" in result["service_context"]
     assert result["step_results"]["service_1"].executor == "service"
     assert result["step_results"]["service_1"].normalized_result["service_name"] == "杭州东服务区"
+    assert result["step_results"]["service_1"].normalized_result["has_charging"] is True
+    assert result["step_results"]["service_1"].normalized_result["charge_items"][0]["brand"] == "国网"
+    assert result["step_results"]["service_1"].normalized_result["commercial_items"][0]["name"] == "便利店"
+    assert result["step_results"]["service_1"].normalized_result["tags"] == ["餐饮", "休息区"]
 
 
 @pytest.mark.asyncio
@@ -217,3 +294,6 @@ async def test_report_node_builds_business_context() -> None:
     assert "queryTime" in result["report_context"]
     assert result["step_results"]["report_1"].executor == "report"
     assert result["step_results"]["report_1"].normalized_result["congestion_total_mile"] == 12.5
+    assert result["step_results"]["report_1"].normalized_result["congestion_top_items"][0]["roadName"] == "沪昆高速"
+    assert result["step_results"]["report_1"].normalized_result["accident_top_items"][0]["roadName"] == "杭州绕城高速"
+    assert result["step_results"]["report_1"].normalized_result["control_top_items"][0]["roadName"] == "长深高速"

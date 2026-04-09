@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from json import dumps, loads
 
 from app.agent.prompts import TRAFFIC_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
@@ -13,6 +14,7 @@ from app.agent.state import (
     AgentState,
     ExecutorResult,
     ResolvedArguments,
+    get_execution_step,
     merge_step_result,
     resolve_active_execution_step_id,
     resolve_step_arguments,
@@ -38,11 +40,15 @@ class TrafficNode:
         resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="traffic")
         if not isinstance(resolved_arguments, ResolvedArguments):
             return {"traffic_context": None}
-        query_arguments = self._build_tool_arguments(resolved_arguments)
+        query_arguments = self._build_tool_arguments(
+            state=state,
+            step_id=step_id,
+            resolved_arguments=resolved_arguments,
+        )
         try:
             tool_output = await self._tool_registry.execute_named_tool(
                 tool_name="live_road_event_query",
-                arguments=query_arguments,
+                arguments={"road": str(query_arguments.get("road") or "")},
             )
             response_payload = self._parse_tool_output(tool_output)
             executor_result = ExecutorResult(
@@ -54,14 +60,14 @@ class TrafficNode:
                     "api_result": response_payload,
                 },
                 normalized_result=self._build_normalized_result(
-                    resolved_arguments=resolved_arguments,
+                    query_arguments=query_arguments,
                     response_payload=response_payload,
                 ),
                 summary=self._build_success_summary(response_payload),
             )
             return {
                 "traffic_context": self._build_traffic_context(
-                    resolved_arguments=resolved_arguments,
+                    query_arguments=query_arguments,
                     response_payload=response_payload,
                 ),
                 **merge_step_result(state, result=executor_result),
@@ -74,17 +80,56 @@ class TrafficNode:
                 details=exception.details,
             ) from exception
 
-    @staticmethod
-    def _build_tool_arguments(resolved_arguments: ResolvedArguments) -> dict[str, object]:
+    def _build_tool_arguments(
+        self,
+        *,
+        state: AgentState,
+        step_id: str,
+        resolved_arguments: ResolvedArguments,
+    ) -> dict[str, object]:
         """把结构化参数转换为路况查询工具参数。"""
 
-        road = str(
+        queried_roads = self._resolve_queried_roads(
+            state=state,
+            step_id=step_id,
+            resolved_arguments=resolved_arguments,
+        )
+        road = queried_roads[0] if queried_roads else ""
+        return {
+            "road": road,
+            "queried_roads": queried_roads,
+        }
+
+    def _resolve_queried_roads(
+        self,
+        *,
+        state: AgentState,
+        step_id: str,
+        resolved_arguments: ResolvedArguments,
+    ) -> list[str]:
+        current_step = get_execution_step(state, step_id=step_id)
+        if current_step is not None:
+            step_results = state.get("step_results", {})
+            if isinstance(step_results, dict):
+                for dependency in current_step.depends_on:
+                    dependency_result = step_results.get(dependency)
+                    if not isinstance(dependency_result, ExecutorResult):
+                        continue
+                    if dependency_result.executor != "route":
+                        continue
+                    road_names = dependency_result.normalized_result.get("road_names")
+                    if isinstance(road_names, list):
+                        normalized_road_names = self._deduplicate_strings(road_names)
+                        if normalized_road_names:
+                            return normalized_road_names
+
+        fallback_road = str(
             resolved_arguments.arguments.get("road")
             or resolved_arguments.arguments.get("target")
             or resolved_arguments.arguments.get("query")
             or ""
-        )
-        return {"road": road}
+        ).strip()
+        return [fallback_road] if fallback_road else []
 
     @staticmethod
     def _parse_tool_output(tool_output: str) -> list[dict[str, object]]:
@@ -98,25 +143,36 @@ class TrafficNode:
     @staticmethod
     def _build_normalized_result(
         *,
-        resolved_arguments: ResolvedArguments,
+        query_arguments: dict[str, object],
         response_payload: list[dict[str, object]],
     ) -> dict[str, object]:
-        """提取路况查询结果中的关键摘要字段。"""
+        """提取路况查询结果中的完整业务字段。"""
 
         first_road = response_payload[0] if response_payload else {}
-        congestion_count = len(first_road.get("congestionInfoList", []))
-        traffic_control_count = len(first_road.get("trafficControlList", []))
-        service_area_count = len(first_road.get("serviceAreaList", []))
-        exit_count = len(first_road.get("exitInfoList", []))
+        matched_road_names = TrafficNode._deduplicate_strings(
+            str(item.get("roadName") or "").strip() for item in response_payload
+        )
+        congestion_items = TrafficNode._extract_congestion_items(response_payload)
+        traffic_control_items = TrafficNode._extract_traffic_control_items(response_payload)
+        service_area_items = TrafficNode._extract_service_area_items(response_payload)
+        exit_items = TrafficNode._extract_exit_items(response_payload)
+        queried_roads = query_arguments.get("queried_roads")
         return {
-            "road": resolved_arguments.arguments.get("road")
-            or resolved_arguments.arguments.get("target"),
+            "road": query_arguments.get("road"),
+            "queried_roads": queried_roads if isinstance(queried_roads, list) else [],
+            "matched_road_names": matched_road_names,
             "road_name": first_road.get("roadName"),
             "result_count": len(response_payload),
-            "congestion_count": congestion_count,
-            "traffic_control_count": traffic_control_count,
-            "service_area_count": service_area_count,
-            "exit_count": exit_count,
+            "has_congestion": bool(congestion_items),
+            "congestion_count": len(congestion_items),
+            "congestion_items": congestion_items,
+            "has_control": bool(traffic_control_items),
+            "traffic_control_count": len(traffic_control_items),
+            "traffic_control_items": traffic_control_items,
+            "service_area_count": len(service_area_items),
+            "service_area_items": service_area_items,
+            "exit_count": len(exit_items),
+            "exit_items": exit_items,
         }
 
     @staticmethod
@@ -128,7 +184,7 @@ class TrafficNode:
     @staticmethod
     def _build_traffic_context(
         *,
-        resolved_arguments: ResolvedArguments,
+        query_arguments: dict[str, object],
         response_payload: list[dict[str, object]],
     ) -> str:
         """把结构化参数和接口返回转为路况类 system 上下文。"""
@@ -138,7 +194,7 @@ class TrafficNode:
                 TRAFFIC_CONTEXT_PROMPT_PREFIX,
                 dumps(
                     {
-                        "query_arguments": dict(resolved_arguments.arguments),
+                        "query_arguments": dict(query_arguments),
                         "api_result": response_payload,
                     },
                     ensure_ascii=False,
@@ -146,3 +202,106 @@ class TrafficNode:
                 ),
             ]
         )
+
+    @staticmethod
+    def _extract_congestion_items(response_payload: list[dict[str, object]]) -> list[dict[str, object]]:
+        congestion_items: list[dict[str, object]] = []
+        for road in response_payload:
+            road_name = str(road.get("roadName") or "").strip()
+            congestion_list = road.get("congestionInfoList", [])
+            if not isinstance(congestion_list, list):
+                continue
+            for item in congestion_list:
+                if not isinstance(item, dict):
+                    continue
+                congestion_items.append(
+                    {
+                        "road_name": road_name,
+                        "congestion_id": item.get("id"),
+                        "description": item.get("description") or item.get("content"),
+                        "status": item.get("status"),
+                        "start_time": item.get("startTime"),
+                        "end_time": item.get("endTime"),
+                    }
+                )
+        return congestion_items
+
+    @staticmethod
+    def _extract_traffic_control_items(
+        response_payload: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        traffic_control_items: list[dict[str, object]] = []
+        for road in response_payload:
+            road_name = str(road.get("roadName") or "").strip()
+            control_list = road.get("trafficControlList", [])
+            if not isinstance(control_list, list):
+                continue
+            for item in control_list:
+                if not isinstance(item, dict):
+                    continue
+                traffic_control_items.append(
+                    {
+                        "road_name": road_name,
+                        "control_id": item.get("id"),
+                        "control_name": item.get("name") or item.get("controlName"),
+                        "control_type": item.get("type") or item.get("controlType"),
+                        "description": item.get("description") or item.get("content"),
+                        "start_time": item.get("startTime"),
+                        "end_time": item.get("endTime"),
+                    }
+                )
+        return traffic_control_items
+
+    @staticmethod
+    def _extract_service_area_items(response_payload: list[dict[str, object]]) -> list[dict[str, object]]:
+        service_area_items: list[dict[str, object]] = []
+        for road in response_payload:
+            road_name = str(road.get("roadName") or "").strip()
+            service_area_list = road.get("serviceAreaList", [])
+            if not isinstance(service_area_list, list):
+                continue
+            for item in service_area_list:
+                if not isinstance(item, dict):
+                    continue
+                service_area_items.append(
+                    {
+                        "road_name": road_name,
+                        "service_name": item.get("serviceName"),
+                        "status_tag": item.get("statusTag"),
+                        "description": item.get("description") or item.get("content"),
+                    }
+                )
+        return service_area_items
+
+    @staticmethod
+    def _extract_exit_items(response_payload: list[dict[str, object]]) -> list[dict[str, object]]:
+        exit_items: list[dict[str, object]] = []
+        for road in response_payload:
+            road_name = str(road.get("roadName") or "").strip()
+            exit_info_list = road.get("exitInfoList", [])
+            if not isinstance(exit_info_list, list):
+                continue
+            for item in exit_info_list:
+                if not isinstance(item, dict):
+                    continue
+                exit_items.append(
+                    {
+                        "road_name": road_name,
+                        "toll_name": item.get("tollName"),
+                        "exit_name": item.get("exitName"),
+                        "description": item.get("description") or item.get("content"),
+                    }
+                )
+        return exit_items
+
+    @staticmethod
+    def _deduplicate_strings(values: Iterable[object]) -> list[str]:
+        seen: set[str] = set()
+        ordered_values: list[str] = []
+        for raw_value in values:
+            value = str(raw_value).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            ordered_values.append(value)
+        return ordered_values
