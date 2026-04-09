@@ -178,6 +178,10 @@ def test_openai_compat_chat_completions_returns_reasoning_content(
     )
 
     assert response.status_code == 200
+    assert (
+        response.json()["choices"][0]["message"]["content"]
+        == "<think>这是模型的思考过程</think>最终回答"
+    )
     assert response.json()["choices"][0]["message"]["reasoning_content"] == "这是模型的思考过程"
 
 
@@ -239,7 +243,8 @@ def test_openai_compat_chat_completions_streams_reasoning_content(
 
     assert response.status_code == 200
     assert '"reasoning_content": "第一段思考"' in response_body
-    assert '"content": "最终答案"' in response_body
+    assert '"content": "<think>第一段思考"' in response_body
+    assert '"content": "</think>最终答案"' in response_body
     assert "[DONE]" in response_body
 
 

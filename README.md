@@ -170,7 +170,9 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
 
 - 非流式请求如果希望返回思考内容，请显式传 `enable_thinking: true`
 - 非流式响应会在 `choices[0].message.reasoning_content` 返回思考内容
+- 非流式响应还会把思考内容额外拼进 `choices[0].message.content`，格式为 `<think>...</think>最终答案`
 - 流式响应会在 SSE 的 `choices[0].delta.reasoning_content` 返回思考增量
+- 流式响应也会在 `choices[0].delta.content` 中同步输出可直接渲染的 `<think>` 包裹内容
 - 如果上游模型只返回思考内容、不返回最终答案，则 `content` 可能为空，但 `reasoning_content` 仍可能有值
 
 非流式请求示例：
@@ -201,7 +203,7 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "1+1 等于 2。",
+        "content": "<think>先识别这是一个基础加法问题，然后直接计算 1+1。</think>1+1 等于 2。",
         "reasoning_content": "先识别这是一个基础加法问题，然后直接计算 1+1。"
       },
       "finish_reason": "stop"
@@ -218,9 +220,9 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
 流式 SSE 片段示例：
 
 ```text
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"先判断题目是加法。"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>先判断题目是加法。","reasoning_content":"先判断题目是加法。"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"1+1 等于 2。"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"</think>1+1 等于 2。"},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 

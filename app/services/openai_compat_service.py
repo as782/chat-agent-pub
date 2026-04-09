@@ -55,6 +55,7 @@ class _OpenAIStreamChunkBuilder:
     resolved_model_name: str = ""
     has_emitted_finish: bool = False
     saw_tool_call_chunk: bool = False
+    reasoning_tag_open: bool = False
 
     def __post_init__(self) -> None:
         self.response_id = f"chatcmpl-{uuid4().hex}"
@@ -90,11 +91,21 @@ class _OpenAIStreamChunkBuilder:
         if isinstance(additional_kwargs.get("reasoning_content"), str):
             reasoning_delta = additional_kwargs["reasoning_content"]
 
-        if content_delta or reasoning_delta or chunk.tool_call_chunks:
+        finish_reason = response_metadata.get("finish_reason")
+        if finish_reason is None and chunk.tool_calls:
+             finish_reason = "tool_calls"
+
+        rendered_content_delta = self._build_rendered_content_delta(
+            reasoning_delta=reasoning_delta,
+            content_delta=content_delta,
+            should_close_reasoning=bool(chunk.tool_call_chunks or finish_reason),
+        )
+
+        if rendered_content_delta or reasoning_delta or chunk.tool_call_chunks:
             delta: dict[str, object] = {"role": role}
 
-            if content_delta:
-                delta["content"] = content_delta
+            if rendered_content_delta:
+                delta["content"] = rendered_content_delta
             if reasoning_delta:
                 delta["reasoning_content"] = reasoning_delta
 
@@ -123,10 +134,6 @@ class _OpenAIStreamChunkBuilder:
                 )
             )
 
-        finish_reason = response_metadata.get("finish_reason")
-        if finish_reason is None and chunk.tool_calls:
-             finish_reason = "tool_calls"
-
         if include_finish_reason and finish_reason:
             payloads.append(self._build_finish_payload(finish_reason))
 
@@ -136,6 +143,9 @@ class _OpenAIStreamChunkBuilder:
         """在流结束时补齐结束事件和 [DONE]。"""
 
         payloads: list[str] = []
+        if self.reasoning_tag_open:
+            payloads.append(self._build_content_payload("</think>"))
+            self.reasoning_tag_open = False
         if not self.has_emitted_finish:
             payloads.append(
                 self._build_finish_payload(
@@ -164,6 +174,54 @@ class _OpenAIStreamChunkBuilder:
                 ],
             }
         )
+
+    def _build_content_payload(self, content: str, *, role: str = "assistant") -> str:
+        """鏋勯€犲彧鍖呭惈 content 澧為噺鐨?chunk銆?"""
+
+        return self._format_payload(
+            {
+                "id": self.response_id,
+                "object": "chat.completion.chunk",
+                "created": self.created_at,
+                "model": self.resolved_model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": role,
+                            "content": content,
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+
+    def _build_rendered_content_delta(
+        self,
+        *,
+        reasoning_delta: str,
+        content_delta: str,
+        should_close_reasoning: bool,
+    ) -> str:
+        """灏?reasoning_content 鍚屾鎶樺彔鍒?content 鍙鍖栧閲忎腑銆?"""
+
+        rendered_parts: list[str] = []
+
+        if reasoning_delta:
+            if not self.reasoning_tag_open:
+                rendered_parts.append("<think>")
+                self.reasoning_tag_open = True
+            rendered_parts.append(reasoning_delta)
+
+        if self.reasoning_tag_open and (content_delta or should_close_reasoning):
+            rendered_parts.append("</think>")
+            self.reasoning_tag_open = False
+
+        if content_delta:
+            rendered_parts.append(content_delta)
+
+        return "".join(rendered_parts)
 
     @staticmethod
     def _build_stream_tool_call_payload(
@@ -221,6 +279,10 @@ class OpenAICompatService:
         content = getattr(completion_result, "content", "")
         tool_calls = getattr(completion_result, "tool_calls", [])
         reasoning_content = self._extract_reasoning_content(completion_result)
+        rendered_content = self._render_content_with_reasoning(
+            content=str(content) or "",
+            reasoning_content=reasoning_content,
+        )
         
         response_metadata = getattr(completion_result, "response_metadata", {})
         usage_metadata = getattr(completion_result, "usage_metadata", {})
@@ -258,7 +320,7 @@ class OpenAICompatService:
                 OpenAIChatCompletionChoice(
                     index=0,
                     message=OpenAIChatCompletionAssistantMessage(
-                        content=str(content) or None,
+                        content=rendered_content or None,
                         reasoning_content=reasoning_content,
                         tool_calls=(
                             self._build_openai_tool_calls(
@@ -418,6 +480,15 @@ class OpenAICompatService:
         if isinstance(payload, list):
             return [OpenAICompatService._remove_none_values(item) for item in payload]
         return payload
+
+    @staticmethod
+    def _render_content_with_reasoning(content: str, reasoning_content: str | None) -> str:
+        """Render reasoning text into assistant content using think tags."""
+
+        normalized_content = content or ""
+        if not reasoning_content:
+            return normalized_content
+        return f"<think>{reasoning_content}</think>{normalized_content}"
 
     @staticmethod
     def _extract_reasoning_content(completion_result: Any) -> str | None:

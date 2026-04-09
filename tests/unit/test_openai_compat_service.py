@@ -14,35 +14,75 @@ def test_build_chat_completion_response_includes_reasoning_content() -> None:
     response = service.build_chat_completion_response(
         ChatTurnResult(
             session_id="session-001",
-            content="最终回答",
+            content="final answer",
             model_name="qwen-compatible-model",
             prompt_tokens=12,
             completion_tokens=8,
             total_tokens=20,
             finish_reason="stop",
             route="answer",
-            reasoning_content="这是模型的思考过程",
+            reasoning_content="thinking trace",
         )
     )
 
-    assert response.choices[0].message.content == "最终回答"
-    assert response.choices[0].message.reasoning_content == "这是模型的思考过程"
+    assert response.choices[0].message.content == "<think>thinking trace</think>final answer"
+    assert response.choices[0].message.reasoning_content == "thinking trace"
 
 
-def test_stream_chunk_builder_includes_reasoning_content_delta() -> None:
+def test_stream_chunk_builder_includes_reasoning_content_delta_and_think_wrapper() -> None:
     service = OpenAICompatService()
     builder = service.create_stream_chunk_builder(default_model_name="test-model")
 
     payloads = builder.consume_chunk(
         AIMessageChunk(
             content="",
-            additional_kwargs={"reasoning_content": "第一段思考"},
+            additional_kwargs={"reasoning_content": "first thought"},
             response_metadata={"model_name": "test-model"},
         )
     )
 
     assert len(payloads) == 1
-    assert '"reasoning_content": "第一段思考"' in payloads[0]
+    assert '"reasoning_content": "first thought"' in payloads[0]
+    assert '"content": "<think>first thought"' in payloads[0]
+
+
+def test_stream_chunk_builder_closes_think_tag_before_answer_content() -> None:
+    service = OpenAICompatService()
+    builder = service.create_stream_chunk_builder(default_model_name="test-model")
+
+    builder.consume_chunk(
+        AIMessageChunk(
+            content="",
+            additional_kwargs={"reasoning_content": "first thought"},
+            response_metadata={"model_name": "test-model"},
+        )
+    )
+    payloads = builder.consume_chunk(
+        AIMessageChunk(
+            content="final answer",
+            response_metadata={"model_name": "test-model"},
+        )
+    )
+
+    assert len(payloads) == 1
+    assert '"content": "</think>final answer"' in payloads[0]
+
+
+def test_stream_chunk_builder_closes_think_tag_before_finish_when_reasoning_only() -> None:
+    service = OpenAICompatService()
+    builder = service.create_stream_chunk_builder(default_model_name="test-model")
+
+    builder.consume_chunk(
+        AIMessageChunk(
+            content="",
+            additional_kwargs={"reasoning_content": "first thought"},
+            response_metadata={"model_name": "test-model"},
+        )
+    )
+    payloads = builder.finalize()
+
+    assert '"content": "</think>"' in payloads[0]
+    assert '"finish_reason": "stop"' in payloads[1]
 
 
 def test_build_chat_completion_response_reads_reasoning_content_from_ai_message() -> None:
@@ -50,11 +90,12 @@ def test_build_chat_completion_response_reads_reasoning_content_from_ai_message(
 
     response = service.build_chat_completion_response(
         AIMessage(
-            content="最终回答",
-            additional_kwargs={"reasoning_content": "模型思考"},
+            content="final answer",
+            additional_kwargs={"reasoning_content": "model thinking"},
             response_metadata={"model_name": "qwen-compatible-model", "finish_reason": "stop"},
             usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
         )
     )
 
-    assert response.choices[0].message.reasoning_content == "模型思考"
+    assert response.choices[0].message.content == "<think>model thinking</think>final answer"
+    assert response.choices[0].message.reasoning_content == "model thinking"
