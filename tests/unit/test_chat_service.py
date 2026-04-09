@@ -97,7 +97,11 @@ def _build_chat_request() -> OpenAIChatCompletionRequest:
     )
 
 
-def _build_turn_result(*, finish_reason: str = "stop") -> ChatTurnResult:
+def _build_turn_result(
+    *,
+    finish_reason: str = "stop",
+    reasoning_content: str | None = None,
+) -> ChatTurnResult:
     """构造稳定的最终结果。"""
 
     return ChatTurnResult(
@@ -109,6 +113,7 @@ def _build_turn_result(*, finish_reason: str = "stop") -> ChatTurnResult:
         total_tokens=20,
         finish_reason=finish_reason,
         route="answer",
+        reasoning_content=reasoning_content,
     )
 
 

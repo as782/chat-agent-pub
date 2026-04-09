@@ -47,6 +47,49 @@ LOGGER = get_logger(__name__)
 LlmBindableTool = BaseTool | dict[str, Any]
 
 
+def _patch_langchain_openai_reasoning_content_support() -> None:
+    """Preserve third-party OpenAI-compatible reasoning fields in LangChain messages."""
+
+    try:
+        import langchain_openai.chat_models.base as langchain_openai_base
+    except Exception:  # pragma: no cover - optional dependency import guard
+        return
+
+    if getattr(langchain_openai_base, "_chat_agent_reasoning_content_patched", False):
+        return
+
+    original_convert_dict_to_message = langchain_openai_base._convert_dict_to_message
+    original_convert_delta_to_message_chunk = (
+        langchain_openai_base._convert_delta_to_message_chunk
+    )
+
+    def patched_convert_dict_to_message(_dict: dict[str, Any]) -> BaseMessage:
+        message = original_convert_dict_to_message(_dict)
+        reasoning_content = _dict.get("reasoning_content")
+        if isinstance(message, AIMessage) and isinstance(reasoning_content, str):
+            message.additional_kwargs["reasoning_content"] = reasoning_content
+        return message
+
+    def patched_convert_delta_to_message_chunk(
+        _dict: dict[str, Any],
+        default_class: type[BaseMessage],
+    ) -> BaseMessage:
+        message_chunk = original_convert_delta_to_message_chunk(_dict, default_class)
+        reasoning_content = _dict.get("reasoning_content")
+        if isinstance(message_chunk, AIMessageChunk) and isinstance(reasoning_content, str):
+            message_chunk.additional_kwargs["reasoning_content"] = reasoning_content
+        return message_chunk
+
+    langchain_openai_base._convert_dict_to_message = patched_convert_dict_to_message
+    langchain_openai_base._convert_delta_to_message_chunk = (
+        patched_convert_delta_to_message_chunk
+    )
+    langchain_openai_base._chat_agent_reasoning_content_patched = True
+
+
+_patch_langchain_openai_reasoning_content_support()
+
+
 @dataclass(slots=True)
 class LlmToolCall:
     """大模型返回的工具调用。"""

@@ -137,6 +137,10 @@ class OpenAIChatCompletionAssistantMessage(BaseModel):
 
     role: Literal["assistant"] = Field(default="assistant", description="Assistant role.")
     content: str | None = Field(default=None, description="Assistant response content.")
+    reasoning_content: str | None = Field(
+        default=None,
+        description="Optional reasoning/thinking content returned by compatible models.",
+    )
     tool_calls: list[OpenAIChatCompletionToolCall] | None = Field(
         default=None,
         description="Tool calls returned by the assistant.",

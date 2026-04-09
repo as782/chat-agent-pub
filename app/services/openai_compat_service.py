@@ -78,6 +78,7 @@ class _OpenAIStreamChunkBuilder:
         payloads: list[str] = []
         # 提取内容增量
         content_delta = ""
+        reasoning_delta = ""
         if isinstance(chunk.content, str):
             content_delta = chunk.content
         elif isinstance(chunk.content, list):
@@ -85,11 +86,17 @@ class _OpenAIStreamChunkBuilder:
                 if isinstance(part, dict) and part.get("type") == "text":
                     content_delta += part.get("text", "")
 
-        if content_delta or chunk.tool_call_chunks:
+        additional_kwargs = chunk.additional_kwargs or {}
+        if isinstance(additional_kwargs.get("reasoning_content"), str):
+            reasoning_delta = additional_kwargs["reasoning_content"]
+
+        if content_delta or reasoning_delta or chunk.tool_call_chunks:
             delta: dict[str, object] = {"role": role}
 
             if content_delta:
                 delta["content"] = content_delta
+            if reasoning_delta:
+                delta["reasoning_content"] = reasoning_delta
 
             if chunk.tool_call_chunks:
                 self.saw_tool_call_chunk = True
@@ -213,6 +220,7 @@ class OpenAICompatService:
         # 兼容 AIMessage (native LangChain) 和 ChatTurnResult (internal)
         content = getattr(completion_result, "content", "")
         tool_calls = getattr(completion_result, "tool_calls", [])
+        reasoning_content = self._extract_reasoning_content(completion_result)
         
         response_metadata = getattr(completion_result, "response_metadata", {})
         usage_metadata = getattr(completion_result, "usage_metadata", {})
@@ -251,6 +259,7 @@ class OpenAICompatService:
                     index=0,
                     message=OpenAIChatCompletionAssistantMessage(
                         content=str(content) or None,
+                        reasoning_content=reasoning_content,
                         tool_calls=(
                             self._build_openai_tool_calls(
                                 LlmClient.extract_llm_tool_calls(completion_result)
@@ -409,3 +418,18 @@ class OpenAICompatService:
         if isinstance(payload, list):
             return [OpenAICompatService._remove_none_values(item) for item in payload]
         return payload
+
+    @staticmethod
+    def _extract_reasoning_content(completion_result: Any) -> str | None:
+        """Extract reasoning/thinking text from normalized results or LangChain messages."""
+
+        direct_reasoning = getattr(completion_result, "reasoning_content", None)
+        if isinstance(direct_reasoning, str):
+            return direct_reasoning or None
+
+        additional_kwargs = getattr(completion_result, "additional_kwargs", None) or {}
+        reasoning_content = additional_kwargs.get("reasoning_content")
+        if isinstance(reasoning_content, str):
+            return reasoning_content or None
+
+        return None

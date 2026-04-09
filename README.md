@@ -164,6 +164,74 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
 
 如果使用 Qwen3 一类兼容模型，项目会在非流式场景下自动补 `enable_thinking=false`，避免常见兼容网关报错。
 
+## Thinking / Reasoning Output
+
+对于支持 thinking 模式的 OpenAI 兼容模型，例如部分 Qwen3 / QwQ 风格模型：
+
+- 非流式请求如果希望返回思考内容，请显式传 `enable_thinking: true`
+- 非流式响应会在 `choices[0].message.reasoning_content` 返回思考内容
+- 流式响应会在 SSE 的 `choices[0].delta.reasoning_content` 返回思考增量
+- 如果上游模型只返回思考内容、不返回最终答案，则 `content` 可能为空，但 `reasoning_content` 仍可能有值
+
+非流式请求示例：
+
+```json
+{
+  "model": "qwen3.5-35ba3b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "请先思考，再回答 1+1 等于几"
+    }
+  ],
+  "enable_thinking": true
+}
+```
+
+非流式响应示例：
+
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "qwen3.5-35ba3b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "1+1 等于 2。",
+        "reasoning_content": "先识别这是一个基础加法问题，然后直接计算 1+1。"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 12,
+    "total_tokens": 22
+  }
+}
+```
+
+流式 SSE 片段示例：
+
+```text
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"先判断题目是加法。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"1+1 等于 2。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+说明：
+
+- 当前项目已经对 LangChain 的 `ChatOpenAI` 做了兼容补丁，用于保留第三方 OpenAI 兼容接口返回的 `reasoning_content`
+- 如果未显式传 `enable_thinking: true`，且模型名匹配 `qwen3*`，非流式调用仍可能被自动降级为 `enable_thinking=false`
+
 ## MCP 配置
 
 项目当前支持外部标准 MCP 服务配置，支持：

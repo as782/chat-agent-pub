@@ -120,6 +120,7 @@ class ChatTurnResult:
     total_tokens: int
     finish_reason: str
     route: str
+    reasoning_content: str | None = None
     tool_calls: list[ExecutedToolCall] = field(default_factory=list)
     used_session_memory: bool = False
 

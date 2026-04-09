@@ -456,6 +456,7 @@ class AnswerNode:
                 or ("tool_calls" if completion_result.tool_calls else "stop")
             ),
             route="answer",
+            reasoning_content=self._extract_reasoning_text(completion_result),
             tool_calls=list(executed_tool_calls),
             used_session_memory=used_session_memory,
         )
@@ -475,6 +476,16 @@ class AnswerNode:
                     text_parts.append(str(part))
             return "".join(text_parts)
         return str(message.content)
+
+    @staticmethod
+    def _extract_reasoning_text(message: AIMessage) -> str | None:
+        """Extract provider-specific reasoning text from additional kwargs when present."""
+
+        additional_kwargs = getattr(message, "additional_kwargs", None) or {}
+        reasoning_content = additional_kwargs.get("reasoning_content")
+        if isinstance(reasoning_content, str):
+            return reasoning_content or None
+        return None
 
     @staticmethod
     def _serialize_tool_calls(message: AIMessage) -> list[dict[str, object]]:
