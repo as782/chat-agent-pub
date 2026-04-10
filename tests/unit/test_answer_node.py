@@ -54,6 +54,43 @@ def test_answer_node_resolves_prompt_name_from_category() -> None:
     )
 
 
+def test_answer_node_prefers_traffic_prompt_for_route_congestion_questions() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "杭州到金华堵不堵",
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+            "traffic_1": ExecutorResult(
+                step_id="traffic_1",
+                executor="traffic",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "TRAFFIC_SUMMARY_PROMPT"
+
+
+def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "杭州到金华怎么走",
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "ROUTE_SUMMARY_PROMPT"
+
+
 @pytest.mark.asyncio
 async def test_answer_node_reuses_tool_completion_result_without_new_llm_call(
     tmp_path: Path,

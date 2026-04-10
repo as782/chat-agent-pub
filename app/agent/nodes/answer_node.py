@@ -47,6 +47,57 @@ _PROMPT_NAME_BY_CATEGORY = {
     "general": "GENERAL_ANSWER_PROMPT",
 }
 
+_TRAFFIC_KEYWORDS = (
+    "堵不堵",
+    "拥堵",
+    "路况",
+    "堵吗",
+    "缓行",
+    "施工",
+    "事故",
+    "封闭",
+    "管制",
+    "通行",
+    "是否畅通",
+    "是否拥堵",
+    "会不会堵",
+)
+_SERVICE_KEYWORDS = (
+    "服务区",
+    "充电桩",
+    "充电",
+    "加油",
+    "休息区",
+    "配套",
+)
+_POLICY_KEYWORDS = (
+    "政策",
+    "规则",
+    "标准",
+    "制度",
+    "口径",
+    "收费",
+    "绿通",
+    "免费",
+)
+_ROUTE_KEYWORDS = (
+    "怎么走",
+    "如何走",
+    "路线",
+    "路线路",
+    "导航",
+    "出行方案",
+)
+_REPORT_KEYWORDS = (
+    "报表",
+    "汇总",
+    "对比",
+    "全省",
+    "全网",
+    "路网",
+    "总体情况",
+)
+
 
 class AnswerNode:
     """LangGraph 回答节点。"""
@@ -508,7 +559,7 @@ class AnswerNode:
     def _resolve_answer_instruction(state: AgentState) -> str:
         """根据主分类选择最终回答阶段的提示词。"""
 
-        category = state.get("primary_category", "general")
+        category = AnswerNode._resolve_answer_topic(state)
         if category == "policy":
             return POLICY_SUMMARY_PROMPT
         if category == "route_planning":
@@ -523,5 +574,55 @@ class AnswerNode:
 
     @staticmethod
     def _resolve_answer_prompt_name(state: AgentState) -> str:
-        category = str(state.get("primary_category", "general"))
+        category = AnswerNode._resolve_answer_topic(state)
         return _PROMPT_NAME_BY_CATEGORY.get(category, "GENERAL_ANSWER_PROMPT")
+
+    @staticmethod
+    def _resolve_answer_topic(state: AgentState) -> str:
+        """结合原始问题和已完成执行结果，选择最合适的回答模板。"""
+
+        latest_user_message = str(state.get("latest_user_message", ""))
+        normalized_message = latest_user_message.strip()
+
+        step_results = state.get("step_results", {})
+        executed_executors: set[str] = set()
+        if isinstance(step_results, dict):
+            for result in step_results.values():
+                if isinstance(result, ExecutorResult):
+                    executed_executors.add(result.executor)
+
+        if "report" in executed_executors or AnswerNode._looks_like_report_query(normalized_message):
+            return "network_report"
+        if "traffic" in executed_executors or AnswerNode._looks_like_traffic_query(normalized_message):
+            return "traffic_status"
+        if "service" in executed_executors or AnswerNode._looks_like_service_query(normalized_message):
+            return "service_area"
+        if "rag" in executed_executors or AnswerNode._looks_like_policy_query(normalized_message):
+            return "policy"
+        if "route" in executed_executors or AnswerNode._looks_like_route_query(normalized_message):
+            return "route_planning"
+
+        category = str(state.get("primary_category", "general"))
+        if category in _PROMPT_NAME_BY_CATEGORY:
+            return category
+        return "general"
+
+    @staticmethod
+    def _looks_like_traffic_query(message: str) -> bool:
+        return any(keyword in message for keyword in _TRAFFIC_KEYWORDS)
+
+    @staticmethod
+    def _looks_like_service_query(message: str) -> bool:
+        return any(keyword in message for keyword in _SERVICE_KEYWORDS)
+
+    @staticmethod
+    def _looks_like_policy_query(message: str) -> bool:
+        return any(keyword in message for keyword in _POLICY_KEYWORDS)
+
+    @staticmethod
+    def _looks_like_route_query(message: str) -> bool:
+        return any(keyword in message for keyword in _ROUTE_KEYWORDS)
+
+    @staticmethod
+    def _looks_like_report_query(message: str) -> bool:
+        return any(keyword in message for keyword in _REPORT_KEYWORDS)
