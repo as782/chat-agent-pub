@@ -140,11 +140,11 @@ def test_openai_compat_chat_completions_streams_response(app_client: TestClient)
     assert "[DONE]" in response_body
 
 
-def test_openai_compat_chat_completions_returns_reasoning_content(
+def test_openai_compat_chat_completions_wraps_reasoning_content_in_content(
     app_client: TestClient,
     monkeypatch,
 ) -> None:
-    """Reasoning content should be exposed on non-stream OpenAI-compatible responses."""
+    """Reasoning content should be wrapped into content on non-stream OpenAI-compatible responses."""
 
     from app.agent.state import ChatTurnResult
 
@@ -173,23 +173,23 @@ def test_openai_compat_chat_completions_returns_reasoning_content(
         "/v1/chat/completions",
         json={
             "model": "qwen-compatible-model",
-            "messages": [{"role": "user", "content": "你好"}],
+            "messages": [{"role": "user", "content": "???"}],
         },
     )
 
     assert response.status_code == 200
     assert (
         response.json()["choices"][0]["message"]["content"]
-        == "<think>这是模型的思考过程</think>最终回答"
+        == "<think>???????????????</think>???????"
     )
-    assert response.json()["choices"][0]["message"]["reasoning_content"] == "这是模型的思考过程"
+    assert "reasoning_content" not in response.json()["choices"][0]["message"]
 
 
-def test_openai_compat_chat_completions_streams_reasoning_content(
+def test_openai_compat_chat_completions_streams_wrapped_reasoning_content(
     app_client: TestClient,
     monkeypatch,
 ) -> None:
-    """Reasoning content should be exposed in streaming OpenAI-compatible deltas."""
+    """Reasoning content should be wrapped into streaming OpenAI-compatible deltas."""
 
     def fake_stream_chat_completion(
         self: object,
@@ -207,11 +207,11 @@ def test_openai_compat_chat_completions_streams_reasoning_content(
         async def iterator() -> AsyncIterator[AIMessageChunk]:
             yield AIMessageChunk(
                 content="",
-                additional_kwargs={"reasoning_content": "第一段思考"},
+                additional_kwargs={"reasoning_content": "?????????"},
                 response_metadata={"model_name": model_name or "test-model"},
             )
             yield AIMessageChunk(
-                content="最终答案",
+                content="???????",
                 response_metadata={"model_name": model_name or "test-model"},
             )
             yield AIMessageChunk(
@@ -235,18 +235,17 @@ def test_openai_compat_chat_completions_streams_reasoning_content(
         "/v1/chat/completions",
         json={
             "model": "qwen-compatible-model",
-            "messages": [{"role": "user", "content": "你好"}],
+            "messages": [{"role": "user", "content": "???"}],
             "stream": True,
         },
     ) as response:
         response_body = response.read().decode("utf-8")
 
     assert response.status_code == 200
-    assert '"reasoning_content": "第一段思考"' in response_body
-    assert '"content": "<think>第一段思考"' in response_body
-    assert '"content": "</think>最终答案"' in response_body
+    assert '"content": "<think>?????????' in response_body
+    assert '"content": "</think>???????' in response_body
+    assert '"reasoning_content"' not in response_body
     assert "[DONE]" in response_body
-
 
 def test_openai_compat_chat_completions_rejects_unsupported_tool(app_client: TestClient) -> None:
     """验证兼容接口会拒绝未注册的工具名称。"""

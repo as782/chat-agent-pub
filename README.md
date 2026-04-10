@@ -166,16 +166,15 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
 
 ## Thinking / Reasoning Output
 
-对于支持 thinking 模式的 OpenAI 兼容模型，例如部分 Qwen3 / QwQ 风格模型：
+For OpenAI-compatible models that support thinking mode, such as some Qwen3 / QwQ-style models:
 
-- 非流式请求如果希望返回思考内容，请显式传 `enable_thinking: true`
-- 非流式响应会在 `choices[0].message.reasoning_content` 返回思考内容
-- 非流式响应还会把思考内容额外拼进 `choices[0].message.content`，格式为 `<think>...</think>最终答案`
-- 流式响应会在 SSE 的 `choices[0].delta.reasoning_content` 返回思考增量
-- 流式响应也会在 `choices[0].delta.content` 中同步输出可直接渲染的 `<think>` 包裹内容
-- 如果上游模型只返回思考内容、不返回最终答案，则 `content` 可能为空，但 `reasoning_content` 仍可能有值
+- For non-streaming requests, send `enable_thinking: true` if you want the model to return thinking content
+- Non-streaming responses now keep the thinking content inside `choices[0].message.content` only, wrapped as `<think>...</think>final answer`
+- Streaming responses now keep the thinking content inside `choices[0].delta.content` only, wrapped as `<think>` tags
+- `reasoning_content` is no longer exposed to the frontend as a response field
+- If the upstream model returns only thinking content and no final answer, `content` may contain only `<think>...</think>`
 
-非流式请求示例：
+Non-streaming request example:
 
 ```json
 {
@@ -183,14 +182,14 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
   "messages": [
     {
       "role": "user",
-      "content": "请先思考，再回答 1+1 等于几"
+      "content": "Please think first, then answer what 1+1 equals"
     }
   ],
   "enable_thinking": true
 }
 ```
 
-非流式响应示例：
+Non-streaming response example:
 
 ```json
 {
@@ -203,8 +202,7 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "<think>先识别这是一个基础加法问题，然后直接计算 1+1。</think>1+1 等于 2。",
-        "reasoning_content": "先识别这是一个基础加法问题，然后直接计算 1+1。"
+        "content": "<think>First identify this as a basic addition problem, then compute 1+1.</think>1+1 equals 2."
       },
       "finish_reason": "stop"
     }
@@ -217,22 +215,22 @@ MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/ss
 }
 ```
 
-流式 SSE 片段示例：
+Streaming SSE example:
 
 ```text
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>先判断题目是加法。","reasoning_content":"先判断题目是加法。"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>First decide it is an addition problem."},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"</think>1+1 等于 2。"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{"role":"assistant","content":"</think>1+1 equals 2."},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1710000000,"model":"qwen3.5-35ba3b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 ```
 
-说明：
+Notes:
 
-- 当前项目已经对 LangChain 的 `ChatOpenAI` 做了兼容补丁，用于保留第三方 OpenAI 兼容接口返回的 `reasoning_content`
-- 如果未显式传 `enable_thinking: true`，且模型名匹配 `qwen3*`，非流式调用仍可能被自动降级为 `enable_thinking=false`
+- The project still patches LangChain `ChatOpenAI` so third-party OpenAI-compatible responses can keep the reasoning text internally
+- If `enable_thinking: true` is not set and the model name matches `qwen3*`, non-streaming calls may still be downgraded to `enable_thinking=false`
 
 ## MCP 配置
 

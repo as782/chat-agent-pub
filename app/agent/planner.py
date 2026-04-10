@@ -796,18 +796,3 @@ class PlannerService:
         """Detect origin-destination style queries that need route context."""
 
         return _OD_ROUTE_PATTERN.search(latest_user_message.strip()) is not None
-
-    @staticmethod
-    def _should_prefer_fallback_steps(
-        *,
-        steps: list[ExecutionStep],
-        fallback_steps: list[ExecutionStep],
-    ) -> bool:
-        """Prefer fallback steps when LLM output misses required worker types."""
-
-        planned_executors = {step.executor for step in steps if step.executor != "answer"}
-        fallback_executors = {step.executor for step in fallback_steps if step.executor != "answer"}
-        if not fallback_executors:
-            return False
-        return not fallback_executors.issubset(planned_executors)
-

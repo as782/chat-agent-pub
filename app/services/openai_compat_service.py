@@ -106,8 +106,6 @@ class _OpenAIStreamChunkBuilder:
 
             if rendered_content_delta:
                 delta["content"] = rendered_content_delta
-            if reasoning_delta:
-                delta["reasoning_content"] = reasoning_delta
 
             if chunk.tool_call_chunks:
                 self.saw_tool_call_chunk = True
@@ -321,7 +319,6 @@ class OpenAICompatService:
                     index=0,
                     message=OpenAIChatCompletionAssistantMessage(
                         content=rendered_content or None,
-                        reasoning_content=reasoning_content,
                         tool_calls=(
                             self._build_openai_tool_calls(
                                 LlmClient.extract_llm_tool_calls(completion_result)

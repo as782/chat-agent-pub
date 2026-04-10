@@ -8,7 +8,7 @@ from app.agent.state import ChatTurnResult
 from app.services.openai_compat_service import OpenAICompatService
 
 
-def test_build_chat_completion_response_includes_reasoning_content() -> None:
+def test_build_chat_completion_response_wraps_reasoning_content_in_think_tags() -> None:
     service = OpenAICompatService()
 
     response = service.build_chat_completion_response(
@@ -26,10 +26,10 @@ def test_build_chat_completion_response_includes_reasoning_content() -> None:
     )
 
     assert response.choices[0].message.content == "<think>thinking trace</think>final answer"
-    assert response.choices[0].message.reasoning_content == "thinking trace"
+    assert not hasattr(response.choices[0].message, "reasoning_content")
 
 
-def test_stream_chunk_builder_includes_reasoning_content_delta_and_think_wrapper() -> None:
+def test_stream_chunk_builder_includes_think_wrapper_without_reasoning_delta() -> None:
     service = OpenAICompatService()
     builder = service.create_stream_chunk_builder(default_model_name="test-model")
 
@@ -42,8 +42,8 @@ def test_stream_chunk_builder_includes_reasoning_content_delta_and_think_wrapper
     )
 
     assert len(payloads) == 1
-    assert '"reasoning_content": "first thought"' in payloads[0]
     assert '"content": "<think>first thought"' in payloads[0]
+    assert '"reasoning_content"' not in payloads[0]
 
 
 def test_stream_chunk_builder_closes_think_tag_before_answer_content() -> None:
@@ -66,6 +66,7 @@ def test_stream_chunk_builder_closes_think_tag_before_answer_content() -> None:
 
     assert len(payloads) == 1
     assert '"content": "</think>final answer"' in payloads[0]
+    assert '"reasoning_content"' not in payloads[0]
 
 
 def test_stream_chunk_builder_closes_think_tag_before_finish_when_reasoning_only() -> None:
@@ -98,4 +99,4 @@ def test_build_chat_completion_response_reads_reasoning_content_from_ai_message(
     )
 
     assert response.choices[0].message.content == "<think>model thinking</think>final answer"
-    assert response.choices[0].message.reasoning_content == "model thinking"
+    assert not hasattr(response.choices[0].message, "reasoning_content")
