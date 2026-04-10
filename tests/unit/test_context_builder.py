@@ -1,7 +1,30 @@
 """上下文构建单元测试。"""
 
+from __future__ import annotations
+
+import pytest
+
+import app.agent.context_builder as context_builder_module
 from app.agent.context_builder import ContextBuilder
+from app.agent.prompts import MEMORY_SUMMARY_PROMPT_PREFIX
 from app.clients.llm_client import LlmInputMessage
+
+FIXED_CURRENT_DATETIME_CONTEXT = (
+    "以下是当前系统时间信息，仅用于时间判断和日期换算：\n"
+    "当前时区: Asia/Shanghai\n"
+    "当前时间: 2026-04-10T14:00:00+08:00"
+)
+
+
+@pytest.fixture(autouse=True)
+def _patch_current_datetime_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """固定当前时间上下文，避免单测依赖真实时钟。"""
+
+    monkeypatch.setattr(
+        context_builder_module,
+        "_build_current_datetime_context",
+        lambda timezone_name="Asia/Shanghai": FIXED_CURRENT_DATETIME_CONTEXT,
+    )
 
 
 def test_context_builder_uses_only_input_messages_without_session_memory() -> None:
@@ -22,7 +45,13 @@ def test_context_builder_uses_only_input_messages_without_session_memory() -> No
     )
 
     assert prepared_context.used_session_memory is False
-    assert [message.role for message in prepared_context.messages] == ["system", "user"]
+    assert [message.role for message in prepared_context.messages] == [
+        "system",
+        "system",
+        "user",
+    ]
+    assert prepared_context.messages[0].content == FIXED_CURRENT_DATETIME_CONTEXT
+    assert prepared_context.messages[1].content == "如果不知道就说不知道"
     assert prepared_context.memory_summary is None
 
 
@@ -43,7 +72,8 @@ def test_context_builder_injects_summary_and_recent_history_for_single_user_mess
 
     assert prepared_context.used_session_memory is True
     assert prepared_context.messages[0].role == "system"
-    assert "用户此前自称叫小王" in prepared_context.messages[0].content
+    assert prepared_context.messages[0].content == FIXED_CURRENT_DATETIME_CONTEXT
+    assert "用户此前自称叫小王" in prepared_context.messages[1].content
     assert prepared_context.messages[-1].content == "我刚刚告诉你的名字是什么？"
     assert [message.content for message in prepared_context.messages].count(
         "我刚刚告诉你的名字是什么？"
@@ -70,9 +100,11 @@ def test_context_builder_merges_session_history_and_explicit_messages_when_sessi
 
     assert prepared_context.used_session_memory is True
     assert prepared_context.messages[0].role == "system"
-    assert "用户此前自称叫小王" in prepared_context.messages[0].content
+    assert prepared_context.messages[0].content == FIXED_CURRENT_DATETIME_CONTEXT
+    assert "用户此前自称叫小王" in prepared_context.messages[1].content
     assert [message.content for message in prepared_context.messages] == [
-        "以下是当前会话的历史摘要，仅在不与用户本次显式输入冲突时参考：\n用户此前自称叫小王。",
+        FIXED_CURRENT_DATETIME_CONTEXT,
+        f"{MEMORY_SUMMARY_PROMPT_PREFIX}用户此前自称叫小王。",
         "请同时参考系统记录和本次输入。",
         "我叫小王",
         "好的，我记住了",
@@ -99,8 +131,10 @@ def test_context_builder_moves_explicit_system_messages_before_history_when_sess
     )
 
     assert [message.role for message in prepared_context.messages[:2]] == ["system", "system"]
-    assert prepared_context.messages[1].content == "如果不知道就说不知道。"
-    assert [message.role for message in prepared_context.messages[2:]] == [
+    assert prepared_context.messages[0].content == FIXED_CURRENT_DATETIME_CONTEXT
+    assert prepared_context.messages[1].content == f"{MEMORY_SUMMARY_PROMPT_PREFIX}用户此前自称叫小王。"
+    assert prepared_context.messages[2].content == "如果不知道就说不知道。"
+    assert [message.role for message in prepared_context.messages[3:]] == [
         "user",
         "assistant",
         "user",
@@ -121,8 +155,16 @@ def test_context_builder_moves_explicit_system_messages_to_front_without_session
         need_session_memory=False,
     )
 
-    assert [message.role for message in prepared_context.messages] == ["system", "user"]
-    assert [message.content for message in prepared_context.messages] == ["请简洁回答。", "你好"]
+    assert [message.role for message in prepared_context.messages] == [
+        "system",
+        "system",
+        "user",
+    ]
+    assert [message.content for message in prepared_context.messages] == [
+        FIXED_CURRENT_DATETIME_CONTEXT,
+        "请简洁回答。",
+        "你好",
+    ]
 
 
 def test_context_builder_includes_knowledge_context_as_system_message() -> None:
@@ -138,8 +180,13 @@ def test_context_builder_includes_knowledge_context_as_system_message() -> None:
     )
 
     assert prepared_context.knowledge_context == "以下是知识库检索结果：西湖位于杭州。"
-    assert [message.role for message in prepared_context.messages] == ["system", "user"]
-    assert prepared_context.messages[0].content == "以下是知识库检索结果：西湖位于杭州。"
+    assert [message.role for message in prepared_context.messages] == [
+        "system",
+        "system",
+        "user",
+    ]
+    assert prepared_context.messages[0].content == FIXED_CURRENT_DATETIME_CONTEXT
+    assert prepared_context.messages[1].content == "以下是知识库检索结果：西湖位于杭州。"
 
 
 def test_context_builder_includes_mcp_context_as_system_message() -> None:
@@ -155,8 +202,13 @@ def test_context_builder_includes_mcp_context_as_system_message() -> None:
     )
 
     assert prepared_context.mcp_context == "以下是当前系统已配置的 MCP 服务骨架信息。"
-    assert [message.role for message in prepared_context.messages] == ["system", "user"]
-    assert prepared_context.messages[0].content == "以下是当前系统已配置的 MCP 服务骨架信息。"
+    assert [message.role for message in prepared_context.messages] == [
+        "system",
+        "system",
+        "user",
+    ]
+    assert prepared_context.messages[0].content == FIXED_CURRENT_DATETIME_CONTEXT
+    assert prepared_context.messages[1].content == "以下是当前系统已配置的 MCP 服务骨架信息。"
 
 
 def test_context_builder_includes_answer_instruction_and_business_contexts() -> None:
@@ -189,6 +241,7 @@ def test_context_builder_includes_answer_instruction_and_business_contexts() -> 
     assert prepared_context.service_context == "以下是服务区查询参数：{keyword: 杭州东服务区}"
     assert prepared_context.report_context == "以下是路网报告任务参数：{scope: 全路网}"
     assert [message.role for message in prepared_context.messages] == [
+        "system",
         "system",
         "system",
         "system",

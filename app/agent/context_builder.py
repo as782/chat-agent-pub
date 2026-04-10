@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.agent.prompts import MEMORY_SUMMARY_PROMPT_PREFIX
+from app.agent.prompts import CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX, MEMORY_SUMMARY_PROMPT_PREFIX
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity
@@ -106,6 +108,24 @@ def deserialize_input_messages(message_payloads: Sequence[dict[str, Any]]) -> li
     return deserialized_messages
 
 
+def _build_current_datetime_context(timezone_name: str = "Asia/Shanghai") -> str:
+    """构建当前时间上下文，便于回答涉及今天、明天、节假日窗口的问题。"""
+
+    normalized_timezone_name = timezone_name.strip() or "Asia/Shanghai"
+    try:
+        timezone = ZoneInfo(normalized_timezone_name)
+    except ZoneInfoNotFoundError:
+        timezone = UTC
+        normalized_timezone_name = "UTC"
+
+    current_time = datetime.now(timezone)
+    return (
+        f"{CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX}"
+        f"当前时区: {normalized_timezone_name}\n"
+        f"当前时间: {current_time.isoformat(timespec='seconds')}"
+    )
+
+
 class ContextBuilder:
     """对话上下文构建器。"""
 
@@ -123,6 +143,7 @@ class ContextBuilder:
     def _build_internal_system_messages(
         *,
         answer_instruction: str | None,
+        current_datetime_context: str | None,
         executor_results_context: str | None,
         memory_summary: str | None,
         knowledge_context: str | None,
@@ -137,6 +158,8 @@ class ContextBuilder:
         system_messages: list[LlmInputMessage] = []
         if answer_instruction:
             system_messages.append(LlmInputMessage(role="system", content=answer_instruction))
+        if current_datetime_context:
+            system_messages.append(LlmInputMessage(role="system", content=current_datetime_context))
         if executor_results_context:
             system_messages.append(
                 LlmInputMessage(role="system", content=executor_results_context)
@@ -187,6 +210,7 @@ class ContextBuilder:
 
         internal_system_messages = self._build_internal_system_messages(
             answer_instruction=answer_instruction,
+            current_datetime_context=_build_current_datetime_context(),
             executor_results_context=executor_results_context,
             memory_summary=memory_summary if need_session_memory else None,
             knowledge_context=knowledge_context,

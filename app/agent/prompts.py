@@ -40,6 +40,10 @@ REPORT_CONTEXT_PROMPT_PREFIX = (
     "以下是路网汇总任务的结构化结果，请按用户要求组织输出，必要时使用表格。\n"
 )
 
+CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX = (
+    "以下是当前系统时间信息，仅用于时间判断和日期换算：\n"
+)
+
 PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器。
 你的职责是根据用户问题判断问题类型，并输出完整的执行步骤链。
 
