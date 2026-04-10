@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from app.agent.argument_resolver import ArgumentResolver
-from app.agent.state import AgentState, ResolvedArguments
+from app.agent.state import AgentState, ExecutionStep, ResolvedArguments
 
 
 class ArgumentNode:
@@ -48,9 +48,13 @@ class ArgumentNode:
         for step in execution_plan.steps:
             if step.executor == "answer":
                 continue
-            step_arguments[step.step_id] = self._argument_resolver.resolve_for_executor(
+            resolved_arguments = self._argument_resolver.resolve_for_executor(
                 state,
                 executor=step.executor,
+            )
+            step_arguments[step.step_id] = self._merge_step_metadata(
+                resolved_arguments=resolved_arguments,
+                step=step,
             )
         if step_arguments:
             return step_arguments
@@ -60,6 +64,33 @@ class ArgumentNode:
             return {}
         step_arguments[fallback_step[0]] = fallback_step[1]
         return step_arguments
+
+    @staticmethod
+    def _merge_step_metadata(
+        *,
+        resolved_arguments: ResolvedArguments,
+        step: ExecutionStep,
+    ) -> ResolvedArguments:
+        """Merge planner step metadata into executor arguments without clobbering extracted values."""
+
+        if not step.metadata:
+            return resolved_arguments
+
+        merged_arguments = dict(resolved_arguments.arguments)
+        for key, value in step.metadata.items():
+            if key not in merged_arguments or merged_arguments.get(key) in {None, "", [], {}}:
+                merged_arguments[key] = value
+
+        extraction_mode = resolved_arguments.extraction_mode
+        if "planner_metadata" not in extraction_mode:
+            extraction_mode = f"{extraction_mode}+planner_metadata"
+
+        return ResolvedArguments(
+            category=resolved_arguments.category,
+            arguments=merged_arguments,
+            missing_fields=list(resolved_arguments.missing_fields),
+            extraction_mode=extraction_mode,
+        )
 
     def _build_fallback_step(
         self,

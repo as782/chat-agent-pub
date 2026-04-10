@@ -148,6 +148,40 @@ async def test_argument_node_builds_step_arguments_for_multi_step_route_plan() -
 
 
 @pytest.mark.asyncio
+async def test_argument_node_merges_planner_metadata_into_step_arguments() -> None:
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "今天上高速到明天下高速要过路费吗",
+            "primary_category": "policy",
+            "execution_plan": ExecutionPlan(
+                primary_category="policy",
+                execution_mode="single_step",
+                recommended_route="ragflow",
+                steps=[
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="查询收费规则",
+                        metadata={
+                            "query_type": "policy_interpretation",
+                            "keywords": ["高速过路费", "跨天", "收费规则"],
+                        },
+                    )
+                ],
+            ),
+        }
+    )
+
+    step_arguments = result["step_arguments"]["rag_1"]
+    assert step_arguments.arguments["query"] == "今天上高速到明天下高速要过路费吗"
+    assert step_arguments.arguments["query_type"] == "policy_interpretation"
+    assert step_arguments.arguments["keywords"] == ["高速过路费", "跨天", "收费规则"]
+    assert "planner_metadata" in step_arguments.extraction_mode
+
+
+@pytest.mark.asyncio
 async def test_argument_node_extracts_reference_answer_for_report_requests() -> None:
     """报表类问题带上次回答时，应提取参考回答文本。"""
 

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.prompts import KNOWLEDGE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
@@ -41,9 +43,10 @@ class RagflowNode:
             default_step_id="rag_1",
         )
         step_arguments = resolve_step_arguments(state, step_id=step_id, executor="rag")
-        normalized_query = self._resolve_query(state, step_arguments)
+        retrieval_queries = self._resolve_queries(state, step_arguments)
+        normalized_query = retrieval_queries[0]
         try:
-            knowledge_results = await self._knowledge_service.retrieve_for_agent(query=normalized_query)
+            knowledge_results = await self._retrieve_knowledge_results(retrieval_queries)
         except UpstreamServiceException as exception:
             raise UpstreamServiceException(
                 UPSTREAM_SERVICE_ERROR_REPLY,
@@ -56,8 +59,18 @@ class RagflowNode:
                 step_id=step_id,
                 executor="rag",
                 is_success=True,
-                raw_result={"results": []},
-                normalized_result={"result_count": 0, "query": normalized_query},
+                raw_result={
+                    "query_arguments": self._serialize_step_arguments(step_arguments),
+                    "retrieval_queries": retrieval_queries,
+                    "results": [],
+                },
+                normalized_result={
+                    "query": normalized_query,
+                    "queries": retrieval_queries,
+                    "keywords": self._resolve_keywords(step_arguments),
+                    "query_type": self._resolve_query_type(step_arguments),
+                    "result_count": 0,
+                },
                 summary="知识检索未命中结果。",
             )
             return {
@@ -71,6 +84,8 @@ class RagflowNode:
             executor="rag",
             is_success=True,
             raw_result={
+                "query_arguments": self._serialize_step_arguments(step_arguments),
+                "retrieval_queries": retrieval_queries,
                 "results": [
                     knowledge_result.model_dump(mode="json")
                     for knowledge_result in knowledge_results
@@ -78,6 +93,9 @@ class RagflowNode:
             },
             normalized_result={
                 "query": normalized_query,
+                "queries": retrieval_queries,
+                "keywords": self._resolve_keywords(step_arguments),
+                "query_type": self._resolve_query_type(step_arguments),
                 "result_count": len(knowledge_results),
                 "sources": [
                     knowledge_result.source or knowledge_result.document_id
@@ -108,6 +126,81 @@ class RagflowNode:
             if query:
                 return query
         return RagflowNode._normalize_query(str(state.get("latest_user_message", "")))
+
+    @classmethod
+    def _resolve_queries(
+        cls,
+        state: AgentState,
+        step_arguments: ResolvedArguments | None,
+    ) -> list[str]:
+        queries = [cls._resolve_query(state, step_arguments)]
+        queries.extend(cls._resolve_keywords(step_arguments))
+        return cls._deduplicate_queries(queries)
+
+    async def _retrieve_knowledge_results(
+        self,
+        retrieval_queries: list[str],
+    ) -> list[KnowledgeSearchResult]:
+        merged_results: OrderedDict[tuple[str, str, str], KnowledgeSearchResult] = OrderedDict()
+
+        for query in retrieval_queries:
+            current_results = await self._knowledge_service.retrieve_for_agent(query=query)
+            for result in current_results:
+                result_key = (
+                    result.document_id,
+                    result.chunk_id,
+                    result.source or "",
+                )
+                existing_result = merged_results.get(result_key)
+                if existing_result is None or result.score > existing_result.score:
+                    merged_results[result_key] = result
+
+        return list(merged_results.values())
+
+    @staticmethod
+    def _serialize_step_arguments(
+        step_arguments: ResolvedArguments | None,
+    ) -> dict[str, object]:
+        if not isinstance(step_arguments, ResolvedArguments):
+            return {}
+        return dict(step_arguments.arguments)
+
+    @staticmethod
+    def _resolve_keywords(step_arguments: ResolvedArguments | None) -> list[str]:
+        if not isinstance(step_arguments, ResolvedArguments):
+            return []
+
+        raw_keywords = step_arguments.arguments.get("keywords")
+        if not isinstance(raw_keywords, list):
+            return []
+
+        return [
+            str(keyword).strip()
+            for keyword in raw_keywords
+            if str(keyword).strip()
+        ]
+
+    @staticmethod
+    def _resolve_query_type(step_arguments: ResolvedArguments | None) -> str | None:
+        if not isinstance(step_arguments, ResolvedArguments):
+            return None
+
+        query_type = step_arguments.arguments.get("query_type")
+        if isinstance(query_type, str):
+            return query_type.strip() or None
+        return None
+
+    @staticmethod
+    def _deduplicate_queries(queries: list[str]) -> list[str]:
+        deduplicated_queries: list[str] = []
+        seen_queries: set[str] = set()
+        for query in queries:
+            normalized_query = query.strip()
+            if not normalized_query or normalized_query in seen_queries:
+                continue
+            deduplicated_queries.append(normalized_query)
+            seen_queries.add(normalized_query)
+        return deduplicated_queries
 
     @staticmethod
     def _normalize_query(raw_message: str) -> str:
