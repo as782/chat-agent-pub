@@ -34,6 +34,30 @@ async def test_argument_node_extracts_route_arguments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_argument_node_extracts_route_arguments_from_going_phrase() -> None:
+    """“去/前往”类表达也应提取起点、终点。"""
+
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "苍南去玉环堵不堵",
+            "primary_category": "route_planning",
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="single_step",
+                recommended_route="route",
+            ),
+        }
+    )
+
+    resolved_arguments = result["resolved_arguments"]
+    assert resolved_arguments.arguments["origin"] == "苍南"
+    assert resolved_arguments.arguments["destination"] == "玉环"
+    assert resolved_arguments.arguments["travel_mode"] == "auto"
+
+
+@pytest.mark.asyncio
 async def test_argument_node_marks_missing_route_arguments() -> None:
     """无法识别起终点时应进入澄清状态。"""
 

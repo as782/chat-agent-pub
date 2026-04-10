@@ -12,7 +12,36 @@ from app.agent.state import AgentState, ExecutorType, ProblemCategory, ResolvedA
 from app.clients.llm_client import LlmInputMessage
 
 ROUTE_PAIR_PATTERN = re.compile(
-    r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})到(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+    r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+    r"(?P<connector>到|至|前往|去往|往|去)"
+    r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+)
+_ROUTE_NON_PLACE_KEYWORDS = (
+    "怎么",
+    "如何",
+    "哪",
+    "哪里",
+    "去哪里",
+    "从哪",
+    "从哪里",
+    "今天",
+    "明天",
+    "昨天",
+    "昨日",
+    "现在",
+    "当前",
+    "目前",
+    "早上",
+    "上午",
+    "中午",
+    "下午",
+    "晚上",
+    "凌晨",
+    "节假日",
+    "收费",
+    "过路费",
+    "通行费",
+    "免费",
 )
 
 
@@ -82,25 +111,18 @@ class ArgumentResolver:
         """提取路线规划问题中的起终点和出行方式。"""
 
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("mcp:",))
-        match = ROUTE_PAIR_PATTERN.search(normalized_query)
+        match = self._extract_od_pair(normalized_query)
 
         arguments: dict[str, object] = {"query": normalized_query}
         missing_fields: list[str] = []
 
-        if match:
-            arguments["origin"] = self._clean_route_place(match.group("origin"))
-            arguments["destination"] = self._clean_route_place(match.group("destination"))
+        if match is not None:
+            arguments["origin"] = match["origin"]
+            arguments["destination"] = match["destination"]
         else:
             missing_fields.extend(["origin", "destination"])
 
-        if "公交" in normalized_query or "地铁" in normalized_query:
-            arguments["travel_mode"] = "public_transit"
-        elif "驾车" in normalized_query or "开车" in normalized_query:
-            arguments["travel_mode"] = "driving"
-        elif "步行" in normalized_query:
-            arguments["travel_mode"] = "walking"
-        else:
-            arguments["travel_mode"] = "auto"
+        arguments["travel_mode"] = self._infer_travel_mode(normalized_query)
 
         return ResolvedArguments(
             category=category,
@@ -119,13 +141,12 @@ class ArgumentResolver:
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("traffic:",))
         arguments: dict[str, object] = {
             "query": normalized_query,
-            "road": normalized_query.replace("路况", "").replace("怎么样", "").replace("如何", "").strip(),
-            "target": normalized_query.replace("路况", "").replace("怎么样", "").strip(),
+            "road": self._normalize_traffic_target(normalized_query),
+            "target": self._normalize_traffic_target(normalized_query),
         }
-        if "实时" in normalized_query or "当前" in normalized_query:
-            arguments["time_range"] = "current"
-        if "今天" in normalized_query:
-            arguments["time_range"] = "today"
+        time_range = self._infer_time_range(normalized_query)
+        if time_range is not None:
+            arguments["time_range"] = time_range
         return ResolvedArguments(category=category, arguments=arguments)
 
     def _resolve_service_arguments(
@@ -137,11 +158,8 @@ class ArgumentResolver:
         """提取服务区问题中的服务区或设施关键词。"""
 
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("service:",))
-        keyword = normalized_query
-        for suffix in ("服务区", "充电桩", "充电站", "有什么", "怎么样", "信息", "情况"):
-            keyword = keyword.replace(suffix, " ")
-        keyword = " ".join(keyword.split()).strip()
-        if not keyword:
+        keyword = self._infer_service_keyword(normalized_query)
+        if keyword is None:
             keyword = normalized_query.strip()
         return ResolvedArguments(
             category=category,
@@ -197,6 +215,10 @@ class ArgumentResolver:
 
         cleaned_value = value.strip()
         for suffix in (
+            "前往",
+            "去往",
+            "往",
+            "去",
             "怎么走",
             "怎么去",
             "如何走",
@@ -213,6 +235,107 @@ class ArgumentResolver:
             if cleaned_value.endswith(suffix):
                 cleaned_value = cleaned_value[: -len(suffix)].strip()
         return cleaned_value
+
+    @classmethod
+    def _extract_od_pair(cls, message: str) -> dict[str, str] | None:
+        """抽取路线 OD 信息，避免把时间短语误识别为起终点。"""
+
+        normalized_message = message.strip()
+        match = ROUTE_PAIR_PATTERN.search(normalized_message)
+        if match is None:
+            return None
+
+        origin = cls._clean_route_place(match.group("origin"))
+        destination = cls._clean_route_place(match.group("destination"))
+        if not origin or not destination:
+            return None
+        if cls._contains_non_place_context(origin) or cls._contains_non_place_context(destination):
+            return None
+        if origin == destination:
+            return None
+        return {"origin": origin, "destination": destination}
+
+    @staticmethod
+    def _contains_non_place_context(value: str) -> bool:
+        """过滤明显不是地名的片段。"""
+
+        return any(keyword in value for keyword in _ROUTE_NON_PLACE_KEYWORDS)
+
+    @staticmethod
+    def _infer_travel_mode(message: str) -> str:
+        """根据问题文本推断出行方式。"""
+
+        if any(keyword in message for keyword in ("公交", "地铁", "轻轨")):
+            return "public_transit"
+        if any(keyword in message for keyword in ("步行",)):
+            return "walking"
+        if any(keyword in message for keyword in ("骑行", "骑车", "自行车")):
+            return "cycling"
+        if any(keyword in message for keyword in ("开车", "驾车", "自驾", "汽车")):
+            return "driving"
+        return "auto"
+
+    @staticmethod
+    def _infer_time_range(message: str) -> str | None:
+        """推断路况查询的时间范围。"""
+
+        if any(keyword in message for keyword in ("当前", "现在", "实时", "此刻")):
+            return "current"
+        if "今天" in message:
+            return "today"
+        if "明天" in message:
+            return "tomorrow"
+        if "昨天" in message:
+            return "yesterday"
+        return None
+
+    @staticmethod
+    def _normalize_traffic_target(message: str) -> str:
+        """清理路况查询目标，保留更接近道路或路线的文本。"""
+
+        target = message.strip()
+        for token in ("今天", "明天", "昨天", "当前", "现在", "实时", "目前", "此刻"):
+            target = target.replace(token, " ")
+        for suffix in (
+            "路况怎么样",
+            "路况如何",
+            "怎么样",
+            "如何",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "通畅吗",
+            "通不通畅",
+            "是否拥堵",
+            "会不会堵",
+        ):
+            if target.endswith(suffix):
+                target = target[: -len(suffix)].strip()
+        return " ".join(target.split()).strip()
+
+    @staticmethod
+    def _infer_service_keyword(message: str) -> str | None:
+        """推断服务区查询关键词。"""
+
+        keyword = message.strip()
+        for suffix in (
+            "服务区",
+            "充电桩",
+            "充电站",
+            "充电",
+            "加油站",
+            "餐厅",
+            "商店",
+            "便利店",
+            "有什么",
+            "有哪些",
+            "怎么样",
+            "情况",
+            "信息",
+        ):
+            keyword = keyword.replace(suffix, " ")
+        keyword = " ".join(keyword.split()).strip()
+        return keyword or None
 
     @staticmethod
     def _extract_reference_answer(input_messages: list[LlmInputMessage]) -> str | None:

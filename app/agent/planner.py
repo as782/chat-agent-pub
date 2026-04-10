@@ -91,8 +91,52 @@ _CALCULATION_KEYWORDS: tuple[str, ...] = (
     "算一下",
     "帮我算",
 )
-_OD_ROUTE_PATTERN = re_compile(
-    r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9\-]{2,20})到(?P<destination>[\u4e00-\u9fffA-Za-z0-9\-]{2,20})"
+_OD_ROUTE_PATTERNS = (
+    re_compile(
+        r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+        r"(?P<connector>到|至|前往|去往|往|去|回)"
+        r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+    ),
+)
+_ROUTE_INTENT_KEYWORDS: tuple[str, ...] = (
+    "怎么走",
+    "怎么去",
+    "如何走",
+    "如何去",
+    "路线",
+    "导航",
+    "通行",
+    "堵不堵",
+    "堵吗",
+    "拥堵吗",
+    "堵",
+)
+_NON_ROUTE_CONTEXT_KEYWORDS: tuple[str, ...] = (
+    "怎么",
+    "如何",
+    "哪",
+    "哪里",
+    "去哪里",
+    "从哪",
+    "从哪里",
+    "今天",
+    "明天",
+    "昨天",
+    "昨日",
+    "现在",
+    "当前",
+    "目前",
+    "早上",
+    "上午",
+    "中午",
+    "下午",
+    "晚上",
+    "凌晨",
+    "节假日",
+    "收费",
+    "过路费",
+    "通行费",
+    "免费",
 )
 
 
@@ -243,7 +287,11 @@ class PlannerService:
             else None
         )
 
-        steps = self._coerce_steps(payload.get("steps"))
+        steps = self._coerce_steps(
+            payload.get("steps"),
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
+        )
         if not steps:
             steps = self._build_steps(
                 primary_category=primary_category,
@@ -328,6 +376,9 @@ class PlannerService:
     def _coerce_steps(
         self,
         value: object,
+        *,
+        latest_user_message: str = "",
+        primary_category: ProblemCategory = "general",
     ) -> list[ExecutionStep]:
         """把 LLM 输出的 steps 规整为统一步骤对象。"""
 
@@ -359,6 +410,12 @@ class PlannerService:
             )
             metadata = item.get("metadata")
             normalized_metadata = metadata if isinstance(metadata, dict) else {}
+            normalized_metadata = self._enrich_step_metadata(
+                executor=executor,
+                metadata=normalized_metadata,
+                latest_user_message=latest_user_message,
+                primary_category=primary_category,
+            )
 
             steps.append(
                 ExecutionStep(
@@ -460,8 +517,8 @@ class PlannerService:
             execution_mode = "multi_step"
         return execution_mode
 
-    @staticmethod
     def _build_steps(
+        self,
         *,
         primary_category: ProblemCategory,
         has_requested_tools: bool,
@@ -476,6 +533,12 @@ class PlannerService:
                     step_id="tool_1",
                     executor="tool",
                     goal="执行用户显式开放的工具",
+                    metadata=self._enrich_step_metadata(
+                        executor="tool",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -491,7 +554,12 @@ class PlannerService:
                     step_id="tool_1",
                     executor="tool",
                     goal=f"调用内置工具 {general_tool_name} 获取结果",
-                    metadata={"preferred_tool": general_tool_name},
+                    metadata=self._enrich_step_metadata(
+                        executor="tool",
+                        metadata={"preferred_tool": general_tool_name},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -508,11 +576,23 @@ class PlannerService:
                         step_id="route_1",
                         executor="route",
                         goal="查询起点到终点的推荐路线",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
                     ),
                     ExecutionStep(
                         step_id="rag_1",
                         executor="rag",
                         goal="检索相关政策、收费或通行规则",
+                        metadata=self._enrich_step_metadata(
+                            executor="rag",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
                     ),
                     ExecutionStep(
                         step_id="answer_1",
@@ -526,6 +606,12 @@ class PlannerService:
                     step_id="rag_1",
                     executor="rag",
                     goal="检索通过知识库检索相关问题知识",
+                    metadata=self._enrich_step_metadata(
+                        executor="rag",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -541,6 +627,12 @@ class PlannerService:
                     step_id="route_1",
                     executor="route",
                     goal="查询路线规划相关数据",
+                    metadata=self._enrich_step_metadata(
+                        executor="route",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -557,12 +649,24 @@ class PlannerService:
                         step_id="route_1",
                         executor="route",
                         goal="规划起点到终点的路线并提取沿途道路",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
                     ),
                     ExecutionStep(
                         step_id="traffic_1",
                         executor="traffic",
                         goal="根据路线查询主线路况和拥堵信息",
                         depends_on=["route_1"],
+                        metadata=self._enrich_step_metadata(
+                            executor="traffic",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
                     ),
                     ExecutionStep(
                         step_id="answer_1",
@@ -576,6 +680,12 @@ class PlannerService:
                     step_id="traffic_1",
                     executor="traffic",
                     goal="查询路况或实时交通数据",
+                    metadata=self._enrich_step_metadata(
+                        executor="traffic",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -592,12 +702,24 @@ class PlannerService:
                         step_id="route_1",
                         executor="route",
                         goal="规划起点到终点的路线并提取沿途服务区",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
                     ),
                     ExecutionStep(
                         step_id="service_1",
                         executor="service",
                         goal="根据路线查询沿途服务区、充电和配套信息",
                         depends_on=["route_1"],
+                        metadata=self._enrich_step_metadata(
+                            executor="service",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
                     ),
                     ExecutionStep(
                         step_id="answer_1",
@@ -611,6 +733,12 @@ class PlannerService:
                     step_id="service_1",
                     executor="service",
                     goal="查询服务区、充电和商业配套信息",
+                    metadata=self._enrich_step_metadata(
+                        executor="service",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -627,6 +755,12 @@ class PlannerService:
                     executor="report",
                     goal="汇总多个区域或多个接口的路网数据",
                     can_run_in_parallel=True,
+                    metadata=self._enrich_step_metadata(
+                        executor="report",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
                 ),
                 ExecutionStep(
                     step_id="answer_1",
@@ -641,8 +775,372 @@ class PlannerService:
                 step_id="answer_1",
                 executor="answer",
                 goal="直接回答用户问题",
+                metadata=self._enrich_step_metadata(
+                    executor="answer",
+                    metadata={},
+                    latest_user_message=latest_user_message,
+                    primary_category=primary_category,
+                ),
             )
         ]
+
+    def _enrich_step_metadata(
+        self,
+        *,
+        executor: ExecutorType,
+        metadata: dict[str, object],
+        latest_user_message: str,
+        primary_category: ProblemCategory,
+    ) -> dict[str, object]:
+        """为步骤补齐该 executor 需要的稳定参数。"""
+
+        merged_metadata = dict(metadata)
+        inferred_metadata = self._infer_step_metadata(
+            executor=executor,
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
+        )
+        for key, value in inferred_metadata.items():
+            if key not in merged_metadata or self._is_empty_metadata_value(merged_metadata[key]):
+                merged_metadata[key] = value
+        return merged_metadata
+
+    @staticmethod
+    def _infer_step_metadata(
+        *,
+        executor: ExecutorType,
+        latest_user_message: str,
+        primary_category: ProblemCategory,
+    ) -> dict[str, object]:
+        """根据 executor 和当前问题推导可执行的 metadata。"""
+
+        normalized_message = latest_user_message.strip()
+
+        if executor == "route":
+            metadata: dict[str, object] = {
+                "query": normalized_message,
+                "query_intent": "route_planning",
+            }
+            od_pair = PlannerService._extract_od_pair(normalized_message)
+            if od_pair is not None:
+                metadata.update(od_pair)
+            travel_mode = PlannerService._infer_travel_mode(normalized_message)
+            if travel_mode is not None:
+                metadata["travel_mode"] = travel_mode
+            return metadata
+
+        if executor == "traffic":
+            metadata = {
+                "query": normalized_message,
+                "query_intent": "route_based_traffic"
+                if PlannerService._looks_like_od_query(normalized_message)
+                else "traffic_status",
+            }
+            target = PlannerService._normalize_traffic_target(normalized_message)
+            if target:
+                metadata["road"] = target
+                metadata["target"] = target
+            time_range = PlannerService._infer_time_range(normalized_message)
+            if time_range is not None:
+                metadata["time_range"] = time_range
+            focus = PlannerService._infer_traffic_focus(normalized_message)
+            if focus is not None:
+                metadata["focus"] = focus
+            return metadata
+
+        if executor == "service":
+            metadata = {
+                "query": normalized_message,
+                "query_intent": "service_lookup",
+            }
+            keyword = PlannerService._infer_service_keyword(normalized_message)
+            if keyword is not None:
+                metadata["keyword"] = keyword
+            facility_type = PlannerService._infer_service_facility_type(normalized_message)
+            if facility_type is not None:
+                metadata["facility_type"] = facility_type
+            return metadata
+
+        if executor == "rag":
+            query = PlannerService._strip_query_prefix(normalized_message)
+            metadata = {
+                "query": query,
+                "query_type": PlannerService._infer_policy_query_type(normalized_message),
+            }
+            keywords = PlannerService._infer_policy_keywords(normalized_message)
+            if keywords:
+                metadata["keywords"] = keywords
+            focus = PlannerService._infer_policy_focus(normalized_message)
+            if focus is not None:
+                metadata["focus"] = focus
+            return metadata
+
+        if executor == "report":
+            metadata = {
+                "query": normalized_message,
+                "scope": PlannerService._infer_report_scope(normalized_message),
+            }
+            compare_mode = PlannerService._infer_report_compare_mode(normalized_message)
+            if compare_mode is not None:
+                metadata["compare_mode"] = compare_mode
+            return metadata
+
+        if executor in {"tool", "mcp"}:
+            preferred_tool = PlannerService._resolve_general_tool_name(normalized_message)
+            if preferred_tool is not None:
+                return {"preferred_tool": preferred_tool}
+            return {}
+
+        if executor == "answer":
+            focus = PlannerService._infer_answer_focus(normalized_message, primary_category)
+            if focus is not None:
+                return {"focus": focus}
+            return {}
+
+        return {}
+
+    @staticmethod
+    def _is_empty_metadata_value(value: object) -> bool:
+        """判断 metadata 值是否为空。"""
+
+        return value is None or value == "" or value == [] or value == {}
+
+    @staticmethod
+    def _strip_query_prefix(message: str) -> str:
+        """移除常见知识库/前缀标记，保留纯查询文本。"""
+
+        stripped_message = message.strip()
+        lowered_message = stripped_message.lower()
+        for prefix in ("知识库:", "knowledge:", "konwledge:"):
+            if lowered_message.startswith(prefix):
+                return stripped_message[len(prefix) :].strip()
+        return stripped_message
+
+    @staticmethod
+    def _extract_od_pair(message: str) -> dict[str, str] | None:
+        """抽取 OD 起终点。"""
+
+        normalized_message = message.strip()
+        for pattern in _OD_ROUTE_PATTERNS:
+            match = pattern.search(normalized_message)
+            if match is None:
+                continue
+            origin = PlannerService._clean_route_place(match.group("origin"))
+            destination = PlannerService._clean_route_place(match.group("destination"))
+            if not origin or not destination:
+                continue
+            if PlannerService._contains_non_route_context(origin) or PlannerService._contains_non_route_context(
+                destination
+            ):
+                continue
+            if origin == destination:
+                continue
+            return {"origin": origin, "destination": destination}
+        return None
+
+    @staticmethod
+    def _clean_route_place(value: str) -> str:
+        """清理路线提取结果中的尾部语气词。"""
+
+        cleaned_value = value.strip()
+        for suffix in (
+            "前往",
+            "去往",
+            "往",
+            "去",
+            "怎么走",
+            "怎么去",
+            "如何走",
+            "如何去",
+            "路线",
+            "路况",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "是否拥堵",
+            "会不会堵",
+            "通畅吗",
+        ):
+            if cleaned_value.endswith(suffix):
+                cleaned_value = cleaned_value[: -len(suffix)].strip()
+        return cleaned_value
+
+    @staticmethod
+    def _contains_non_route_context(value: str) -> bool:
+        """排除明显不是地名的片段。"""
+
+        return any(keyword in value for keyword in _NON_ROUTE_CONTEXT_KEYWORDS)
+
+    @staticmethod
+    def _infer_travel_mode(message: str) -> str | None:
+        """根据问题文本推断出行方式。"""
+
+        if any(keyword in message for keyword in ("公交", "地铁", "轻轨")):
+            return "public_transit"
+        if any(keyword in message for keyword in ("步行",)):
+            return "walking"
+        if any(keyword in message for keyword in ("骑行", "骑车", "自行车")):
+            return "cycling"
+        if any(keyword in message for keyword in ("开车", "驾车", "自驾", "汽车", "高速")):
+            return "driving"
+        return "auto"
+
+    @staticmethod
+    def _infer_time_range(message: str) -> str | None:
+        """推断路况查询的时间范围。"""
+
+        if any(keyword in message for keyword in ("当前", "现在", "实时", "此刻")):
+            return "current"
+        if "今天" in message:
+            return "today"
+        if "明天" in message:
+            return "tomorrow"
+        if "昨天" in message:
+            return "yesterday"
+        return None
+
+    @staticmethod
+    def _infer_traffic_focus(message: str) -> str | None:
+        """推断路况问题的关注点。"""
+
+        if any(keyword in message for keyword in ("堵", "拥堵", "缓行")):
+            return "congestion"
+        if any(keyword in message for keyword in ("事故",)):
+            return "accident"
+        if any(keyword in message for keyword in ("施工", "封闭", "管制")):
+            return "control"
+        if any(keyword in message for keyword in ("收费站",)):
+            return "toll"
+        return None
+
+    @staticmethod
+    def _normalize_traffic_target(message: str) -> str:
+        """清理路况查询目标，保留更接近道路/路线的文本。"""
+
+        target = message.strip()
+        for token in ("今天", "明天", "昨天", "当前", "现在", "实时", "目前", "此刻"):
+            target = target.replace(token, " ")
+        for suffix in (
+            "路况怎么样",
+            "路况如何",
+            "怎么样",
+            "如何",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "通畅吗",
+            "通不通畅",
+            "是否拥堵",
+            "会不会堵",
+        ):
+            if target.endswith(suffix):
+                target = target[: -len(suffix)].strip()
+        return " ".join(target.split()).strip()
+
+    @staticmethod
+    def _infer_service_keyword(message: str) -> str | None:
+        """推断服务区查询的核心关键词。"""
+
+        keyword = message.strip()
+        for suffix in (
+            "服务区",
+            "充电桩",
+            "充电站",
+            "充电",
+            "加油站",
+            "餐厅",
+            "商店",
+            "便利店",
+            "有什么",
+            "有哪些",
+            "怎么样",
+            "情况",
+            "信息",
+        ):
+            keyword = keyword.replace(suffix, " ")
+        keyword = " ".join(keyword.split()).strip()
+        return keyword or None
+
+    @staticmethod
+    def _infer_service_facility_type(message: str) -> str | None:
+        """推断服务区问题关注的设施类型。"""
+
+        if any(keyword in message for keyword in ("充电桩", "充电站", "充电")):
+            return "charging"
+        if any(keyword in message for keyword in ("加油站",)):
+            return "fuel"
+        if any(keyword in message for keyword in ("餐厅", "商店", "便利店", "超市")):
+            return "commercial"
+        return None
+
+    @staticmethod
+    def _infer_policy_query_type(message: str) -> str:
+        """推断知识库检索类型。"""
+
+        if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费", "节假日", "跨天", "收费规则")):
+            return "policy_interpretation"
+        if any(keyword in message for keyword in ("标准", "规范", "口径", "办法", "规定")):
+            return "policy_interpretation"
+        return "knowledge_query"
+
+    @staticmethod
+    def _infer_policy_keywords(message: str) -> list[str]:
+        """从问题里提取政策检索关键词。"""
+
+        keyword_candidates = (
+            "高速过路费",
+            "通行费",
+            "过路费",
+            "跨天",
+            "收费规则",
+            "免费时段",
+            "节假日免费",
+            "驶离出口时间",
+            "清明节免费",
+        )
+        return [keyword for keyword in keyword_candidates if keyword in message]
+
+    @staticmethod
+    def _infer_policy_focus(message: str) -> str | None:
+        """推断政策问题的回答焦点。"""
+
+        if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
+            return "收费判断"
+        if any(keyword in message for keyword in ("标准", "规范", "口径", "办法", "规定")):
+            return "政策规则"
+        return None
+
+    @staticmethod
+    def _infer_report_scope(message: str) -> str | None:
+        """推断报表查询范围。"""
+
+        if any(keyword in message for keyword in ("全路网", "路网", "全省", "全网", "整体", "汇总")):
+            return "network"
+        return None
+
+    @staticmethod
+    def _infer_report_compare_mode(message: str) -> str | None:
+        """推断报表是否需要对比模式。"""
+
+        if any(keyword in message for keyword in ("对比", "比较", "变化", "同比", "环比")):
+            return "compare"
+        return None
+
+    @staticmethod
+    def _infer_answer_focus(message: str, primary_category: ProblemCategory) -> str | None:
+        """推断 answer 阶段的回答焦点。"""
+
+        if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
+            return "收费判断"
+        if any(keyword in message for keyword in ("堵", "拥堵", "缓行")):
+            return "通行情况"
+        if any(keyword in message for keyword in ("服务区", "充电桩", "充电站")):
+            return "服务区设施"
+        if primary_category == "network_report":
+            return "路网汇总"
+        if primary_category == "policy":
+            return "政策规则"
+        return None
 
     def _build_fallback_plan(self, state: AgentState) -> ExecutionPlan:
         """在 LLM planner 不可用时，使用规则生成保底计划。"""
@@ -795,4 +1293,4 @@ class PlannerService:
     def _looks_like_od_query(latest_user_message: str) -> bool:
         """Detect origin-destination style queries that need route context."""
 
-        return _OD_ROUTE_PATTERN.search(latest_user_message.strip()) is not None
+        return PlannerService._extract_od_pair(latest_user_message) is not None

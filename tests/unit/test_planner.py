@@ -606,3 +606,61 @@ async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
     assert plan.primary_category == "route_planning"
     assert plan.recommended_route == "route"
     assert [step.executor for step in plan.steps] == ["route", "answer"]
+
+
+async def test_planner_enriches_od_step_metadata_from_user_message() -> None:
+    """当 LLM 没把 metadata 写全时，planner 仍应补齐 route/traffic 的关键参数。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "route_planning",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "route_1",
+                  "executor": "route",
+                  "goal": "规划从苍南到玉环的推荐路线",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "traffic_1",
+                  "executor": "traffic",
+                  "goal": "获取规划路线上各路段的实时路况（拥堵、事故、施工等）",
+                  "depends_on": ["route_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "综合路线与路况信息，回答苍南去玉环是否拥堵",
+                  "depends_on": ["traffic_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="苍南去玉环堵不堵"))
+
+    route_step = plan.steps[0]
+    traffic_step = plan.steps[1]
+    answer_step = plan.steps[2]
+    assert route_step.metadata["origin"] == "苍南"
+    assert route_step.metadata["destination"] == "玉环"
+    assert route_step.metadata["travel_mode"] == "auto"
+    assert route_step.metadata["query"] == "苍南去玉环堵不堵"
+    assert route_step.metadata["query_intent"] == "route_planning"
+    assert traffic_step.metadata["query"] == "苍南去玉环堵不堵"
+    assert traffic_step.metadata["query_intent"] == "route_based_traffic"
+    assert traffic_step.metadata["road"] == "苍南去玉环"
+    assert traffic_step.metadata["target"] == "苍南去玉环"
+    assert answer_step.metadata["focus"] == "通行情况"

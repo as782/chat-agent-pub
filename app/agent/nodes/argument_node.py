@@ -78,7 +78,9 @@ class ArgumentNode:
 
         merged_arguments = dict(resolved_arguments.arguments)
         for key, value in step.metadata.items():
-            if key not in merged_arguments or merged_arguments.get(key) in {None, "", [], {}}:
+            if key not in merged_arguments or ArgumentNode._is_empty_metadata_value(
+                merged_arguments.get(key)
+            ):
                 merged_arguments[key] = value
 
         extraction_mode = resolved_arguments.extraction_mode
@@ -91,6 +93,18 @@ class ArgumentNode:
             missing_fields=list(resolved_arguments.missing_fields),
             extraction_mode=extraction_mode,
         )
+
+    @staticmethod
+    def _is_empty_metadata_value(value: object) -> bool:
+        """判断 metadata 字段是否为空。"""
+
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip() == ""
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) == 0
+        return False
 
     def _build_fallback_step(
         self,

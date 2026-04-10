@@ -62,6 +62,7 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 4. steps 只描述“做什么”，不要描述“如何实现”。
 5. 只有在关键参数缺失且无法继续执行时，才标记 need_clarification=true。
 6. 不要为了简洁省略前置步骤。
+7. 每个非 answer step 都要尽量在 metadata 中写入该步骤执行所需的关键参数，不要把参数留到后续节点再猜。
 
 推荐模式：
 - 单条道路路况：traffic -> answer
@@ -94,6 +95,16 @@ steps 中每个元素字段：
 - depends_on: string[]
 - can_run_in_parallel: boolean
 - metadata: object
+
+metadata 约定：
+- route: origin, destination, travel_mode, query, query_intent
+- traffic: query, road, target, time_range, query_intent
+- service: query, keyword, facility_type, query_intent
+- rag: query, keywords, query_type, focus
+- report: query, scope, compare_mode, reference_answer
+- answer: response_type, focus
+
+请尽量让 metadata 反映该步骤真正会用到的参数，即使部分字段只能通过当前问题做规则补齐，也要写出来。
 
 请确保：
 - steps 表示完整执行链路，而不是单个意图标签。
