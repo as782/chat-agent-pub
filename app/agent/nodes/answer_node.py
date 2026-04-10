@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context_builder import ContextBuilder
 from app.agent.prompts import (
+    COMPOSITE_ANSWER_PROMPT,
     GENERAL_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
     POLICY_SUMMARY_PROMPT,
@@ -39,6 +40,7 @@ LOGGER = get_logger(__name__)
 
 RECENT_CONTEXT_WINDOW_SIZE = 8
 _PROMPT_NAME_BY_CATEGORY = {
+    "composite": "COMPOSITE_ANSWER_PROMPT",
     "policy": "POLICY_SUMMARY_PROMPT",
     "route_planning": "ROUTE_SUMMARY_PROMPT",
     "traffic_status": "TRAFFIC_SUMMARY_PROMPT",
@@ -79,6 +81,18 @@ _POLICY_KEYWORDS = (
     "收费",
     "绿通",
     "免费",
+)
+_TOLL_KEYWORDS = (
+    "过路费",
+    "通行费",
+    "收费",
+    "免收费",
+    "高速费",
+    "费率",
+    "免费时段",
+    "节假日",
+    "出口时间",
+    "入口时间",
 )
 _ROUTE_KEYWORDS = (
     "怎么走",
@@ -559,6 +573,9 @@ class AnswerNode:
     def _resolve_answer_instruction(state: AgentState) -> str:
         """根据主分类选择最终回答阶段的提示词。"""
 
+        if AnswerNode._should_use_composite_prompt(state):
+            return AnswerNode._build_composite_answer_instruction(state)
+
         category = AnswerNode._resolve_answer_topic(state)
         if category == "policy":
             return POLICY_SUMMARY_PROMPT
@@ -574,6 +591,9 @@ class AnswerNode:
 
     @staticmethod
     def _resolve_answer_prompt_name(state: AgentState) -> str:
+        if AnswerNode._should_use_composite_prompt(state):
+            return "COMPOSITE_ANSWER_PROMPT"
+
         category = AnswerNode._resolve_answer_topic(state)
         return _PROMPT_NAME_BY_CATEGORY.get(category, "GENERAL_ANSWER_PROMPT")
 
@@ -606,6 +626,70 @@ class AnswerNode:
         if category in _PROMPT_NAME_BY_CATEGORY:
             return category
         return "general"
+
+    @staticmethod
+    def _should_use_composite_prompt(state: AgentState) -> bool:
+        """复合查询优先走综合模板，而不是回落到单一分类模板。"""
+
+        executed_executors = AnswerNode._collect_executed_executors(state)
+        if len(executed_executors) >= 2:
+            return True
+
+        execution_plan = state.get("execution_plan")
+        if isinstance(execution_plan, object) and hasattr(execution_plan, "steps"):
+            planned_executors = {
+                step.executor
+                for step in execution_plan.steps
+                if step.executor != "answer"
+            }
+            if len(planned_executors) >= 2:
+                return True
+
+        return False
+
+    @staticmethod
+    def _collect_executed_executors(state: AgentState) -> set[str]:
+        step_results = state.get("step_results", {})
+        executed_executors: set[str] = set()
+        if isinstance(step_results, dict):
+            for result in step_results.values():
+                if isinstance(result, ExecutorResult) and result.executor != "answer":
+                    executed_executors.add(result.executor)
+        return executed_executors
+
+    @staticmethod
+    def _build_composite_answer_instruction(state: AgentState) -> str:
+        focus = AnswerNode._resolve_answer_focus(state)
+        executed_executors = sorted(AnswerNode._collect_executed_executors(state))
+
+        instruction_parts = [COMPOSITE_ANSWER_PROMPT]
+        if focus:
+            instruction_parts.append(f"本轮回答焦点：{focus}")
+        if executed_executors:
+            instruction_parts.append(
+                "本轮已完成能力："
+                + "、".join(executed_executors)
+                + "。请优先综合这些结果，不要只围绕其中一个模块作答。"
+            )
+        return "\n\n".join(instruction_parts)
+
+    @staticmethod
+    def _resolve_answer_focus(state: AgentState) -> str:
+        message = str(state.get("latest_user_message", "")).strip()
+
+        if any(keyword in message for keyword in _TOLL_KEYWORDS):
+            return "收费判断。优先回答是否收费、免费时间窗口、按什么时间规则判定，以及还缺哪些条件。"
+        if AnswerNode._looks_like_traffic_query(message):
+            return "通行情况。优先回答是否拥堵、关键路段、预计影响和是否需要绕行。"
+        if AnswerNode._looks_like_service_query(message):
+            return "服务区设施。优先回答是否有充电桩、主要配套和繁忙程度。"
+        if AnswerNode._looks_like_policy_query(message):
+            return "政策规则。优先回答适用范围、判断依据、关键条件和限制。"
+        if AnswerNode._looks_like_report_query(message):
+            return "路网汇总。优先概括整体态势、变化重点和需要关注的路段。"
+        if AnswerNode._looks_like_route_query(message):
+            return "出行方案。优先回答推荐路线、时间成本、费用和关键提醒。"
+        return "综合结论。优先直接回答用户问题，再补充最关键的支撑信息。"
 
     @staticmethod
     def _looks_like_traffic_query(message: str) -> bool:

@@ -54,7 +54,7 @@ def test_answer_node_resolves_prompt_name_from_category() -> None:
     )
 
 
-def test_answer_node_prefers_traffic_prompt_for_route_congestion_questions() -> None:
+def test_answer_node_uses_composite_prompt_for_route_congestion_questions() -> None:
     state = {
         "primary_category": "route_planning",
         "latest_user_message": "杭州到金华堵不堵",
@@ -64,6 +64,22 @@ def test_answer_node_prefers_traffic_prompt_for_route_congestion_questions() -> 
                 executor="route",
                 is_success=True,
             ),
+            "traffic_1": ExecutorResult(
+                step_id="traffic_1",
+                executor="traffic",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "COMPOSITE_ANSWER_PROMPT"
+
+
+def test_answer_node_keeps_traffic_prompt_for_traffic_only_questions() -> None:
+    state = {
+        "primary_category": "traffic_status",
+        "latest_user_message": "杭金衢高速堵不堵",
+        "step_results": {
             "traffic_1": ExecutorResult(
                 step_id="traffic_1",
                 executor="traffic",
@@ -89,6 +105,51 @@ def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
     }
 
     assert AnswerNode._resolve_answer_prompt_name(state) == "ROUTE_SUMMARY_PROMPT"
+
+
+def test_answer_node_uses_composite_prompt_for_route_and_rag_results() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "今天上高速到明天下高速要过路费吗",
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+            "rag_1": ExecutorResult(
+                step_id="rag_1",
+                executor="rag",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "COMPOSITE_ANSWER_PROMPT"
+
+
+def test_answer_node_builds_toll_focused_composite_instruction() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "今天上高速到明天下高速要过路费吗",
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+            "rag_1": ExecutorResult(
+                step_id="rag_1",
+                executor="rag",
+                is_success=True,
+            ),
+        },
+    }
+
+    instruction = AnswerNode._resolve_answer_instruction(state)
+
+    assert "收费判断" in instruction
+    assert "rag、route" in instruction
 
 
 @pytest.mark.asyncio
