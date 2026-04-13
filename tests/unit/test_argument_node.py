@@ -229,6 +229,44 @@ async def test_argument_node_merges_planner_metadata_into_step_arguments() -> No
 
 
 @pytest.mark.asyncio
+async def test_argument_node_prefers_planner_metadata_for_traffic_arguments() -> None:
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "吕塘角枢纽入口情况如何",
+            "primary_category": "traffic_status",
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+                steps=[
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询吕塘角枢纽入口状态",
+                        metadata={
+                            "query": "吕塘角枢纽入口情况",
+                            "road": "吕塘角枢纽入口",
+                            "target": "入口",
+                            "time_range": "now",
+                            "query_intent": "status_check",
+                        },
+                    )
+                ],
+            ),
+        }
+    )
+
+    step_arguments = result["step_arguments"]["traffic_1"]
+    assert step_arguments.arguments["query"] == "吕塘角枢纽入口情况"
+    assert step_arguments.arguments["road"] == "吕塘角枢纽入口"
+    assert step_arguments.arguments["target"] == "入口"
+    assert step_arguments.arguments["time_range"] == "now"
+    assert step_arguments.arguments["query_intent"] == "status_check"
+
+
+@pytest.mark.asyncio
 async def test_argument_node_extracts_reference_answer_for_report_requests() -> None:
     """报表类问题带上次回答时，应提取参考回答文本。"""
 

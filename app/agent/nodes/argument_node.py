@@ -71,16 +71,14 @@ class ArgumentNode:
         resolved_arguments: ResolvedArguments,
         step: ExecutionStep,
     ) -> ResolvedArguments:
-        """Merge planner step metadata into executor arguments without clobbering extracted values."""
+        """Use planner metadata as the primary source and keep resolver values as fallback."""
 
         if not step.metadata:
             return resolved_arguments
 
         merged_arguments = dict(resolved_arguments.arguments)
         for key, value in step.metadata.items():
-            if key not in merged_arguments or ArgumentNode._is_empty_metadata_value(
-                merged_arguments.get(key)
-            ):
+            if not ArgumentNode._is_empty_metadata_value(value):
                 merged_arguments[key] = value
 
         extraction_mode = resolved_arguments.extraction_mode
