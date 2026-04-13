@@ -138,6 +138,36 @@ _NON_ROUTE_CONTEXT_KEYWORDS: tuple[str, ...] = (
     "通行费",
     "免费",
 )
+_REPORT_INTENT_KEYWORDS: tuple[str, ...] = (
+    "全路网",
+    "路网",
+    "全省",
+    "全网",
+    "日报",
+    "周报",
+    "月报",
+    "报表",
+    "表格",
+)
+_MULTI_ROAD_COMPARE_KEYWORDS: tuple[str, ...] = (
+    "对比",
+    "比较",
+    "哪条",
+    "哪个",
+    "更堵",
+    "更挤",
+    "更大",
+    "更严重",
+    "车流量",
+    "流量",
+)
+_ROAD_SEGMENT_SPLIT_PATTERN = re_compile(r"(?:/|、|，|,|；|;|以及|及|和|与|跟|还是)")
+_ROAD_TOKEN_PATTERN = re_compile(
+    r"(?:"
+    r"[GS]\d{1,4}"
+    r"|[\u4e00-\u9fff]{2,16}(?:高速公路|高速|绕城高速|绕城|环线高速|环线|快速路|国道|省道|大道|大桥|隧道|路段)"
+    r")"
+)
 
 
 class PlannerService:
@@ -278,20 +308,33 @@ class PlannerService:
         requested_tool_names = state.get("requested_tool_names") or []
         latest_user_message = str(state.get("latest_user_message", ""))
 
-        primary_category = self._coerce_primary_category(payload.get("primary_category"))
-        if primary_category is None:
-            primary_category = "general"
+        raw_primary_category = self._coerce_primary_category(payload.get("primary_category"))
+        primary_category = raw_primary_category or "general"
+        primary_category = self._normalize_primary_category(
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
+        )
         general_tool_name = (
             self._resolve_general_tool_name(latest_user_message)
             if primary_category == "general" and not requested_tool_names
             else None
         )
 
-        steps = self._coerce_steps(
-            payload.get("steps"),
-            latest_user_message=latest_user_message,
-            primary_category=primary_category,
+        should_rebuild_steps = (
+            raw_primary_category is not None and raw_primary_category != primary_category
         )
+        steps: list[ExecutionStep] = []
+        if not should_rebuild_steps:
+            steps = self._coerce_steps(
+                payload.get("steps"),
+                latest_user_message=latest_user_message,
+                primary_category=primary_category,
+            )
+        if self._should_rebuild_steps_for_primary_category(
+            steps=steps,
+            primary_category=primary_category,
+        ):
+            steps = []
         if not steps:
             steps = self._build_steps(
                 primary_category=primary_category,
@@ -460,6 +503,27 @@ class PlannerService:
             return value
         if isinstance(value, str):
             return value.strip().lower() in {"true", "1", "yes"}
+        return False
+
+    @staticmethod
+    def _should_rebuild_steps_for_primary_category(
+        *,
+        steps: list[ExecutionStep],
+        primary_category: ProblemCategory,
+    ) -> bool:
+        """当 LLM steps 与纠偏后的主分类明显冲突时，回退到稳定规则计划。"""
+
+        if not steps:
+            return False
+
+        planned_executors = {step.executor for step in steps if step.executor != "answer"}
+        if not planned_executors:
+            return False
+
+        if primary_category == "traffic_status":
+            return "report" in planned_executors
+        if primary_category == "network_report":
+            return planned_executors != {"report"}
         return False
 
     @staticmethod
@@ -837,8 +901,11 @@ class PlannerService:
                 else "traffic_status",
             }
             target = PlannerService._normalize_traffic_target(normalized_message)
+            explicit_roads = PlannerService._extract_explicit_road_targets(normalized_message)
+            if explicit_roads:
+                metadata["roads"] = explicit_roads
             if target:
-                metadata["road"] = target
+                metadata["road"] = explicit_roads[0] if explicit_roads else target
                 metadata["target"] = target
             time_range = PlannerService._infer_time_range(normalized_message)
             if time_range is not None:
@@ -1058,7 +1125,81 @@ class PlannerService:
         ):
             if target.endswith(suffix):
                 target = target[: -len(suffix)].strip()
+        for token in (
+            "哪条路",
+            "哪条",
+            "哪个路段",
+            "哪个",
+            "那条路",
+            "那条",
+            "车流量",
+            "流量",
+            "更大",
+            "比较大",
+            "更堵",
+            "更挤",
+            "更严重",
+            "对比",
+            "比较",
+        ):
+            target = target.replace(token, " ")
         return " ".join(target.split()).strip()
+
+    @staticmethod
+    def _extract_explicit_road_targets(message: str) -> list[str]:
+        """提取用户显式提到的多个道路/高速名称。"""
+
+        normalized_target = PlannerService._normalize_traffic_target(message)
+        if not normalized_target:
+            return []
+
+        road_targets: list[str] = []
+        for segment in _ROAD_SEGMENT_SPLIT_PATTERN.split(normalized_target):
+            segment = segment.strip()
+            if not segment:
+                continue
+            matches = [match.group(0).strip() for match in _ROAD_TOKEN_PATTERN.finditer(segment)]
+            if matches:
+                road_targets.append(max(matches, key=len))
+
+        if len(road_targets) >= 2:
+            return PlannerService._deduplicate_strings(road_targets)
+
+        matches = [match.group(0).strip() for match in _ROAD_TOKEN_PATTERN.finditer(normalized_target)]
+        return PlannerService._deduplicate_strings(matches)
+
+    @staticmethod
+    def _has_explicit_report_intent(message: str) -> bool:
+        """识别用户是否明确要求路网/报表类输出。"""
+
+        return any(keyword in message for keyword in _REPORT_INTENT_KEYWORDS)
+
+    @staticmethod
+    def _should_force_multi_road_traffic(latest_user_message: str) -> bool:
+        """多个指定道路的路况/车流比较优先走 traffic，而不是路网报表。"""
+
+        explicit_roads = PlannerService._extract_explicit_road_targets(latest_user_message)
+        if len(explicit_roads) < 2:
+            return False
+        if PlannerService._has_explicit_report_intent(latest_user_message):
+            return False
+
+        traffic_or_compare_keywords = (
+            tuple(_NETWORK_TRAFFIC_KEYWORDS) + tuple(_MULTI_ROAD_COMPARE_KEYWORDS)
+        )
+        return any(keyword in latest_user_message for keyword in traffic_or_compare_keywords)
+
+    @staticmethod
+    def _deduplicate_strings(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered_values: list[str] = []
+        for value in values:
+            normalized_value = value.strip()
+            if not normalized_value or normalized_value in seen:
+                continue
+            seen.add(normalized_value)
+            ordered_values.append(normalized_value)
+        return ordered_values
 
     @staticmethod
     def _infer_service_keyword(message: str) -> str | None:
@@ -1224,6 +1365,8 @@ class PlannerService:
             for keyword in ("服务区", "充电桩", "充电站", "休息区", "加油站", "便利店")
         ):
             return "service_area"
+        if PlannerService._should_force_multi_road_traffic(latest_user_message):
+            return "traffic_status"
         if any(
             keyword in latest_user_message
             for keyword in ("全路网", "路网", "日报", "周报", "月报", "表格", "对比")
@@ -1251,6 +1394,8 @@ class PlannerService:
     ) -> ProblemCategory:
         """对全省/整体类路况问题做兜底纠偏。"""
 
+        if PlannerService._should_force_multi_road_traffic(latest_user_message):
+            return "traffic_status"
         if PlannerService._should_force_network_report(latest_user_message):
             return "network_report"
         inferred_primary_category = PlannerService._infer_primary_category(

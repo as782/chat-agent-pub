@@ -46,11 +46,8 @@ class TrafficNode:
             resolved_arguments=resolved_arguments,
         )
         try:
-            tool_output = await self._tool_registry.execute_named_tool(
-                tool_name="live_road_event_query",
-                arguments={"road": str(query_arguments.get("road") or "")},
-            )
-            response_payload = self._parse_tool_output(tool_output)
+            per_road_results = await self._query_roads(query_arguments)
+            response_payload = self._merge_road_payloads(per_road_results)
             executor_result = ExecutorResult(
                 step_id=step_id,
                 executor="traffic",
@@ -58,17 +55,23 @@ class TrafficNode:
                 raw_result={
                     "query_arguments": dict(query_arguments),
                     "api_result": response_payload,
+                    "per_road_results": per_road_results,
                 },
                 normalized_result=self._build_normalized_result(
                     query_arguments=query_arguments,
                     response_payload=response_payload,
+                    per_road_results=per_road_results,
                 ),
-                summary=self._build_success_summary(response_payload),
+                summary=self._build_success_summary(
+                    response_payload=response_payload,
+                    per_road_results=per_road_results,
+                ),
             )
             return {
                 "traffic_context": self._build_traffic_context(
                     query_arguments=query_arguments,
                     response_payload=response_payload,
+                    per_road_results=per_road_results,
                 ),
                 **merge_step_result(state, result=executor_result),
             }
@@ -100,6 +103,31 @@ class TrafficNode:
             "queried_roads": queried_roads,
         }
 
+    async def _query_roads(
+        self,
+        query_arguments: dict[str, object],
+    ) -> list[dict[str, object]]:
+        queried_roads = query_arguments.get("queried_roads")
+        normalized_roads = (
+            self._deduplicate_strings(queried_roads)
+            if isinstance(queried_roads, list)
+            else []
+        )
+
+        road_results: list[dict[str, object]] = []
+        for road in normalized_roads:
+            tool_output = await self._tool_registry.execute_named_tool(
+                tool_name="live_road_event_query",
+                arguments={"road": road},
+            )
+            road_results.append(
+                {
+                    "query_road": road,
+                    "api_result": self._parse_tool_output(tool_output),
+                }
+            )
+        return road_results
+
     def _resolve_queried_roads(
         self,
         *,
@@ -123,6 +151,12 @@ class TrafficNode:
                         if normalized_road_names:
                             return normalized_road_names
 
+        resolved_roads = resolved_arguments.arguments.get("roads")
+        if isinstance(resolved_roads, list):
+            normalized_road_names = self._deduplicate_strings(resolved_roads)
+            if normalized_road_names:
+                return normalized_road_names
+
         fallback_road = str(
             resolved_arguments.arguments.get("road")
             or resolved_arguments.arguments.get("target")
@@ -130,6 +164,16 @@ class TrafficNode:
             or ""
         ).strip()
         return [fallback_road] if fallback_road else []
+
+    @staticmethod
+    def _merge_road_payloads(per_road_results: list[dict[str, object]]) -> list[dict[str, object]]:
+        merged_payloads: list[dict[str, object]] = []
+        for road_result in per_road_results:
+            api_result = road_result.get("api_result")
+            if not isinstance(api_result, list):
+                continue
+            merged_payloads.extend(item for item in api_result if isinstance(item, dict))
+        return merged_payloads
 
     @staticmethod
     def _parse_tool_output(tool_output: str) -> list[dict[str, object]]:
@@ -145,6 +189,7 @@ class TrafficNode:
         *,
         query_arguments: dict[str, object],
         response_payload: list[dict[str, object]],
+        per_road_results: list[dict[str, object]],
     ) -> dict[str, object]:
         """提取路况查询结果中的完整业务字段。"""
 
@@ -157,10 +202,13 @@ class TrafficNode:
         service_area_items = TrafficNode._extract_service_area_items(response_payload)
         exit_items = TrafficNode._extract_exit_items(response_payload)
         queried_roads = query_arguments.get("queried_roads")
+        road_summaries = TrafficNode._build_road_summaries(per_road_results)
         return {
             "road": query_arguments.get("road"),
             "queried_roads": queried_roads if isinstance(queried_roads, list) else [],
+            "requested_road_count": len(queried_roads) if isinstance(queried_roads, list) else 0,
             "matched_road_names": matched_road_names,
+            "matched_road_count": len(matched_road_names),
             "road_name": first_road.get("roadName"),
             "result_count": len(response_payload),
             "has_congestion": bool(congestion_items),
@@ -173,12 +221,22 @@ class TrafficNode:
             "service_area_items": service_area_items,
             "exit_count": len(exit_items),
             "exit_items": exit_items,
+            "road_summaries": road_summaries,
         }
 
     @staticmethod
-    def _build_success_summary(response_payload: list[dict[str, object]]) -> str:
+    def _build_success_summary(
+        *,
+        response_payload: list[dict[str, object]],
+        per_road_results: list[dict[str, object]],
+    ) -> str:
         """生成路况查询成功摘要。"""
 
+        if len(per_road_results) > 1:
+            return (
+                f"多道路路况查询成功，查询 {len(per_road_results)} 条道路，"
+                f"命中 {len(response_payload)} 条道路结果。"
+            )
         return f"路况查询成功，命中 {len(response_payload)} 条道路结果。"
 
     @staticmethod
@@ -186,6 +244,7 @@ class TrafficNode:
         *,
         query_arguments: dict[str, object],
         response_payload: list[dict[str, object]],
+        per_road_results: list[dict[str, object]],
     ) -> str:
         """把结构化参数和接口返回转为路况类 system 上下文。"""
 
@@ -196,12 +255,37 @@ class TrafficNode:
                     {
                         "query_arguments": dict(query_arguments),
                         "api_result": response_payload,
+                        "per_road_results": per_road_results,
                     },
                     ensure_ascii=False,
                     indent=2,
                 ),
             ]
         )
+
+    @staticmethod
+    def _build_road_summaries(per_road_results: list[dict[str, object]]) -> list[dict[str, object]]:
+        road_summaries: list[dict[str, object]] = []
+        for road_result in per_road_results:
+            query_road = str(road_result.get("query_road") or "").strip()
+            api_result = road_result.get("api_result")
+            payload = [item for item in api_result if isinstance(item, dict)] if isinstance(api_result, list) else []
+            matched_road_names = TrafficNode._deduplicate_strings(
+                str(item.get("roadName") or "").strip() for item in payload
+            )
+            congestion_items = TrafficNode._extract_congestion_items(payload)
+            traffic_control_items = TrafficNode._extract_traffic_control_items(payload)
+            road_summaries.append(
+                {
+                    "query_road": query_road,
+                    "matched_road_names": matched_road_names,
+                    "matched_road_count": len(matched_road_names),
+                    "result_count": len(payload),
+                    "congestion_count": len(congestion_items),
+                    "traffic_control_count": len(traffic_control_items),
+                }
+            )
+        return road_summaries
 
     @staticmethod
     def _extract_congestion_items(response_payload: list[dict[str, object]]) -> list[dict[str, object]]:

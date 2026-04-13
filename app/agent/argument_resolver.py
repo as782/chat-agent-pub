@@ -16,6 +16,13 @@ ROUTE_PAIR_PATTERN = re.compile(
     r"(?P<connector>到|至|前往|去往|往|去)"
     r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
 )
+ROAD_SEGMENT_SPLIT_PATTERN = re.compile(r"(?:/|、|，|,|；|;|以及|及|和|与|跟|还是)")
+ROAD_TOKEN_PATTERN = re.compile(
+    r"(?:"
+    r"[GS]\d{1,4}"
+    r"|[\u4e00-\u9fff]{2,16}(?:高速公路|高速|绕城高速|绕城|环线高速|环线|快速路|国道|省道|大道|大桥|隧道|路段)"
+    r")"
+)
 _ROUTE_NON_PLACE_KEYWORDS = (
     "怎么",
     "如何",
@@ -139,11 +146,15 @@ class ArgumentResolver:
         """提取路况问题中的查询对象和时间范围。"""
 
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("traffic:",))
+        normalized_target = self._normalize_traffic_target(normalized_query)
+        roads = self._extract_traffic_roads(normalized_query)
         arguments: dict[str, object] = {
             "query": normalized_query,
-            "road": self._normalize_traffic_target(normalized_query),
-            "target": self._normalize_traffic_target(normalized_query),
+            "road": roads[0] if roads else normalized_target,
+            "target": normalized_target,
         }
+        if roads:
+            arguments["roads"] = roads
         time_range = self._infer_time_range(normalized_query)
         if time_range is not None:
             arguments["time_range"] = time_range
@@ -334,7 +345,48 @@ class ArgumentResolver:
         ):
             if target.endswith(suffix):
                 target = target[: -len(suffix)].strip()
+        for token in (
+            "哪条路",
+            "哪条",
+            "哪个路段",
+            "哪个",
+            "那条路",
+            "那条",
+            "车流量",
+            "流量",
+            "更大",
+            "比较大",
+            "更堵",
+            "更挤",
+            "更严重",
+            "对比",
+            "比较",
+        ):
+            target = target.replace(token, " ")
         return " ".join(target.split()).strip()
+
+    @staticmethod
+    def _extract_traffic_roads(message: str) -> list[str]:
+        """提取并列出现的多个道路/高速名称。"""
+
+        normalized_target = ArgumentResolver._normalize_traffic_target(message)
+        if not normalized_target:
+            return []
+
+        road_targets: list[str] = []
+        for segment in ROAD_SEGMENT_SPLIT_PATTERN.split(normalized_target):
+            segment = segment.strip()
+            if not segment:
+                continue
+            matches = [match.group(0).strip() for match in ROAD_TOKEN_PATTERN.finditer(segment)]
+            if matches:
+                road_targets.append(max(matches, key=len))
+
+        if len(road_targets) >= 2:
+            return ArgumentResolver._deduplicate_strings(road_targets)
+
+        matches = [match.group(0).strip() for match in ROAD_TOKEN_PATTERN.finditer(normalized_target)]
+        return ArgumentResolver._deduplicate_strings(matches)
 
     @staticmethod
     def _infer_service_keyword(message: str) -> str | None:
@@ -371,3 +423,15 @@ class ArgumentResolver:
             if content:
                 return content
         return None
+
+    @staticmethod
+    def _deduplicate_strings(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered_values: list[str] = []
+        for value in values:
+            normalized_value = value.strip()
+            if not normalized_value or normalized_value in seen:
+                continue
+            seen.add(normalized_value)
+            ordered_values.append(normalized_value)
+        return ordered_values
