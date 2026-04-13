@@ -129,6 +129,29 @@ async def test_argument_node_extracts_service_keywords() -> None:
 
 
 @pytest.mark.asyncio
+async def test_argument_node_normalizes_traffic_road_from_restriction_phrase() -> None:
+    """路况限制类表达应把 road 压缩成路段名，把限行对象留在 target。"""
+
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "雷甸口子大客车限行",
+            "primary_category": "traffic_status",
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+            ),
+        }
+    )
+
+    resolved_arguments = result["resolved_arguments"]
+    assert resolved_arguments.arguments["road"] == "雷甸口子"
+    assert resolved_arguments.arguments["target"] == "雷甸口子"
+
+
+@pytest.mark.asyncio
 async def test_argument_node_builds_step_arguments_for_multi_step_route_plan() -> None:
     """多步骤路线计划应为不同 step 生成独立参数。"""
 

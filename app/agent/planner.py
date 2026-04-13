@@ -1020,6 +1020,21 @@ class PlannerService:
         target = message.strip()
         for token in ("今天", "明天", "昨天", "当前", "现在", "实时", "目前", "此刻"):
             target = target.replace(token, " ")
+        for token in (
+            "大客车",
+            "中客车",
+            "小客车",
+            "货车",
+            "客车",
+            "轿车",
+            "新能源车",
+            "摩托车",
+            "非机动车",
+        ):
+            index = target.find(token)
+            if index > 0:
+                target = target[:index].strip()
+                break
         for suffix in (
             "路况怎么样",
             "路况如何",
@@ -1032,6 +1047,14 @@ class PlannerService:
             "通不通畅",
             "是否拥堵",
             "会不会堵",
+            "限行了吗",
+            "限行么",
+            "限行吗",
+            "限行没",
+            "限行",
+            "禁行",
+            "管制",
+            "封闭",
         ):
             if target.endswith(suffix):
                 target = target[: -len(suffix)].strip()
