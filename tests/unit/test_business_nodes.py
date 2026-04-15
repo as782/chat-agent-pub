@@ -271,6 +271,46 @@ async def test_service_node_builds_business_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_service_node_prefers_structured_service_name_over_raw_query() -> None:
+    class _CapturingServiceToolRegistry(_FakeToolRegistry):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+            self.calls.append({"tool_name": tool_name, "arguments": dict(arguments)})
+            return await super().execute_named_tool(tool_name=tool_name, arguments=arguments)
+
+    tool_registry = _CapturingServiceToolRegistry()
+    node = ServiceNode(tool_registry=tool_registry)
+
+    await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="service_area",
+                execution_mode="single_step",
+                recommended_route="service",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="service_area",
+                arguments={
+                    "query": "杭州东服务区现在有充电桩吗",
+                    "keyword": "杭州东服务区现在有充电桩吗",
+                    "service_name": "杭州东服务区",
+                    "facility_type": "charging",
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls == [
+        {
+            "tool_name": "live_service_query",
+            "arguments": {"keyword": "杭州东服务区"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_report_node_builds_business_context() -> None:
     """报表节点应把结构化参数整理为上下文文本。"""
 

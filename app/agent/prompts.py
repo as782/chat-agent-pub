@@ -58,6 +58,8 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 补充判断：
 - 多个明确指定的高速/路段之间比较拥堵、车流量、事故或施工情况，优先归类为 traffic_status，而不是 network_report。
 - 只有用户明确要求全省/全网/路网汇总、报表、表格、日报周报月报时，才优先归类为 network_report。
+- traffic_status 场景里，如果用户没有直接说标准高速名，而是用了旧称、俗称、收费站、枢纽、方向或口语化描述，你要主动推断对应的标准高速名称或编号，并写进 metadata。
+- 这类推断必须由你基于问题语义自行完成，不要假设本地还有额外映射表帮你兜底。
 
 编排原则：
 1. 优先选择最贴近问题的首个 executor，不要默认先走 route。
@@ -102,13 +104,21 @@ steps 中每个元素字段：
 
 metadata 约定：
 - route: origin, destination, travel_mode, query, query_intent
-- traffic: query, road, target, time_range, query_intent
+- traffic: query, road, roads, road_name, road_code, target, direction, toll_station, time_range, query_intent
 - service: query, keyword, facility_type, query_intent
 - rag: query, keywords, query_type, focus
 - report: query, scope, compare_mode, reference_answer
 - answer: response_type, focus
 
 请尽量让 metadata 反映该步骤真正会用到的参数，即使部分字段只能通过当前问题做规则补齐，也要写出来。
+对 traffic 类问题特别注意：
+- 如果用户说的是旧称、俗称、收费站、枢纽或方向，不要把整句原样塞进 road。
+- 要优先推断出所属的标准高速名称或编号写入 road/roads，例如把“沪杭高速”映射到“沪昆高速”或“G60”。
+- 用户真正关注的对象继续保留在 target，例如“诸暨北收费站温州方向出口”。
+- 能识别时补充 road_name、road_code、direction、toll_station，方便后续节点直接使用。
+- 下面这类例子需要你自己完成归一化：
+  - “沪杭高速沪向车道全部畅通吗” -> road 应写标准高速名或编号，direction 保留“杭州方向”，target 只保留用户关注的车道/方向对象。
+  - “诸暨北收费站温州方向出口堵吗” -> road 应写所属标准高速名或编号，toll_station=“诸暨北收费站”，direction=“温州方向”，target 保留“诸暨北收费站温州方向出口”。
 
 请确保：
 - steps 表示完整执行链路，而不是单个意图标签。

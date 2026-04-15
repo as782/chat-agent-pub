@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from app.agent.road_inference import infer_traffic_context
 from app.agent.state import AgentState, ExecutorType, ProblemCategory, ResolvedArguments
 from app.clients.llm_client import LlmInputMessage
 
@@ -148,13 +149,22 @@ class ArgumentResolver:
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("traffic:",))
         normalized_target = self._normalize_traffic_target(normalized_query)
         roads = self._extract_traffic_roads(normalized_query)
+        inferred_context = infer_traffic_context(
+            message=normalized_query,
+            normalized_target=normalized_target,
+            explicit_roads=roads,
+        )
         arguments: dict[str, object] = {
             "query": normalized_query,
-            "road": roads[0] if roads else normalized_target,
-            "target": normalized_target,
+            "road": inferred_context.road or normalized_target,
+            "target": inferred_context.target or normalized_target,
         }
-        if roads:
-            arguments["roads"] = roads
+        if inferred_context.roads:
+            arguments["roads"] = list(inferred_context.roads)
+        if inferred_context.direction is not None:
+            arguments["direction"] = inferred_context.direction
+        if inferred_context.toll_station is not None:
+            arguments["toll_station"] = inferred_context.toll_station
         time_range = self._infer_time_range(normalized_query)
         if time_range is not None:
             arguments["time_range"] = time_range

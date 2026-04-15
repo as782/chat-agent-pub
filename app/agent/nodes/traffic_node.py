@@ -98,10 +98,18 @@ class TrafficNode:
             resolved_arguments=resolved_arguments,
         )
         road = queried_roads[0] if queried_roads else ""
-        return {
+        query_arguments: dict[str, object] = {
             "road": road,
             "queried_roads": queried_roads,
         }
+        for key in ("target", "direction", "toll_station", "road_name", "road_code", "query"):
+            value = resolved_arguments.arguments.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            query_arguments[key] = value
+        return query_arguments
 
     async def _query_roads(
         self,
@@ -157,13 +165,19 @@ class TrafficNode:
             if normalized_road_names:
                 return normalized_road_names
 
-        fallback_road = str(
-            resolved_arguments.arguments.get("road")
-            or resolved_arguments.arguments.get("target")
-            or resolved_arguments.arguments.get("query")
-            or ""
-        ).strip()
+        fallback_road = self._resolve_single_road_argument(resolved_arguments)
         return [fallback_road] if fallback_road else []
+
+    @staticmethod
+    def _resolve_single_road_argument(resolved_arguments: ResolvedArguments) -> str:
+        """Prefer structured LLM/planner road fields before falling back to raw text."""
+
+        arguments = resolved_arguments.arguments
+        for key in ("road_name", "road_code", "road", "target", "query"):
+            value = str(arguments.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     @staticmethod
     def _merge_road_payloads(per_road_results: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -205,11 +219,15 @@ class TrafficNode:
         road_summaries = TrafficNode._build_road_summaries(per_road_results)
         return {
             "road": query_arguments.get("road"),
+            "road_name": query_arguments.get("road_name") or first_road.get("roadName"),
+            "road_code": query_arguments.get("road_code"),
+            "target": query_arguments.get("target"),
+            "direction": query_arguments.get("direction"),
+            "toll_station": query_arguments.get("toll_station"),
             "queried_roads": queried_roads if isinstance(queried_roads, list) else [],
             "requested_road_count": len(queried_roads) if isinstance(queried_roads, list) else 0,
             "matched_road_names": matched_road_names,
             "matched_road_count": len(matched_road_names),
-            "road_name": first_road.get("roadName"),
             "result_count": len(response_payload),
             "has_congestion": bool(congestion_items),
             "congestion_count": len(congestion_items),
@@ -269,7 +287,11 @@ class TrafficNode:
         for road_result in per_road_results:
             query_road = str(road_result.get("query_road") or "").strip()
             api_result = road_result.get("api_result")
-            payload = [item for item in api_result if isinstance(item, dict)] if isinstance(api_result, list) else []
+            payload = (
+                [item for item in api_result if isinstance(item, dict)]
+                if isinstance(api_result, list)
+                else []
+            )
             matched_road_names = TrafficNode._deduplicate_strings(
                 str(item.get("roadName") or "").strip() for item in payload
             )
@@ -288,7 +310,9 @@ class TrafficNode:
         return road_summaries
 
     @staticmethod
-    def _extract_congestion_items(response_payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    def _extract_congestion_items(
+        response_payload: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
         congestion_items: list[dict[str, object]] = []
         for road in response_payload:
             road_name = str(road.get("roadName") or "").strip()
@@ -337,7 +361,9 @@ class TrafficNode:
         return traffic_control_items
 
     @staticmethod
-    def _extract_service_area_items(response_payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    def _extract_service_area_items(
+        response_payload: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
         service_area_items: list[dict[str, object]] = []
         for road in response_payload:
             road_name = str(road.get("roadName") or "").strip()

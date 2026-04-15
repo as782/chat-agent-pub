@@ -93,15 +93,26 @@ class ServiceNode:
             state=state,
             step_id=step_id,
         )
-        keyword = service_area_names[0] if service_area_names else str(
-            resolved_arguments.arguments.get("keyword")
-            or resolved_arguments.arguments.get("query")
-            or ""
-        ).strip()
+        keyword = (
+            service_area_names[0]
+            if service_area_names
+            else self._resolve_service_keyword(resolved_arguments)
+        )
         return {
             "keyword": keyword,
             "service_area_names": service_area_names,
         }
+
+    @staticmethod
+    def _resolve_service_keyword(resolved_arguments: ResolvedArguments) -> str:
+        """Prefer structured service fields before falling back to the raw query text."""
+
+        arguments = resolved_arguments.arguments
+        for key in ("service_name", "keyword", "road_name", "facility_type", "query"):
+            value = str(arguments.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     def _resolve_service_area_names(
         self,

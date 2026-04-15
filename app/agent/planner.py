@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from app.agent.prompts import PLANNER_JSON_OUTPUT_PROMPT, PLANNER_PROMPT
+from app.agent.road_inference import infer_traffic_context
 from app.agent.state import (
     AgentRoute,
     AgentState,
@@ -867,7 +868,51 @@ class PlannerService:
         for key, value in inferred_metadata.items():
             if key not in merged_metadata or self._is_empty_metadata_value(merged_metadata[key]):
                 merged_metadata[key] = value
+        if executor == "traffic":
+            merged_metadata = self._normalize_traffic_metadata(
+                metadata=merged_metadata,
+                latest_user_message=latest_user_message,
+            )
         return merged_metadata
+
+    @staticmethod
+    def _normalize_traffic_metadata(
+        *,
+        metadata: dict[str, object],
+        latest_user_message: str,
+    ) -> dict[str, object]:
+        """Normalize traffic metadata to canonical road names/codes when possible."""
+
+        normalized_metadata = dict(metadata)
+        message = str(metadata.get("query") or latest_user_message or "").strip()
+        target = str(
+            metadata.get("target") or PlannerService._normalize_traffic_target(message) or ""
+        ).strip()
+        raw_roads = metadata.get("roads")
+        explicit_roads = (
+            [str(item).strip() for item in raw_roads if str(item).strip()]
+            if isinstance(raw_roads, list)
+            else []
+        )
+
+        inferred_context = infer_traffic_context(
+            message=message,
+            normalized_target=target,
+            explicit_roads=explicit_roads,
+        )
+
+        if inferred_context.road is not None and not normalized_metadata.get("road"):
+            normalized_metadata["road"] = inferred_context.road
+        if inferred_context.roads and not normalized_metadata.get("roads"):
+            normalized_metadata["roads"] = list(inferred_context.roads)
+        if inferred_context.target is not None and not normalized_metadata.get("target"):
+            normalized_metadata["target"] = inferred_context.target
+        if inferred_context.direction is not None and not normalized_metadata.get("direction"):
+            normalized_metadata["direction"] = inferred_context.direction
+        if inferred_context.toll_station is not None and not normalized_metadata.get("toll_station"):
+            normalized_metadata["toll_station"] = inferred_context.toll_station
+
+        return normalized_metadata
 
     @staticmethod
     def _infer_step_metadata(
@@ -894,19 +939,29 @@ class PlannerService:
             return metadata
 
         if executor == "traffic":
+            target = PlannerService._normalize_traffic_target(normalized_message)
+            explicit_roads = PlannerService._extract_explicit_road_targets(normalized_message)
+            inferred_context = infer_traffic_context(
+                message=normalized_message,
+                normalized_target=target,
+                explicit_roads=explicit_roads,
+            )
             metadata = {
                 "query": normalized_message,
                 "query_intent": "route_based_traffic"
                 if PlannerService._looks_like_od_query(normalized_message)
                 else "traffic_status",
             }
-            target = PlannerService._normalize_traffic_target(normalized_message)
-            explicit_roads = PlannerService._extract_explicit_road_targets(normalized_message)
-            if explicit_roads:
-                metadata["roads"] = explicit_roads
-            if target:
-                metadata["road"] = explicit_roads[0] if explicit_roads else target
-                metadata["target"] = target
+            if inferred_context.roads:
+                metadata["roads"] = list(inferred_context.roads)
+            if inferred_context.road is not None:
+                metadata["road"] = inferred_context.road
+            if inferred_context.target is not None:
+                metadata["target"] = inferred_context.target
+            if inferred_context.direction is not None:
+                metadata["direction"] = inferred_context.direction
+            if inferred_context.toll_station is not None:
+                metadata["toll_station"] = inferred_context.toll_station
             time_range = PlannerService._infer_time_range(normalized_message)
             if time_range is not None:
                 metadata["time_range"] = time_range
