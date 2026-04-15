@@ -99,31 +99,75 @@ class RouteNode:
         """提取路线查询结果中的完整业务字段。"""
 
         routes = response_payload.get("routes", [])
-        first_route = routes[0] if isinstance(routes, list) and routes else {}
-        if not isinstance(first_route, dict):
-            first_route = {}
-        sections = RouteNode._extract_sections(first_route)
-        traffic_controls = RouteNode._extract_traffic_controls(sections)
-        service_areas = RouteNode._extract_service_areas(sections)
-        road_names = RouteNode._extract_road_names(sections)
-        service_area_names = [item["service_name"] for item in service_areas if item["service_name"]]
+        normalized_routes = (
+            [route for route in routes if isinstance(route, dict)]
+            if isinstance(routes, list)
+            else []
+        )
+        first_route = normalized_routes[0] if normalized_routes else {}
+        route_summaries = RouteNode._build_route_summaries(normalized_routes)
+        traffic_controls = [
+            item
+            for route_summary in route_summaries
+            for item in route_summary.get("traffic_controls", [])
+            if isinstance(item, dict)
+        ]
+        service_areas = [
+            item
+            for route_summary in route_summaries
+            for item in route_summary.get("service_areas", [])
+            if isinstance(item, dict)
+        ]
+        road_names = RouteNode._deduplicate_strings(
+            road_name
+            for route_summary in route_summaries
+            for road_name in route_summary.get("road_names", [])
+        )
+        service_area_names = [
+            item["service_name"] for item in service_areas if item.get("service_name")
+        ]
         return {
             "origin": resolved_arguments.arguments.get("origin"),
             "destination": resolved_arguments.arguments.get("destination"),
             "travel_mode": resolved_arguments.arguments.get("travel_mode"),
             "routes_count": response_payload.get("routesCount")
             if response_payload.get("routesCount") is not None
-            else len(routes) if isinstance(routes, list) else 0,
+            else len(normalized_routes),
             "first_route_distance": first_route.get("distance"),
             "first_route_duration": first_route.get("duration"),
             "first_route_toll": first_route.get("toll"),
             "road_names": road_names,
+            "route_summaries": route_summaries,
             "service_area_names": RouteNode._deduplicate_strings(service_area_names),
             "traffic_controls": traffic_controls,
             "service_areas": service_areas,
             "traffic_control_count": len(traffic_controls),
             "service_area_count": len(service_areas),
         }
+
+    @staticmethod
+    def _build_route_summaries(routes: list[dict[str, object]]) -> list[dict[str, object]]:
+        route_summaries: list[dict[str, object]] = []
+        for route_index, route in enumerate(routes, start=1):
+            sections = RouteNode._extract_sections(route)
+            traffic_controls = RouteNode._extract_traffic_controls(sections)
+            service_areas = RouteNode._extract_service_areas(sections)
+            road_names = RouteNode._extract_road_names(sections)
+            route_summaries.append(
+                {
+                    "route_index": route_index,
+                    "distance": route.get("distance"),
+                    "duration": route.get("duration"),
+                    "toll": route.get("toll"),
+                    "section_count": len(sections),
+                    "road_names": road_names,
+                    "traffic_controls": traffic_controls,
+                    "service_areas": service_areas,
+                    "traffic_control_count": len(traffic_controls),
+                    "service_area_count": len(service_areas),
+                }
+            )
+        return route_summaries
 
     @staticmethod
     def _extract_sections(first_route: dict[str, object]) -> list[dict[str, object]]:

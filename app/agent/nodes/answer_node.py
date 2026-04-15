@@ -415,17 +415,48 @@ class AnswerNode:
 
         parts = ["以下是当前执行节点返回的结构化结果，请基于这些结果组织最终回答："]
         for step_id, result in step_results.items():
-            result_summary = "\n".join(
-                f"- {k}: {v}"
-                for k, v in (result.normalized_result or {}).items()
-                if k != "raw_result"
-            )
+            compact_result = AnswerNode._compact_executor_result(result)
+            result_summary = "\n".join(f"- {k}: {v}" for k, v in compact_result.items())
             parts.append(
                 f"[{step_id}] executor={result.executor} success={result.is_success} "
                 f"sources={result.sources}\n{result_summary}\n{result.summary}"
             )
 
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _compact_executor_result(result: ExecutorResult) -> dict[str, object]:
+        """压缩执行结果，避免把已在专用上下文中出现的大块明细重复注入。"""
+
+        normalized_result = result.normalized_result or {}
+        if not isinstance(normalized_result, dict):
+            return {}
+
+        skip_keys = {
+            "raw_result",
+            "route_summaries",
+            "road_summaries",
+            "road_details",
+            "event_items",
+            "congestion_items",
+            "traffic_control_items",
+            "service_area_items",
+            "exit_items",
+            "traffic_controls",
+            "service_areas",
+            "charge_items",
+            "commercial_items",
+            "congestion_top_items",
+            "accident_top_items",
+            "control_top_items",
+        }
+
+        compact_result: dict[str, object] = {}
+        for key, value in normalized_result.items():
+            if key in skip_keys:
+                continue
+            compact_result[key] = value
+        return compact_result
 
     def _extract_executed_tool_calls(self, state: AgentState) -> list[ExecutedToolCall]:
         """从状态中提取已执行的工具调用。"""

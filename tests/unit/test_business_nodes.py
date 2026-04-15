@@ -337,3 +337,258 @@ async def test_report_node_builds_business_context() -> None:
     assert result["step_results"]["report_1"].normalized_result["congestion_top_items"][0]["roadName"] == "沪昆高速"
     assert result["step_results"]["report_1"].normalized_result["accident_top_items"][0]["roadName"] == "杭州绕城高速"
     assert result["step_results"]["report_1"].normalized_result["control_top_items"][0]["roadName"] == "长深高速"
+class _MultiRouteToolRegistry:
+    async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+        if tool_name == "live_driving_query":
+            return dumps(
+                {
+                    "routesCount": 2,
+                    "routes": [
+                        {
+                            "distance": 180000,
+                            "duration": 120,
+                            "toll": 85,
+                            "sections": [
+                                {"roadName": "杭金衢高速", "trafficControls": [], "serviceAreas": []},
+                                {"roadName": "沪昆高速", "trafficControls": [], "serviceAreas": []},
+                            ],
+                        },
+                        {
+                            "distance": 195000,
+                            "duration": 135,
+                            "toll": 78,
+                            "sections": [
+                                {"roadName": "杭州绕城高速", "trafficControls": [], "serviceAreas": []},
+                                {"roadName": "长深高速", "trafficControls": [], "serviceAreas": []},
+                            ],
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        if tool_name == "live_road_event_query":
+            road = str(arguments.get("road") or "")
+            payload_by_road = {
+                "杭金衢高速": [
+                    {
+                        "roadName": "杭金衢高速",
+                        "roadGbCode": "G60",
+                        "congestionInfoList": [
+                            {
+                                "id": "cg-1",
+                                "des": "金华方向缓行",
+                                "beginTime": "2026-04-15 08:00:00",
+                                "expectedEndTime": "2026-04-15 10:30:00",
+                                "beginMilestone": 120,
+                                "endMilestone": 128,
+                                "directionType": "1",
+                                "controlMeasures": "借道通行",
+                                "eventType": "congestion",
+                                "subEventType": "slow",
+                                "roadAmbleMile": 8.0,
+                            }
+                        ],
+                        "trafficControlList": [
+                            {
+                                "id": "tc-1",
+                                "des": "施工占道",
+                                "beginTime": "2026-04-15 07:30:00",
+                                "expectedEndTime": "2026-04-15 18:00:00",
+                                "beginMilestone": 122,
+                                "endMilestone": 124,
+                                "directionType": "1",
+                                "controlMeasures": "封闭第一车道",
+                                "eventType": "construction",
+                                "subEventType": "lane_closure",
+                            }
+                        ],
+                        "serviceAreaList": [],
+                        "exitInfoList": [],
+                    }
+                ],
+                "沪昆高速": [
+                    {
+                        "roadName": "沪昆高速",
+                        "roadGbCode": "G60",
+                        "congestionInfoList": [],
+                        "trafficControlList": [],
+                        "serviceAreaList": [],
+                        "exitInfoList": [
+                            {
+                                "tollName": "诸暨北收费站",
+                                "tollId": 101,
+                                "entranceStatus": 0,
+                                "exportStatus": 10203,
+                            }
+                        ],
+                    }
+                ],
+                "杭州绕城高速": [
+                    {
+                        "roadName": "杭州绕城高速",
+                        "roadGbCode": "G2504",
+                        "congestionInfoList": [
+                            {
+                                "id": "cg-2",
+                                "des": "北向拥堵",
+                                "beginTime": "2026-04-15 09:10:00",
+                                "expectedEndTime": "2026-04-15 11:00:00",
+                                "beginMilestone": 32,
+                                "endMilestone": 36,
+                                "directionType": "1",
+                                "controlMeasures": "间歇放行",
+                            }
+                        ],
+                        "trafficControlList": [],
+                        "serviceAreaList": [],
+                        "exitInfoList": [],
+                    }
+                ],
+                "长深高速": [
+                    {
+                        "roadName": "长深高速",
+                        "roadGbCode": "G25",
+                        "congestionInfoList": [],
+                        "trafficControlList": [
+                            {
+                                "id": "tc-2",
+                                "des": "入口限流",
+                                "beginTime": "2026-04-15 08:20:00",
+                                "expectedEndTime": "2026-04-15 12:00:00",
+                                "beginMilestone": 210,
+                                "endMilestone": 212,
+                                "directionType": "2",
+                                "controlMeasures": "货车分批放行",
+                                "eventType": "control",
+                            }
+                        ],
+                        "serviceAreaList": [],
+                        "exitInfoList": [],
+                    }
+                ],
+            }
+            return dumps(payload_by_road.get(road, []), ensure_ascii=False)
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+
+@pytest.mark.asyncio
+async def test_route_node_keeps_all_routes_for_od_queries() -> None:
+    node = RouteNode(tool_registry=_MultiRouteToolRegistry())
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="single_step",
+                recommended_route="route",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="route_planning",
+                arguments={"origin": "杭州", "destination": "金华", "travel_mode": "auto"},
+            ),
+        }
+    )
+
+    normalized_result = result["step_results"]["route_1"].normalized_result
+    assert normalized_result["routes_count"] == 2
+    assert len(normalized_result["route_summaries"]) == 2
+    assert normalized_result["road_names"] == [
+        "杭金衢高速",
+        "沪昆高速",
+        "杭州绕城高速",
+        "长深高速",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_builds_route_level_event_and_control_details() -> None:
+    route_node = RouteNode(tool_registry=_MultiRouteToolRegistry())
+    route_result = await route_node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="multi_step",
+                recommended_route="route",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="route_planning",
+                arguments={"origin": "杭州", "destination": "金华", "travel_mode": "auto"},
+            ),
+        }
+    )
+
+    traffic_node = TrafficNode(tool_registry=_MultiRouteToolRegistry())
+    traffic_result = await traffic_node.run(
+        {
+            "current_step_id": "traffic_1",
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="multi_step",
+                recommended_route="traffic",
+                steps=[
+                    ExecutionStep(step_id="route_1", executor="route", goal="查询路线"),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询所有路线路况",
+                        depends_on=["route_1"],
+                    ),
+                ],
+            ),
+            "step_results": route_result["step_results"],
+            "step_arguments": {
+                "traffic_1": ResolvedArguments(
+                    category="traffic_status",
+                    arguments={"query": "杭州到金华堵不堵"},
+                )
+            },
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={"query": "杭州到金华堵不堵"},
+            ),
+        }
+    )
+
+    normalized_result = traffic_result["step_results"]["traffic_1"].normalized_result
+    assert normalized_result["queried_roads"] == [
+        "杭金衢高速",
+        "沪昆高速",
+        "杭州绕城高速",
+        "长深高速",
+    ]
+    assert normalized_result["route_count"] == 2
+    assert normalized_result["event_count"] == 5
+    assert normalized_result["road_summaries"][0]["event_items"][0]["event_label"] == "拥堵"
+    assert normalized_result["road_summaries"][0]["event_items"][1]["event_label"] == "施工"
+
+    first_route = normalized_result["route_summaries"][0]
+    second_route = normalized_result["route_summaries"][1]
+
+    assert first_route["road_names"] == ["杭金衢高速", "沪昆高速"]
+    assert first_route["congestion_count"] == 1
+    assert first_route["traffic_control_count"] == 1
+    assert first_route["road_details"][0]["congestion_items"][0]["description"] == "金华方向缓行"
+    assert first_route["road_details"][0]["traffic_control_items"][0]["description"] == "施工占道"
+    assert first_route["road_details"][0]["congestion_items"][0]["start_time"] == "2026-04-15 08:00:00"
+    assert first_route["road_details"][0]["congestion_items"][0]["end_time"] == "2026-04-15 10:30:00"
+    assert first_route["road_details"][0]["congestion_items"][0]["control_measures"] == "借道通行"
+    assert first_route["road_details"][0]["congestion_items"][0]["direction_label"] == "上行"
+    assert first_route["road_details"][0]["congestion_items"][0]["location_description"] == "方向:上行 桩号:120-128"
+    assert first_route["road_details"][0]["traffic_control_items"][0]["control_measures"] == "封闭第一车道"
+    assert first_route["road_details"][0]["event_items"][0]["event_label"] == "拥堵"
+    assert first_route["road_details"][0]["event_items"][1]["event_label"] == "施工"
+    assert first_route["road_details"][1]["exit_items"][0]["toll_name"] == "诸暨北收费站"
+    assert first_route["road_details"][1]["exit_items"][0]["export_status"] == 10203
+    assert first_route["road_details"][1]["exit_items"][0]["export_status_label"] == "限流"
+    assert first_route["road_details"][1]["event_items"][0]["event_label"] == "收费站"
+    assert first_route["road_details"][1]["event_items"][0]["export_status_label"] == "限流"
+    assert first_route["event_items"][1]["event_label"] == "施工"
+
+    assert second_route["road_names"] == ["杭州绕城高速", "长深高速"]
+    assert second_route["congestion_count"] == 1
+    assert second_route["traffic_control_count"] == 1
+    assert second_route["road_details"][0]["congestion_items"][0]["description"] == "北向拥堵"
+    assert second_route["road_details"][0]["congestion_items"][0]["direction_label"] == "上行"
+    assert second_route["road_details"][1]["traffic_control_items"][0]["description"] == "入口限流"
+    assert second_route["road_details"][1]["traffic_control_items"][0]["control_measures"] == "货车分批放行"
+    assert second_route["road_details"][1]["event_items"][0]["event_label"] == "管制"

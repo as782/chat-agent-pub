@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.nodes.answer_node import AnswerNode
+from app.agent.prompts import COMPOSITE_ANSWER_PROMPT, TRAFFIC_SUMMARY_PROMPT
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
@@ -41,6 +42,36 @@ def test_answer_node_builds_executor_results_context() -> None:
     assert "[rag_1] executor=rag success=True" in context
     assert "知识检索命中 2 条结果。" in context
     assert "12.5" in context
+
+
+def test_answer_node_compacts_redundant_executor_result_fields() -> None:
+    """结果上下文应保留关键信息，但去掉大块重复明细。"""
+
+    context = AnswerNode._build_executor_results_context(
+        {
+            "traffic_1": ExecutorResult(
+                step_id="traffic_1",
+                executor="traffic",
+                is_success=True,
+                normalized_result={
+                    "road_name": "沪昆高速",
+                    "route_count": 2,
+                    "event_count": 5,
+                    "event_items": [{"event_category": "congestion"}],
+                    "route_summaries": [{"route_index": 1}],
+                },
+                summary="路况查询成功，命中 1 条道路结果。",
+            )
+        }
+    )
+
+    assert context is not None
+    assert "路况查询成功" in context
+    assert "road_name" in context
+    assert "route_count" in context
+    assert "event_count" in context
+    assert "event_items" not in context
+    assert "route_summaries" not in context
 
 
 def test_answer_node_resolves_prompt_name_from_category() -> None:
@@ -89,6 +120,14 @@ def test_answer_node_keeps_traffic_prompt_for_traffic_only_questions() -> None:
     }
 
     assert AnswerNode._resolve_answer_prompt_name(state) == "TRAFFIC_SUMMARY_PROMPT"
+
+
+def test_traffic_prompts_require_detailed_event_breakdown() -> None:
+    assert "event_items" in TRAFFIC_SUMMARY_PROMPT
+    assert "路线/道路 -> 事件类别 -> 详细内容" in TRAFFIC_SUMMARY_PROMPT
+    assert "起止时间" in TRAFFIC_SUMMARY_PROMPT
+    assert "event_items" in COMPOSITE_ANSWER_PROMPT
+    assert "整体结论 -> 路线/道路 -> 事件明细" in COMPOSITE_ANSWER_PROMPT
 
 
 def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
