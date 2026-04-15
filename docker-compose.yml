@@ -12,6 +12,8 @@ services:
     working_dir: /workspace
     init: true
     restart: unless-stopped
+    volumes:
+      - ./logs:/workspace/logs
     ports:
       - "${APP_HOST_PORT:-8000}:${APP_PORT:-8000}"
     environment:
@@ -19,6 +21,12 @@ services:
       APP_ENV: ${APP_ENV:-local}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: ${APP_PORT:-8000}
+      LOG_TO_FILE: ${LOG_TO_FILE:-true}
+      LOG_DIR: ${LOG_DIR:-/workspace/logs}
+      LOG_FILE_NAME: ${LOG_FILE_NAME:-chat-agent.log}
+      LOG_ROTATE_WHEN: ${LOG_ROTATE_WHEN:-midnight}
+      LOG_ROTATE_INTERVAL: ${LOG_ROTATE_INTERVAL:-1}
+      LOG_BACKUP_COUNT: ${LOG_BACKUP_COUNT:-14}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-chat_agent}

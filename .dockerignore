@@ -11,5 +11,6 @@ __pycache__
 docs
 tests
 tmp
+logs
 server.log
 test_output*.log

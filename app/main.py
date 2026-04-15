@@ -37,7 +37,7 @@ def create_app() -> FastAPI:
     """创建 FastAPI 应用实例。"""
 
     settings = get_settings()
-    configure_logging(is_debug=settings.is_debug)
+    configure_logging(settings=settings)
 
     application = FastAPI(
         title=settings.app_name,

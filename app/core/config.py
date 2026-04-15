@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local", validation_alias="APP_ENV")
     app_host: str = Field(default="0.0.0.0", validation_alias="APP_HOST")
     app_port: int = Field(default=8000, validation_alias="APP_PORT")
+    log_to_file: bool | None = Field(default=None, validation_alias="LOG_TO_FILE")
+    log_dir: str = Field(default="logs", validation_alias="LOG_DIR")
+    log_file_name: str = Field(default="chat-agent.log", validation_alias="LOG_FILE_NAME")
+    log_rotate_when: str = Field(default="midnight", validation_alias="LOG_ROTATE_WHEN")
+    log_rotate_interval: int = Field(default=1, validation_alias="LOG_ROTATE_INTERVAL", ge=1)
+    log_backup_count: int = Field(default=14, validation_alias="LOG_BACKUP_COUNT", ge=0)
 
     postgres_host: str = Field(default="localhost", validation_alias="POSTGRES_HOST")
     postgres_port: int = Field(default=55432, validation_alias="POSTGRES_PORT")
@@ -119,14 +125,47 @@ class Settings(BaseSettings):
 
         return self.app_env.lower() in {"local", "dev", "test"}
 
+    @property
+    def enable_file_logging(self) -> bool:
+        """返回是否启用日志文件持久化。"""
+
+        if self.log_to_file is not None:
+            return self.log_to_file
+        return self.app_env.lower() != "test"
+
     @field_validator("openai_enable_thinking", "planner_enable_thinking", mode="before")
     @classmethod
     def _normalize_optional_boolean(cls, value: object) -> object:
-        """Treat blank env values as unset for optional boolean settings."""
+        """将空字符串布尔配置视为未设置。"""
 
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("log_rotate_when", mode="before")
+    @classmethod
+    def _normalize_log_rotate_when(cls, value: object) -> object:
+        """统一日志轮转策略写法，兼容常见别名。"""
+
+        if not isinstance(value, str):
+            return value
+
+        normalized_value = value.strip()
+        if not normalized_value:
+            return "midnight"
+
+        aliases = {
+            "daily": "midnight",
+            "day": "midnight",
+            "midnight": "midnight",
+            "hourly": "H",
+            "hour": "H",
+            "minutes": "M",
+            "minute": "M",
+            "seconds": "S",
+            "second": "S",
+        }
+        return aliases.get(normalized_value.lower(), normalized_value)
 
 
 @lru_cache(maxsize=1)

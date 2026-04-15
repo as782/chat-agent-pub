@@ -10,6 +10,7 @@ dist/
 .env
 
 tmp/
+logs/
 *.log
 tests_output.log
 server.log

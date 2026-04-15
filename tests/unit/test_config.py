@@ -10,6 +10,12 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
 
     monkeypatch.setenv("APP_NAME", "阶段二测试应用")
     monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("LOG_TO_FILE", "true")
+    monkeypatch.setenv("LOG_DIR", "runtime-logs")
+    monkeypatch.setenv("LOG_FILE_NAME", "service.log")
+    monkeypatch.setenv("LOG_ROTATE_WHEN", "daily")
+    monkeypatch.setenv("LOG_ROTATE_INTERVAL", "2")
+    monkeypatch.setenv("LOG_BACKUP_COUNT", "9")
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.setenv("POSTGRES_PORT", "65432")
     monkeypatch.setenv("POSTGRES_DB", "test_db")
@@ -42,6 +48,12 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
 
     assert settings.app_name == "阶段二测试应用"
     assert settings.app_env == "test"
+    assert settings.enable_file_logging is True
+    assert settings.log_dir == "runtime-logs"
+    assert settings.log_file_name == "service.log"
+    assert settings.log_rotate_when == "midnight"
+    assert settings.log_rotate_interval == 2
+    assert settings.log_backup_count == 9
     assert settings.database_url == "postgresql+asyncpg://tester:secret@localhost:65432/test_db"
     assert settings.redis_url.endswith("/1")
     assert settings.openai_base_url == "https://example.com/v1"
@@ -77,7 +89,9 @@ def test_get_settings_prefers_explicit_postgres_dsn(monkeypatch: MonkeyPatch) ->
     assert settings.database_url == "sqlite+aiosqlite:///override.db"
 
 
-def test_get_settings_treats_blank_optional_thinking_flags_as_none(monkeypatch: MonkeyPatch) -> None:
+def test_get_settings_treats_blank_optional_thinking_flags_as_none(
+    monkeypatch: MonkeyPatch,
+) -> None:
     """Blank optional thinking flags should be treated as unset."""
 
     monkeypatch.setenv("OPENAI_ENABLE_THINKING", "   ")
@@ -87,3 +101,15 @@ def test_get_settings_treats_blank_optional_thinking_flags_as_none(monkeypatch: 
 
     assert settings.openai_enable_thinking is None
     assert settings.planner_enable_thinking is None
+
+
+def test_get_settings_disables_file_logging_by_default_in_test_env(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """验证 test 环境默认不会启用日志文件落盘。"""
+
+    monkeypatch.setenv("APP_ENV", "test")
+
+    settings = get_settings()
+
+    assert settings.enable_file_logging is False

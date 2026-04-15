@@ -312,3 +312,12 @@ uv run pre-commit run --all-files
 开发流程、Git 分支规范、Commit 规范、PR 规范、中文注释规范见：
 
 - [docs/development.md](/c:/Users/wengkaibin/DATA/WorkSpace/Test spaces/chat-agent/docs/development.md)
+
+## 日志
+
+- 应用日志同时输出到控制台和文件。
+- Docker 部署默认把宿主机 `./logs` 挂载到容器内 `/workspace/logs`。
+- 默认日志文件为 `./logs/chat-agent.log`，按天轮转，默认保留 14 份历史日志。
+- 可通过 `LOG_TO_FILE`、`LOG_DIR`、`LOG_FILE_NAME`、`LOG_ROTATE_WHEN`、`LOG_ROTATE_INTERVAL`、`LOG_BACKUP_COUNT` 调整策略。
+- 实时查看容器日志可使用 `docker compose logs -f app`。
+- 直接查看持久化日志文件可使用 `logs/chat-agent.log` 及轮转后的 `logs/chat-agent.log.YYYY-MM-DD`。
