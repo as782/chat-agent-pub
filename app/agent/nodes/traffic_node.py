@@ -20,7 +20,10 @@ from app.agent.state import (
     resolve_step_arguments,
 )
 from app.core.exceptions import UpstreamServiceException
+from app.core.logger import get_logger
 from app.tools.registry import ToolRegistry
+
+LOGGER = get_logger(__name__)
 
 
 class TrafficNode:
@@ -111,6 +114,16 @@ class TrafficNode:
             if isinstance(value, str) and not value.strip():
                 continue
             query_arguments[key] = value
+        if (
+            str(resolved_arguments.arguments.get("query_intent") or "").strip() == "route_based_traffic"
+            and not queried_roads
+        ):
+            LOGGER.warning(
+                "Traffic node did not resolve concrete roads for route-based traffic query: step_id=%s target=%s query=%s",
+                step_id,
+                query_arguments.get("target"),
+                query_arguments.get("query"),
+            )
         return query_arguments
 
     def _resolve_route_summaries(
@@ -210,6 +223,14 @@ class TrafficNode:
         """Prefer structured LLM/planner road fields before falling back to raw text."""
 
         arguments = resolved_arguments.arguments
+        query_intent = str(arguments.get("query_intent") or "").strip()
+        if query_intent == "route_based_traffic":
+            for key in ("road_name", "road_code", "road"):
+                value = str(arguments.get(key) or "").strip()
+                if value:
+                    return value
+            return ""
+
         for key in ("road_name", "road_code", "road", "target", "query"):
             value = str(arguments.get(key) or "").strip()
             if value:

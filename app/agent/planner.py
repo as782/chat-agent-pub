@@ -321,16 +321,12 @@ class PlannerService:
             else None
         )
 
-        should_rebuild_steps = (
-            raw_primary_category is not None and raw_primary_category != primary_category
-        )
         steps: list[ExecutionStep] = []
-        if not should_rebuild_steps:
-            steps = self._coerce_steps(
-                payload.get("steps"),
-                latest_user_message=latest_user_message,
-                primary_category=primary_category,
-            )
+        steps = self._coerce_steps(
+            payload.get("steps"),
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
+        )
         if self._should_rebuild_steps_for_primary_category(
             steps=steps,
             primary_category=primary_category,
@@ -521,8 +517,14 @@ class PlannerService:
         if not planned_executors:
             return False
 
+        if primary_category == "policy":
+            return "rag" not in planned_executors
+        if primary_category == "route_planning":
+            return "route" not in planned_executors
         if primary_category == "traffic_status":
-            return "report" in planned_executors
+            return "report" in planned_executors or "traffic" not in planned_executors
+        if primary_category == "service_area":
+            return "service" not in planned_executors
         if primary_category == "network_report":
             return planned_executors != {"report"}
         return False
