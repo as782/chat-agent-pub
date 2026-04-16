@@ -8,7 +8,7 @@ from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.nodes.answer_node import AnswerNode
-from app.agent.prompts import COMPOSITE_ANSWER_PROMPT, TRAFFIC_SUMMARY_PROMPT
+from app.agent.answer_prompts import COMPOSITE_ANSWER_PROMPT, TRAFFIC_SUMMARY_PROMPT
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base

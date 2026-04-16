@@ -445,3 +445,269 @@ class ArgumentResolver:
             seen.add(normalized_value)
             ordered_values.append(normalized_value)
         return ordered_values
+
+    @staticmethod
+    def _clean_route_place(value: str) -> str:
+        cleaned_value = value.strip()
+        for prefix in (
+            "我从",
+            "从",
+            "我想从",
+            "想从",
+            "准备从",
+            "打算从",
+            "计划从",
+            "我想",
+            "想",
+        ):
+            if cleaned_value.startswith(prefix) and len(cleaned_value) > len(prefix):
+                cleaned_value = cleaned_value[len(prefix) :].strip()
+                break
+
+        for prefix in ("回",):
+            if cleaned_value.startswith(prefix) and len(cleaned_value) > len(prefix):
+                cleaned_value = cleaned_value[len(prefix) :].strip()
+                break
+
+        for suffix in (
+            "前往",
+            "去往",
+            "往",
+            "去",
+            "怎么走",
+            "怎么去",
+            "如何走",
+            "如何去",
+            "怎么开",
+            "如何开",
+            "路线",
+            "路况",
+            "堵车吗",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "会不会堵",
+            "正常通行吗",
+            "正常吗",
+            "可以上吗",
+            "是正常的吗",
+            "能看一下吗",
+            "看一下吗",
+            "怎么样",
+            "咋样",
+            "好吗",
+            "吗",
+            "？",
+            "?",
+        ):
+            if cleaned_value.endswith(suffix):
+                cleaned_value = cleaned_value[: -len(suffix)].strip()
+        return cleaned_value
+
+    @classmethod
+    def _extract_od_pair(cls, message: str) -> dict[str, str] | None:
+        normalized_message = message.strip()
+        match = ROUTE_PAIR_PATTERN.search(normalized_message)
+        if match is None:
+            return None
+
+        origin = cls._clean_route_place(match.group("origin"))
+        destination = cls._clean_route_place(match.group("destination"))
+        if not origin or not destination:
+            return None
+        if cls._contains_non_place_context(origin) or cls._contains_non_place_context(destination):
+            return None
+        if origin == destination:
+            return None
+        return {"origin": origin, "destination": destination}
+
+    def _resolve_traffic_arguments(
+        self,
+        latest_user_message: str,
+        *,
+        category: ProblemCategory,
+    ) -> ResolvedArguments:
+        normalized_query = self._strip_prefix(latest_user_message, prefixes=("traffic:",))
+        normalized_target = self._normalize_traffic_target(normalized_query)
+        roads = self._extract_traffic_roads(normalized_query)
+        inferred_context = infer_traffic_context(
+            message=normalized_query,
+            normalized_target=normalized_target,
+            explicit_roads=roads,
+        )
+        query_intent = "route_based_traffic" if self._extract_od_pair(normalized_query) is not None else "traffic_status"
+        arguments: dict[str, object] = {
+            "query": normalized_query,
+            "road": inferred_context.road or normalized_target,
+            "target": inferred_context.target or normalized_target,
+            "query_intent": query_intent,
+        }
+        if inferred_context.roads:
+            arguments["roads"] = list(inferred_context.roads)
+        if inferred_context.direction is not None:
+            arguments["direction"] = inferred_context.direction
+        if inferred_context.toll_station is not None:
+            arguments["toll_station"] = inferred_context.toll_station
+        time_range = self._infer_time_range(normalized_query)
+        if time_range is not None:
+            arguments["time_range"] = time_range
+        return ResolvedArguments(category=category, arguments=arguments)
+
+    @staticmethod
+    def _normalize_traffic_target(message: str) -> str:
+        target = message.strip()
+        for token in ("今天", "明天", "昨天", "当前", "现在", "实时", "目前", "此刻"):
+            target = target.replace(token, " ")
+        for token in (
+            "大客车",
+            "中客车",
+            "小客车",
+            "货车",
+            "客车",
+            "轿车",
+            "新能源车",
+            "摩托车",
+            "非机动车",
+        ):
+            index = target.find(token)
+            if index > 0:
+                target = target[:index].strip()
+                break
+        for suffix in (
+            "路况怎么样",
+            "路况如何",
+            "正常通行吗",
+            "是正常的吗",
+            "正常吗",
+            "能看一下吗",
+            "看一下吗",
+            "怎么样",
+            "咋样",
+            "堵车吗",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "会不会堵",
+            "畅通吗",
+            "可以上吗",
+            "能走吗",
+            "好走吗",
+            "限行了吗",
+            "限行么",
+            "限行吗",
+            "限行没",
+            "限行",
+            "禁行",
+            "管制",
+            "封闭",
+        ):
+            if target.endswith(suffix):
+                target = target[: -len(suffix)].strip()
+        target = target.replace("那边", " ")
+        return " ".join(target.split()).strip()
+
+    @classmethod
+    def _extract_od_pair(cls, message: str) -> dict[str, str] | None:
+        normalized_message = message.strip()
+        fallback_match = re.search(
+            r"(?:^|[，,\s])(?:我从|从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9路\-]{2,20})"
+            r"(?P<connector>到|至|前往|去往|往|去|回)"
+            r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9路\-]{2,20})",
+            normalized_message,
+        )
+        match = fallback_match or ROUTE_PAIR_PATTERN.search(normalized_message)
+        if match is None:
+            return None
+
+        origin = cls._clean_route_place(match.group("origin"))
+        destination = cls._clean_route_place(match.group("destination"))
+        if not origin or not destination:
+            return None
+        if cls._contains_non_place_context(origin) or cls._contains_non_place_context(destination):
+            return None
+        if origin == destination:
+            return None
+        return {"origin": origin, "destination": destination}
+
+    @staticmethod
+    def _clean_route_place(value: str) -> str:
+        cleaned_value = value.strip()
+        for prefix in (
+            "我从",
+            "从",
+            "我想从",
+            "想从",
+            "准备从",
+            "打算从",
+            "计划从",
+            "我想",
+            "想",
+        ):
+            if cleaned_value.startswith(prefix) and len(cleaned_value) > len(prefix):
+                cleaned_value = cleaned_value[len(prefix) :].strip()
+                break
+
+        if cleaned_value.startswith("回") and len(cleaned_value) > 1:
+            cleaned_value = cleaned_value[1:].strip()
+
+        for suffix in (
+            "怎么走不堵",
+            "怎么走最快",
+            "怎么走",
+            "怎么去",
+            "如何走",
+            "如何去",
+            "怎么开",
+            "如何开",
+            "走哪条路最快",
+            "哪条路最快",
+            "那条高速不堵",
+            "哪条高速不堵",
+            "那条高速",
+            "哪条高速",
+            "推荐一下路线",
+            "推荐路线",
+            "路线",
+            "路况",
+            "堵车吗",
+            "堵不堵",
+            "不堵",
+            "堵吗",
+            "拥堵吗",
+            "会不会堵",
+            "正常通行吗",
+            "正常吗",
+            "可以上吗",
+            "是正常的吗",
+            "能看一下吗",
+            "看一下吗",
+            "怎么样",
+            "咋样",
+            "最快",
+            "好吗",
+            "吗",
+            "？",
+            "?",
+        ):
+            if cleaned_value.endswith(suffix):
+                cleaned_value = cleaned_value[: -len(suffix)].strip()
+        return cleaned_value
+
+    @staticmethod
+    def _contains_non_place_context(value: str) -> bool:
+        normalized_value = value.strip()
+        return normalized_value in {
+            "",
+            "怎么",
+            "如何",
+            "哪里",
+            "现在",
+            "当前",
+            "目前",
+            "今天",
+            "明天",
+            "昨天",
+            "几点",
+            "收费",
+            "免费",
+        }

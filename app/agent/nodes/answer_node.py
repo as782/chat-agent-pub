@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context_builder import ContextBuilder
-from app.agent.prompts import (
+from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     GENERAL_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
@@ -741,3 +741,63 @@ class AnswerNode:
     @staticmethod
     def _looks_like_report_query(message: str) -> bool:
         return any(keyword in message for keyword in _REPORT_KEYWORDS)
+
+    @staticmethod
+    def _has_route_and_traffic_context(state: AgentState) -> bool:
+        executors = AnswerNode._collect_executed_executors(state)
+        if {"route", "traffic"}.issubset(executors):
+            return True
+
+        execution_plan = state.get("execution_plan")
+        if isinstance(execution_plan, object) and hasattr(execution_plan, "steps"):
+            planned_executors = {
+                step.executor
+                for step in execution_plan.steps
+                if step.executor != "answer"
+            }
+            return {"route", "traffic"}.issubset(planned_executors)
+        return False
+
+    @staticmethod
+    def _resolve_answer_focus(state: AgentState) -> str:
+        message = str(state.get("latest_user_message", "")).strip()
+
+        if AnswerNode._has_route_and_traffic_context(state):
+            return "路线推荐与关键路况。优先按“推荐路线 -> 预计时长 -> 关键路况 -> 口述式总结”组织回答。"
+        if any(keyword in message for keyword in _TOLL_KEYWORDS):
+            return "收费判断。优先回答是否收费、免费时间窗口、按什么时间规则判定，以及还缺哪些条件。"
+        if AnswerNode._looks_like_traffic_query(message):
+            return "路况与管制。优先按“大流量情况 -> 管制情况 -> 事件情况 -> 总结性回复”组织回答。"
+        if AnswerNode._looks_like_service_query(message):
+            return "服务区设施。优先回答是否有充电桩、主要配套和繁忙程度。"
+        if AnswerNode._looks_like_policy_query(message):
+            return "政策规则。优先回答适用范围、判断依据、关键条件和限制。"
+        if AnswerNode._looks_like_report_query(message):
+            return "路网汇总。优先概括整体态势、变化重点和需要关注的路段。"
+        if AnswerNode._looks_like_route_query(message):
+            return "出行方案。优先回答推荐路线、预计时长和关键提醒。"
+        return "综合结论。优先直接回答用户问题，再补充最关键的支撑信息。"
+
+    @staticmethod
+    def _looks_like_traffic_query(message: str) -> bool:
+        traffic_keywords = _TRAFFIC_KEYWORDS + (
+            "堵车",
+            "怎么样",
+            "咋样",
+            "正常通行",
+            "正常吗",
+            "看一下",
+            "可以上吗",
+        )
+        return any(keyword in message for keyword in traffic_keywords)
+
+    @staticmethod
+    def _looks_like_route_query(message: str) -> bool:
+        route_keywords = _ROUTE_KEYWORDS + (
+            "最快",
+            "推荐",
+            "走哪条",
+            "哪条高速",
+            "怎么开",
+        )
+        return any(keyword in message for keyword in route_keywords)

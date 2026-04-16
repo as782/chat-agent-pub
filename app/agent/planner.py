@@ -112,6 +112,70 @@ _ROUTE_INTENT_KEYWORDS: tuple[str, ...] = (
     "拥堵吗",
     "堵",
 )
+_EXPLICIT_ROUTE_QUERY_KEYWORDS: tuple[str, ...] = (
+    "怎么走",
+    "如何走",
+    "怎么去",
+    "如何去",
+    "走哪条路",
+    "走哪条",
+    "哪条路最快",
+    "哪条高速",
+    "最快",
+    "推荐路线",
+    "推荐一下路线",
+    "推荐一下",
+    "推荐",
+    "路线",
+    "导航",
+    "怎么开",
+    "如何开",
+)
+_TRAFFIC_STATUS_SOFT_KEYWORDS: tuple[str, ...] = (
+    "怎么样",
+    "咋样",
+    "能看一下",
+    "看一下",
+    "正常吗",
+    "正常通行吗",
+    "是正常的吗",
+    "可以上吗",
+    "能走吗",
+    "好走吗",
+)
+_TRAFFIC_STATUS_HARD_KEYWORDS: tuple[str, ...] = (
+    "路况",
+    "堵车",
+    "堵不堵",
+    "堵吗",
+    "堵",
+    "拥堵",
+    "缓行",
+    "通行情况",
+    "通行",
+    "畅通",
+    "管制",
+    "封闭",
+    "封道",
+    "封路",
+    "施工",
+    "事故",
+    "关闭",
+)
+_DIRECT_TRAFFIC_TARGET_KEYWORDS: tuple[str, ...] = (
+    "收费站",
+    "收费口",
+    "进口",
+    "出口",
+    "枢纽",
+    "互通",
+    "服务区",
+    "隧道",
+    "高速",
+    "路段",
+)
+_DIRECT_TRAFFIC_ALIAS_PATTERN = re_compile(r"[\u4e00-\u9fffA-Za-z0-9]{2,8}高(?:速)?")
+_SIDE_LOCATION_PATTERN = re_compile(r"[\u4e00-\u9fffA-Za-z0-9]{2,12}[东西南北]")
 _NON_ROUTE_CONTEXT_KEYWORDS: tuple[str, ...] = (
     "怎么",
     "如何",
@@ -482,6 +546,28 @@ class PlannerService:
                     depends_on=answer_dependencies,
                 )
             )
+        else:
+            upstream_step_ids = [step.step_id for step in steps if step.executor != "answer"]
+            normalized_steps: list[ExecutionStep] = []
+            for step in steps:
+                if step.executor != "answer":
+                    normalized_steps.append(step)
+                    continue
+                normalized_dependencies = list(step.depends_on)
+                for dependency in upstream_step_ids:
+                    if dependency not in normalized_dependencies:
+                        normalized_dependencies.append(dependency)
+                normalized_steps.append(
+                    ExecutionStep(
+                        step_id=step.step_id,
+                        executor=step.executor,
+                        goal=step.goal,
+                        depends_on=normalized_dependencies,
+                        can_run_in_parallel=step.can_run_in_parallel,
+                        metadata=dict(step.metadata),
+                    )
+                )
+            steps = normalized_steps
         return steps
 
     @staticmethod
@@ -689,6 +775,38 @@ class PlannerService:
             ]
 
         if primary_category == "route_planning":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询起点到终点的推荐路线",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询推荐路线沿线的关键路况和管制信息",
+                        depends_on=["route_1"],
+                        metadata=self._enrich_step_metadata(
+                            executor="traffic",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="综合路线方案和沿线路况生成出行建议",
+                        depends_on=["route_1", "traffic_1"],
+                    ),
+                ]
             return [
                 ExecutionStep(
                     step_id="route_1",
@@ -739,7 +857,7 @@ class PlannerService:
                         step_id="answer_1",
                         executor="answer",
                         goal="结合路线和路况结果回答用户",
-                        depends_on=["traffic_1"],
+                        depends_on=["route_1", "traffic_1"],
                     ),
                 ]
             return [
@@ -1200,6 +1318,7 @@ class PlannerService:
             "比较",
         ):
             target = target.replace(token, " ")
+        target = target.replace("那边", " ")
         return " ".join(target.split()).strip()
 
     @staticmethod
@@ -1519,3 +1638,691 @@ class PlannerService:
         """Detect origin-destination style queries that need route context."""
 
         return PlannerService._extract_od_pair(latest_user_message) is not None
+
+    @staticmethod
+    def _clean_route_place(value: str) -> str:
+        """Clean OD endpoints so colloquial prefixes/suffixes do not pollute place names."""
+
+        cleaned_value = value.strip()
+        for prefix in (
+            "我从",
+            "从",
+            "我想从",
+            "想从",
+            "准备从",
+            "打算从",
+            "计划从",
+            "我想",
+            "想",
+        ):
+            if cleaned_value.startswith(prefix) and len(cleaned_value) > len(prefix):
+                cleaned_value = cleaned_value[len(prefix) :].strip()
+                break
+
+        for prefix in ("回",):
+            if cleaned_value.startswith(prefix) and len(cleaned_value) > len(prefix):
+                cleaned_value = cleaned_value[len(prefix) :].strip()
+                break
+
+        for suffix in (
+            "前往",
+            "去往",
+            "往",
+            "去",
+            "怎么走",
+            "怎么去",
+            "如何走",
+            "如何去",
+            "怎么开",
+            "如何开",
+            "路线",
+            "路况",
+            "堵车吗",
+            "堵不堵",
+            "堵吗",
+            "拥堵吗",
+            "会不会堵",
+            "正常通行吗",
+            "正常吗",
+            "可以上吗",
+            "是正常的吗",
+            "能看一下吗",
+            "看一下吗",
+            "怎么样",
+            "咋样",
+            "好吗",
+            "吗",
+            "？",
+            "?",
+        ):
+            if cleaned_value.endswith(suffix):
+                cleaned_value = cleaned_value[: -len(suffix)].strip()
+        return cleaned_value
+
+    @staticmethod
+    def _extract_od_pair(message: str) -> dict[str, str] | None:
+        """Extract origin/destination and tolerate colloquial OD phrasing."""
+
+        normalized_message = message.strip()
+        for pattern in _OD_ROUTE_PATTERNS:
+            match = pattern.search(normalized_message)
+            if match is None:
+                continue
+            origin = PlannerService._clean_route_place(match.group("origin"))
+            destination = PlannerService._clean_route_place(match.group("destination"))
+            if not origin or not destination:
+                continue
+            if PlannerService._contains_non_route_context(origin) or PlannerService._contains_non_route_context(
+                destination
+            ):
+                continue
+            if origin == destination:
+                continue
+            return {"origin": origin, "destination": destination}
+        return None
+
+    @staticmethod
+    def _looks_like_explicit_route_query(latest_user_message: str) -> bool:
+        return PlannerService._looks_like_od_query(latest_user_message) and any(
+            keyword in latest_user_message for keyword in _EXPLICIT_ROUTE_QUERY_KEYWORDS
+        )
+
+    @staticmethod
+    def _looks_like_soft_traffic_status_query(latest_user_message: str) -> bool:
+        return any(keyword in latest_user_message for keyword in _TRAFFIC_STATUS_SOFT_KEYWORDS)
+
+    @staticmethod
+    def _has_direct_traffic_target(latest_user_message: str) -> bool:
+        if PlannerService._extract_explicit_road_targets(latest_user_message):
+            return True
+        if any(keyword in latest_user_message for keyword in _DIRECT_TRAFFIC_TARGET_KEYWORDS):
+            return True
+        if "那边" in latest_user_message and _SIDE_LOCATION_PATTERN.search(latest_user_message):
+            return True
+
+        normalized_target = PlannerService._normalize_traffic_target(latest_user_message)
+        if not normalized_target:
+            return False
+        inferred_context = infer_traffic_context(
+            message=latest_user_message,
+            normalized_target=normalized_target,
+            explicit_roads=PlannerService._extract_explicit_road_targets(latest_user_message),
+        )
+        if inferred_context.toll_station is not None or inferred_context.direction is not None:
+            return True
+        return _DIRECT_TRAFFIC_ALIAS_PATTERN.search(normalized_target) is not None
+
+    @staticmethod
+    def _looks_like_traffic_status_query(latest_user_message: str) -> bool:
+        if any(keyword in latest_user_message for keyword in _TRAFFIC_STATUS_HARD_KEYWORDS):
+            return True
+        if PlannerService._looks_like_od_query(latest_user_message):
+            return not PlannerService._looks_like_explicit_route_query(latest_user_message)
+        return PlannerService._has_direct_traffic_target(
+            latest_user_message
+        ) and PlannerService._looks_like_soft_traffic_status_query(latest_user_message)
+
+    @staticmethod
+    def _infer_primary_category(
+        *,
+        latest_user_message: str,
+        has_requested_tools: bool,
+    ) -> ProblemCategory:
+        """Rule-based primary category optimized for OD routing and OD traffic queries."""
+
+        if has_requested_tools:
+            return "general"
+
+        normalized_message = latest_user_message.strip().lower()
+        if (
+            latest_user_message.startswith("知识库:")
+            or normalized_message.startswith("knowledge:")
+            or normalized_message.startswith("konwledge:")
+            or any(keyword in latest_user_message for keyword in ("政策", "制度", "标准", "规范", "口径"))
+        ):
+            return "policy"
+        if any(
+            keyword in latest_user_message
+            for keyword in ("服务区", "充电桩", "充电站", "休息区", "加油站", "便利店")
+        ):
+            return "service_area"
+        if PlannerService._looks_like_explicit_route_query(latest_user_message):
+            return "route_planning"
+        if PlannerService._should_force_multi_road_traffic(latest_user_message):
+            return "traffic_status"
+        if any(
+            keyword in latest_user_message
+            for keyword in ("全路网", "路网", "日报", "周报", "月报", "表格", "对比")
+        ):
+            return "network_report"
+        if PlannerService._looks_like_traffic_status_query(latest_user_message):
+            return "traffic_status"
+        if PlannerService._looks_like_od_query(latest_user_message):
+            return "route_planning"
+        if (
+            "到" in latest_user_message
+            and any(keyword in latest_user_message for keyword in ("怎么走", "怎么去", "路线", "导航"))
+        ):
+            return "route_planning"
+        return "general"
+
+    @staticmethod
+    def _infer_traffic_focus(message: str) -> str | None:
+        """Infer whether the user mainly cares about congestion, incidents or controls."""
+
+        if any(keyword in message for keyword in ("堵", "拥堵", "缓行", "堵车")):
+            return "congestion"
+        if any(keyword in message for keyword in ("事故",)):
+            return "accident"
+        if any(keyword in message for keyword in ("施工", "封闭", "管制", "关闭", "正常通行", "正常吗", "可以上吗")):
+            return "control"
+        if any(keyword in message for keyword in ("收费站",)):
+            return "toll"
+        return None
+
+    @staticmethod
+    def _infer_answer_focus(message: str, primary_category: ProblemCategory) -> str | None:
+        if PlannerService._looks_like_explicit_route_query(message):
+            return "路线推荐与关键路况"
+        if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
+            return "收费判断"
+        if PlannerService._looks_like_traffic_status_query(message):
+            return "通行情况"
+        if any(keyword in message for keyword in ("服务区", "充电桩", "充电站")):
+            return "服务区设施"
+        if primary_category == "network_report":
+            return "路网汇总"
+        if primary_category == "policy":
+            return "政策规则"
+        return None
+
+    @staticmethod
+    def _looks_like_direct_traffic_query(latest_user_message: str) -> bool:
+        normalized_target = PlannerService._normalize_traffic_target(latest_user_message)
+        explicit_roads = PlannerService._extract_explicit_road_targets(latest_user_message)
+        inferred_context = infer_traffic_context(
+            message=latest_user_message,
+            normalized_target=normalized_target,
+            explicit_roads=explicit_roads,
+        )
+        has_specific_road = bool(explicit_roads) or (
+            normalized_target and _DIRECT_TRAFFIC_ALIAS_PATTERN.search(normalized_target) is not None
+        )
+        has_facility_without_od = (
+            PlannerService._looks_like_soft_traffic_status_query(latest_user_message)
+            and PlannerService._looks_like_od_query(latest_user_message) is False
+            and (
+                inferred_context.toll_station is not None
+                or any(keyword in latest_user_message for keyword in ("进口", "出口", "枢纽", "互通", "那边"))
+            )
+        )
+        has_directional_road_status = has_specific_road and any(
+            keyword in latest_user_message for keyword in ("方向", "进口", "出口", "枢纽", "互通", "能看一下", "正常", "可以上吗")
+        )
+        return bool(has_specific_road or has_facility_without_od or has_directional_road_status)
+
+    @staticmethod
+    def _extract_od_pair(message: str) -> dict[str, str] | None:
+        """Extract origin/destination with a fallback regex for colloquial OD questions."""
+
+        normalized_message = message.strip()
+        fallback_match = search(
+            r"(?:^|[，,\s])(?:我从|从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9路\-]{2,20})"
+            r"(?P<connector>到|至|前往|去往|往|去|回)"
+            r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9路\-]{2,20})",
+            normalized_message,
+        )
+        candidate_matches = [fallback_match] if fallback_match is not None else []
+        for pattern in _OD_ROUTE_PATTERNS:
+            pattern_match = pattern.search(normalized_message)
+            if pattern_match is not None:
+                candidate_matches.append(pattern_match)
+
+        for match in candidate_matches:
+            origin = PlannerService._clean_route_place(match.group("origin"))
+            destination = PlannerService._clean_route_place(match.group("destination"))
+            if not origin or not destination:
+                continue
+            if PlannerService._contains_non_route_context(origin) or PlannerService._contains_non_route_context(
+                destination
+            ):
+                continue
+            if origin == destination:
+                continue
+            return {"origin": origin, "destination": destination}
+        return None
+
+    def _build_steps(
+        self,
+        *,
+        primary_category: ProblemCategory,
+        has_requested_tools: bool,
+        general_tool_name: str | None = None,
+        latest_user_message: str = "",
+    ) -> list[ExecutionStep]:
+        """Build stable execution steps with OD route+traffic as the default highway flow."""
+
+        if has_requested_tools:
+            return [
+                ExecutionStep(
+                    step_id="tool_1",
+                    executor="tool",
+                    goal="执行用户显式开放的工具",
+                    metadata=self._enrich_step_metadata(
+                        executor="tool",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="根据工具结果生成最终回答",
+                    depends_on=["tool_1"],
+                ),
+            ]
+
+        if primary_category == "general" and general_tool_name is not None:
+            return [
+                ExecutionStep(
+                    step_id="tool_1",
+                    executor="tool",
+                    goal=f"调用内置工具 {general_tool_name} 获取结果",
+                    metadata=self._enrich_step_metadata(
+                        executor="tool",
+                        metadata={"preferred_tool": general_tool_name},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="根据工具结果生成最终回答",
+                    depends_on=["tool_1"],
+                ),
+            ]
+
+        if primary_category == "policy":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询起点到终点的推荐路线",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="rag_1",
+                        executor="rag",
+                        goal="检索相关政策、收费或通行规则",
+                        metadata=self._enrich_step_metadata(
+                            executor="rag",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="综合路线和政策结果回答用户",
+                        depends_on=["route_1", "rag_1"],
+                    ),
+                ]
+            return [
+                ExecutionStep(
+                    step_id="rag_1",
+                    executor="rag",
+                    goal="检索知识库中的相关问题知识",
+                    metadata=self._enrich_step_metadata(
+                        executor="rag",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结知识库的检索结果并回答用户",
+                    depends_on=["rag_1"],
+                ),
+            ]
+
+        if primary_category == "route_planning":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="查询起点到终点的推荐路线",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询推荐路线沿线的关键路况和管制信息",
+                        depends_on=["route_1"],
+                        metadata=self._enrich_step_metadata(
+                            executor="traffic",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="综合路线方案和沿线路况生成出行建议",
+                        depends_on=["route_1", "traffic_1"],
+                    ),
+                ]
+            return [
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询路线规划相关数据",
+                    metadata=self._enrich_step_metadata(
+                        executor="route",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路线结果并回答用户",
+                    depends_on=["route_1"],
+                ),
+            ]
+
+        if primary_category == "traffic_status":
+            if PlannerService._looks_like_direct_traffic_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路况或实时交通数据",
+                        metadata=self._enrich_step_metadata(
+                            executor="traffic",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="总结路况结果并回答用户",
+                        depends_on=["traffic_1"],
+                    ),
+                ]
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="规划起点到终点的路线并提取沿途道路",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="根据路线查询主线路况和拥堵信息",
+                        depends_on=["route_1"],
+                        metadata=self._enrich_step_metadata(
+                            executor="traffic",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="结合路线和路况结果回答用户",
+                        depends_on=["route_1", "traffic_1"],
+                    ),
+                ]
+            return [
+                ExecutionStep(
+                    step_id="traffic_1",
+                    executor="traffic",
+                    goal="查询路况或实时交通数据",
+                    metadata=self._enrich_step_metadata(
+                        executor="traffic",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路况结果并回答用户",
+                    depends_on=["traffic_1"],
+                ),
+            ]
+
+        if primary_category == "service_area":
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return [
+                    ExecutionStep(
+                        step_id="route_1",
+                        executor="route",
+                        goal="规划起点到终点的路线并提取沿途服务区",
+                        metadata=self._enrich_step_metadata(
+                            executor="route",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="service_1",
+                        executor="service",
+                        goal="查询路线沿线服务区和配套设施",
+                        depends_on=["route_1"],
+                        metadata=self._enrich_step_metadata(
+                            executor="service",
+                            metadata={},
+                            latest_user_message=latest_user_message,
+                            primary_category=primary_category,
+                        ),
+                    ),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="总结服务区结果并回答用户",
+                        depends_on=["route_1", "service_1"],
+                    ),
+                ]
+            return [
+                ExecutionStep(
+                    step_id="service_1",
+                    executor="service",
+                    goal="查询服务区、充电桩和商业配套信息",
+                    metadata=self._enrich_step_metadata(
+                        executor="service",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结服务区结果并回答用户",
+                    depends_on=["service_1"],
+                ),
+            ]
+
+        if primary_category == "network_report":
+            return [
+                ExecutionStep(
+                    step_id="report_1",
+                    executor="report",
+                    goal="汇总路网报表和整体路况",
+                    metadata=self._enrich_step_metadata(
+                        executor="report",
+                        metadata={},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    ),
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路网结果并回答用户",
+                    depends_on=["report_1"],
+                ),
+            ]
+
+        return [
+            ExecutionStep(
+                step_id="answer_1",
+                executor="answer",
+                goal="直接回答用户问题",
+                metadata=self._enrich_step_metadata(
+                    executor="answer",
+                    metadata={},
+                    latest_user_message=latest_user_message,
+                    primary_category=primary_category,
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _clean_route_place(value: str) -> str:
+        cleaned_value = value.strip()
+        for prefix in (
+            "我从",
+            "从",
+            "我想从",
+            "想从",
+            "准备从",
+            "打算从",
+            "计划从",
+            "我想",
+            "想",
+        ):
+            if cleaned_value.startswith(prefix) and len(cleaned_value) > len(prefix):
+                cleaned_value = cleaned_value[len(prefix) :].strip()
+                break
+
+        if cleaned_value.startswith("回") and len(cleaned_value) > 1:
+            cleaned_value = cleaned_value[1:].strip()
+
+        for suffix in (
+            "怎么走不堵",
+            "怎么走最快",
+            "怎么走",
+            "怎么去",
+            "如何走",
+            "如何去",
+            "怎么开",
+            "如何开",
+            "走哪条路最快",
+            "哪条路最快",
+            "那条高速不堵",
+            "哪条高速不堵",
+            "那条高速",
+            "哪条高速",
+            "推荐一下路线",
+            "推荐路线",
+            "路线",
+            "路况",
+            "堵车吗",
+            "堵不堵",
+            "不堵",
+            "堵吗",
+            "拥堵吗",
+            "会不会堵",
+            "正常通行吗",
+            "正常吗",
+            "可以上吗",
+            "是正常的吗",
+            "能看一下吗",
+            "看一下吗",
+            "怎么样",
+            "咋样",
+            "最快",
+            "好吗",
+            "吗",
+            "？",
+            "?",
+        ):
+            if cleaned_value.endswith(suffix):
+                cleaned_value = cleaned_value[: -len(suffix)].strip()
+        return cleaned_value
+
+    @staticmethod
+    def _contains_non_route_context(value: str) -> bool:
+        normalized_value = value.strip()
+        return normalized_value in {
+            "",
+            "怎么",
+            "如何",
+            "哪里",
+            "现在",
+            "当前",
+            "目前",
+            "今天",
+            "明天",
+            "昨天",
+            "几点",
+            "收费",
+            "免费",
+        }
+
+    @staticmethod
+    def _looks_like_direct_traffic_query(latest_user_message: str) -> bool:
+        normalized_target = PlannerService._normalize_traffic_target(latest_user_message)
+        explicit_roads = PlannerService._extract_explicit_road_targets(latest_user_message)
+        inferred_context = infer_traffic_context(
+            message=latest_user_message,
+            normalized_target=normalized_target,
+            explicit_roads=explicit_roads,
+        )
+        has_specific_road = bool(explicit_roads) or (
+            normalized_target and _DIRECT_TRAFFIC_ALIAS_PATTERN.search(normalized_target) is not None
+        )
+        if "方向" in latest_user_message and PlannerService._looks_like_soft_traffic_status_query(latest_user_message):
+            return True
+        has_facility_without_od = (
+            PlannerService._looks_like_soft_traffic_status_query(latest_user_message)
+            and PlannerService._looks_like_od_query(latest_user_message) is False
+            and (
+                inferred_context.toll_station is not None
+                or any(keyword in latest_user_message for keyword in ("进口", "出口", "枢纽", "互通", "那边"))
+            )
+        )
+        return bool(has_specific_road or has_facility_without_od)
+
+    @staticmethod
+    def _looks_like_explicit_route_query(latest_user_message: str) -> bool:
+        explicit_route_keywords = _EXPLICIT_ROUTE_QUERY_KEYWORDS + (
+            "那条高速",
+            "那条路",
+        )
+        return PlannerService._looks_like_od_query(latest_user_message) and any(
+            keyword in latest_user_message for keyword in explicit_route_keywords
+        )
