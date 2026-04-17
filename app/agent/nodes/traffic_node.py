@@ -213,6 +213,10 @@ class TrafficNode:
         if isinstance(resolved_roads, list):
             normalized_road_names = self._deduplicate_strings(resolved_roads)
             if normalized_road_names:
+                if len(normalized_road_names) == 1:
+                    fallback_road = self._resolve_single_road_argument(resolved_arguments)
+                    if fallback_road:
+                        return [fallback_road]
                 return normalized_road_names
 
         fallback_road = self._resolve_single_road_argument(resolved_arguments)

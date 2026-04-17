@@ -106,12 +106,12 @@ metadata 约定：
 - route: origin, destination, travel_mode, query, query_intent
 - traffic: query, road, roads, road_name, road_code, target, direction, toll_station, time_range, query_intent
   - traffic 字段类型必须严格遵守：
-    - road: string，只能表示单条道路，且值必须是“纯编号”或“纯名称”二选一，例如 "G60" 或 "沪昆高速"；禁止输出 "G60沪昆高速"、"G60/沪昆高速"、"G60,沪昆高速" 这类混合值。
+    - road: string，只能表示单条道路，且值必须是“纯编号”或“纯名称”二选一，例如 "G60" 或 "沪昆高速"；禁止输出 "G60沪昆高速"、"G60/沪昆高速"、"G60,沪昆高速" 这类混合值。单路场景下只要识别出道路，road 就必须填写。
     - roads: string[]，只能是数组；每个元素都只能表示单条道路，且每个元素都必须是“纯编号”或“纯名称”；多条道路只能放在 roads 中，不能用逗号、顿号或其他连接词拼成一个字符串塞进 road、road_name、road_code。
     - road_name: string，只能是单条道路名称，不能带编号，不能把多个名称拼成一个字符串。
     - road_code: string，只能是单条道路编号，例如 "G92"、"S26"，不能带中文名称，不能把多个编号拼成一个字符串。
-    - 如果同时知道道路名称和道路编号，可以同时填写 road_name 与 road_code，但 road 仍然只能二选一填写其中一种，默认优先填写纯道路编号，方便后续节点优先按编号查询。
-    - 只要 traffic 问题里能够识别或推断出相关道路，road、roads、road_name、road_code 四者中至少必须填写一个；不要只给 toll_station、direction、target 而缺少道路字段。
+    - 如果同时知道道路名称和道路编号，必须同时填写 road_name 与 road_code；此时 road 也必须填写，并且默认优先填写纯道路编号，方便后续节点优先按编号查询。
+    - 只要 traffic 问题里能够识别或推断出相关道路，单路场景至少必须填写 road；如果还能识别名称和编号，则 road_name、road_code 也必须一起补齐。多路场景至少必须填写 roads；不要只给 toll_station、direction、target 而缺少道路字段。
 - service: query, keyword, facility_type, query_intent
 - rag: query, keywords, query_type, focus
 - report: query, scope, compare_mode, reference_answer
@@ -122,12 +122,12 @@ metadata 约定：
 - 如果用户说的是旧称、俗称、收费站、枢纽或方向，不要把整句原样塞进 road。
 - 要优先推断出所属的标准高速名称或编号写入 road/roads，例如把“沪杭高速”映射到“沪昆高速”或“G60”。
 - 用户真正关注的对象继续保留在 target，例如“诸暨北收费站温州方向出口”。
-- 能识别时补充 road_name、road_code、direction、toll_station，方便后续节点直接使用。
+- 能识别时必须补充 road_name、road_code、direction、toll_station，方便后续节点直接使用；其中 road 默认优先使用 road_code。
 - 如果用户问的是收费站、收费口、枢纽、互通、出口、入口、方向，但问题本身没有直接写标准高速名，只要你能根据语义识别或推断所属道路，就必须补出相关道路字段，不允许只输出 toll_station/target。
 - 下面这类例子需要你自己完成归一化：
-  - “沪杭高速沪向车道全部畅通吗” -> road 应写标准高速名或编号，direction 保留“杭州方向”，target 只保留用户关注的车道/方向对象。
-  - “诸暨北收费站温州方向出口堵吗” -> road 应写所属标准高速名或编号，toll_station=“诸暨北收费站”，direction=“温州方向”，target 保留“诸暨北收费站温州方向出口”。
-  - “宁波东收费站堵车吗” -> 必须补出所属道路字段；如果识别到名称和编号，可写 road_name=标准高速名称、road_code=标准高速编号，road 推荐优先填写纯编号，但绝不能写成 “G92杭州湾跨海大桥连接线” 这样的混合字符串。
+  - “沪杭高速沪向车道全部畅通吗” -> 如果识别出标准道路名称和编号，应同时填写 road_name、road_code，road 优先写编号；direction 保留“杭州方向”，target 只保留用户关注的车道/方向对象。
+  - “诸暨北收费站温州方向出口堵吗” -> 如果能识别所属标准道路名称和编号，必须同时填写 road、road_name、road_code；toll_station=“诸暨北收费站”，direction=“温州方向”，target 保留“诸暨北收费站温州方向出口”。
+  - “宁波东收费站堵车吗” -> 必须补出所属道路字段；如果识别到名称和编号，必须同时填写 road_name=标准高速名称、road_code=标准高速编号，road 必须优先填写纯编号，但绝不能写成 “G92杭州湾跨海大桥连接线” 这样的混合字符串。
 
 请确保：
 - steps 表示完整执行链路，而不是单个意图标签。

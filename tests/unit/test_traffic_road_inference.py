@@ -118,7 +118,8 @@ def test_planner_prompt_requires_llm_to_infer_canonical_road() -> None:
     assert "不要假设本地还有额外映射表帮你兜底" in combined_prompt
     assert "诸暨北收费站温州方向出口堵吗" in combined_prompt
     assert "沪杭高速沪向车道全部畅通吗" in combined_prompt
-    assert "四者中至少必须填写一个" in combined_prompt
+    assert "单路场景至少必须填写 road" in combined_prompt
+    assert "road_name、road_code 也必须一起补齐" in combined_prompt
     assert "默认优先填写纯道路编号" in combined_prompt
     assert "不能写成 “G92杭州湾跨海大桥连接线”" in combined_prompt
 
@@ -210,4 +211,36 @@ async def test_traffic_node_prefers_road_code_over_road_name_and_raw_query_text(
     assert tool_registry.calls[-1] == {
         "tool_name": "live_road_event_query",
         "arguments": {"road": "S26"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_prefers_single_canonical_road_over_surface_roads_list() -> None:
+    tool_registry = _CapturingToolRegistry()
+    node = TrafficNode(tool_registry=tool_registry)
+
+    await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={
+                    "query": "沪杭高速沪向车道是否畅通",
+                    "roads": ["沪杭高速"],
+                    "road": "G60",
+                    "road_name": "沪昆高速",
+                    "road_code": "G60",
+                    "target": "沪向车道",
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls[-1] == {
+        "tool_name": "live_road_event_query",
+        "arguments": {"road": "G60"},
     }
