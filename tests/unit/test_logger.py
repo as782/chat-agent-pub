@@ -6,6 +6,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+import app.core.logger as logger_module
 from app.core.config import Settings
 from app.core.logger import (
     MAX_MCP_SSE_VERBOSE_MESSAGE_LENGTH,
@@ -73,6 +74,31 @@ def test_configure_logging_writes_logs_to_timed_rotating_file(tmp_path: Path) ->
     assert file_handlers[0].backupCount == 7
     assert Path(file_handlers[0].baseFilename) == log_dir / "runtime.log"
     assert "日志落盘测试" in (log_dir / "runtime.log").read_text(encoding="utf-8")
+
+
+def test_configure_logging_falls_back_to_console_when_file_logging_fails(
+    monkeypatch,
+) -> None:
+    """验证文件日志初始化失败时不会阻塞应用启动。"""
+
+    def _raise_permission_error(
+        settings: Settings,
+        formatter: logging.Formatter,
+    ) -> logging.Handler:
+        del settings, formatter
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(logger_module, "_create_file_handler", _raise_permission_error)
+
+    configure_logging(Settings(APP_ENV="prod", LOG_TO_FILE="true"))
+
+    file_handlers = [
+        handler
+        for handler in logging.getLogger().handlers
+        if isinstance(handler, TimedRotatingFileHandler)
+    ]
+
+    assert file_handlers == []
 
 
 def test_mcp_sse_verbose_message_filter_truncates_large_server_messages() -> None:
