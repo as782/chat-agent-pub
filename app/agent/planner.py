@@ -176,6 +176,18 @@ _DIRECT_TRAFFIC_TARGET_KEYWORDS: tuple[str, ...] = (
 )
 _DIRECT_TRAFFIC_ALIAS_PATTERN = re_compile(r"[\u4e00-\u9fffA-Za-z0-9]{2,8}高(?:速)?")
 _SIDE_LOCATION_PATTERN = re_compile(r"[\u4e00-\u9fffA-Za-z0-9]{2,12}[东西南北]")
+_OD_TOLL_QUERY_KEYWORDS: tuple[str, ...] = (
+    "收费多少",
+    "收费吗",
+    "收费不收费",
+    "过路费",
+    "通行费",
+    "费用多少",
+    "多少费用",
+    "多少钱",
+    "花费多少",
+    "收费标准",
+)
 _NON_ROUTE_CONTEXT_KEYWORDS: tuple[str, ...] = (
     "怎么",
     "如何",
@@ -1797,6 +1809,10 @@ class PlannerService:
     ) -> ProblemCategory:
         """对全省/整体类路况问题做兜底纠偏。"""
 
+        if primary_category == "route_planning" and PlannerService._looks_like_od_toll_query(
+            latest_user_message
+        ):
+            return "route_planning"
         if PlannerService._should_force_multi_road_traffic(latest_user_message):
             return "traffic_status"
         if PlannerService._should_force_network_report(latest_user_message):
@@ -1984,10 +2000,20 @@ class PlannerService:
         if any(keyword in latest_user_message for keyword in _TRAFFIC_STATUS_HARD_KEYWORDS):
             return True
         if PlannerService._looks_like_od_query(latest_user_message):
+            if PlannerService._looks_like_od_toll_query(latest_user_message):
+                return False
             return not PlannerService._looks_like_explicit_route_query(latest_user_message)
         return PlannerService._has_direct_traffic_target(
             latest_user_message
         ) and PlannerService._looks_like_soft_traffic_status_query(latest_user_message)
+
+    @staticmethod
+    def _looks_like_od_toll_query(latest_user_message: str) -> bool:
+        if not PlannerService._looks_like_od_query(latest_user_message):
+            return False
+        if any(keyword in latest_user_message for keyword in ("收费站", "收费口")):
+            return False
+        return any(keyword in latest_user_message for keyword in _OD_TOLL_QUERY_KEYWORDS)
 
     @staticmethod
     def _infer_primary_category(
@@ -2014,6 +2040,8 @@ class PlannerService:
         ):
             return "service_area"
         if PlannerService._looks_like_explicit_route_query(latest_user_message):
+            return "route_planning"
+        if PlannerService._looks_like_od_toll_query(latest_user_message):
             return "route_planning"
         if PlannerService._should_force_multi_road_traffic(latest_user_message):
             return "traffic_status"
@@ -2225,6 +2253,26 @@ class PlannerService:
 
         if primary_category == "route_planning":
             if PlannerService._looks_like_od_query(latest_user_message):
+                if PlannerService._looks_like_od_toll_query(latest_user_message):
+                    return [
+                        ExecutionStep(
+                            step_id="route_1",
+                            executor="route",
+                            goal="查询起点到终点的推荐路线与收费信息",
+                            metadata=self._enrich_step_metadata(
+                                executor="route",
+                                metadata={},
+                                latest_user_message=latest_user_message,
+                                primary_category=primary_category,
+                            ),
+                        ),
+                        ExecutionStep(
+                            step_id="answer_1",
+                            executor="answer",
+                            goal="总结路线与收费结果并回答用户",
+                            depends_on=["route_1"],
+                        ),
+                    ]
                 return [
                     ExecutionStep(
                         step_id="route_1",
@@ -2459,6 +2507,19 @@ class PlannerService:
             cleaned_value = cleaned_value[1:].strip()
 
         for suffix in (
+            "收费标准是多少",
+            "收费标准",
+            "收费多少",
+            "收费吗",
+            "收费不收费",
+            "过路费多少",
+            "过路费",
+            "通行费多少",
+            "通行费",
+            "费用多少",
+            "多少费用",
+            "多少钱",
+            "花费多少",
             "怎么走不堵",
             "怎么走最快",
             "怎么走",
