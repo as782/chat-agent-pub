@@ -37,7 +37,7 @@ SERVICE_CONTEXT_PROMPT_PREFIX = (
 )
 
 REPORT_CONTEXT_PROMPT_PREFIX = (
-    "以下是路网汇总任务的结构化结果，请按用户要求组织输出，必要时使用表格。\n"
+    "以下是路网汇总任务的结构化结果，请按用户要求组织输出，并严格遵守固定表格列及字段规则。\n"
 )
 
 CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX = (
