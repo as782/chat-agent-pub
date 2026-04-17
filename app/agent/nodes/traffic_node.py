@@ -220,18 +220,18 @@ class TrafficNode:
 
     @staticmethod
     def _resolve_single_road_argument(resolved_arguments: ResolvedArguments) -> str:
-        """Prefer structured LLM/planner road fields before falling back to raw text."""
+        """Prefer structured road codes before falling back to names or raw text."""
 
         arguments = resolved_arguments.arguments
         query_intent = str(arguments.get("query_intent") or "").strip()
         if query_intent == "route_based_traffic":
-            for key in ("road_name", "road_code", "road"):
+            for key in ("road_code", "road_name", "road"):
                 value = str(arguments.get(key) or "").strip()
                 if value:
                     return value
             return ""
 
-        for key in ("road_name", "road_code", "road", "target", "query"):
+        for key in ("road_code", "road_name", "road", "target", "query"):
             value = str(arguments.get(key) or "").strip()
             if value:
                 return value

@@ -227,10 +227,11 @@ _MULTI_ROAD_COMPARE_KEYWORDS: tuple[str, ...] = (
     "流量",
 )
 _ROAD_SEGMENT_SPLIT_PATTERN = re_compile(r"(?:/|、|，|,|；|;|以及|及|和|与|跟|还是)")
+_ROAD_CODE_ONLY_PATTERN = re_compile(r"^[GS]\d{1,4}$")
 _ROAD_TOKEN_PATTERN = re_compile(
     r"(?:"
     r"[GS]\d{1,4}"
-    r"|[\u4e00-\u9fff]{2,16}(?:高速公路|高速|绕城高速|绕城|环线高速|环线|快速路|国道|省道|大道|大桥|隧道|路段)"
+    r"|[\u4e00-\u9fff]{2,16}(?:高速公路|高速|绕城高速|绕城|环线高速|环线|快速路|国道|省道|大道|大桥|隧道|路段|连接线|联络线)"
     r")"
 )
 
@@ -1003,12 +1004,12 @@ class PlannerService:
     ) -> dict[str, object]:
         """Normalize traffic metadata to canonical road names/codes when possible."""
 
-        normalized_metadata = dict(metadata)
+        normalized_metadata = PlannerService._normalize_traffic_road_fields(dict(metadata))
         message = str(metadata.get("query") or latest_user_message or "").strip()
         target = str(
-            metadata.get("target") or PlannerService._normalize_traffic_target(message) or ""
+            normalized_metadata.get("target") or PlannerService._normalize_traffic_target(message) or ""
         ).strip()
-        raw_roads = metadata.get("roads")
+        raw_roads = normalized_metadata.get("roads")
         explicit_roads = (
             [str(item).strip() for item in raw_roads if str(item).strip()]
             if isinstance(raw_roads, list)
@@ -1021,7 +1022,10 @@ class PlannerService:
             explicit_roads=explicit_roads,
         )
 
-        if inferred_context.road is not None and not normalized_metadata.get("road"):
+        has_road_metadata = any(
+            normalized_metadata.get(key) for key in ("road", "roads", "road_name", "road_code")
+        )
+        if inferred_context.road is not None and not has_road_metadata:
             normalized_metadata["road"] = inferred_context.road
         if inferred_context.roads and not normalized_metadata.get("roads"):
             normalized_metadata["roads"] = list(inferred_context.roads)
@@ -1032,7 +1036,230 @@ class PlannerService:
         if inferred_context.toll_station is not None and not normalized_metadata.get("toll_station"):
             normalized_metadata["toll_station"] = inferred_context.toll_station
 
+        return PlannerService._normalize_traffic_road_fields(normalized_metadata)
+
+    @staticmethod
+    def _normalize_traffic_road_fields(metadata: dict[str, object]) -> dict[str, object]:
+        """Coerce traffic road fields into stable single-value or list shapes."""
+
+        normalized_metadata = dict(metadata)
+        for field_name in ("road", "roads", "road_name", "road_code"):
+            normalized_metadata.pop(field_name, None)
+
+        primary_record: dict[str, str] = {}
+        additional_records: list[dict[str, str]] = []
+
+        for field_name in ("road_name", "road_code"):
+            parsed_records, has_multiple = PlannerService._parse_traffic_road_field(
+                metadata.get(field_name)
+            )
+            if not parsed_records:
+                continue
+            if len(parsed_records) == 1 and not has_multiple:
+                PlannerService._merge_primary_traffic_road_record(
+                    primary_record,
+                    parsed_records[0],
+                    trust_pair=True,
+                )
+                continue
+            for record in parsed_records:
+                PlannerService._append_traffic_road_record(additional_records, record)
+
+        for field_name in ("road", "roads"):
+            parsed_records, has_multiple = PlannerService._parse_traffic_road_field(
+                metadata.get(field_name)
+            )
+            if not parsed_records:
+                continue
+            if len(parsed_records) == 1 and not has_multiple:
+                merged = PlannerService._merge_primary_traffic_road_record(
+                    primary_record,
+                    parsed_records[0],
+                    trust_pair=False,
+                )
+                if merged:
+                    continue
+                if primary_record:
+                    continue
+            for record in parsed_records:
+                PlannerService._append_traffic_road_record(additional_records, record)
+
+        normalized_records: list[dict[str, str]] = []
+        if primary_record:
+            PlannerService._append_traffic_road_record(normalized_records, primary_record)
+        for record in additional_records:
+            PlannerService._append_traffic_road_record(normalized_records, record)
+
+        if len(normalized_records) > 1:
+            normalized_metadata["roads"] = [
+                PlannerService._select_query_road_identifier(record)
+                for record in normalized_records
+            ]
+            return normalized_metadata
+
+        if normalized_records:
+            record = normalized_records[0]
+            normalized_metadata["road"] = PlannerService._select_query_road_identifier(record)
+            road_name = record.get("road_name")
+            road_code = record.get("road_code")
+            if road_name:
+                normalized_metadata["road_name"] = road_name
+            if road_code:
+                normalized_metadata["road_code"] = road_code
+
         return normalized_metadata
+
+    @staticmethod
+    def _parse_traffic_road_field(value: object) -> tuple[list[dict[str, str]], bool]:
+        """Parse road-related metadata fields into stable single-road records."""
+
+        raw_segments: list[str] = []
+        if isinstance(value, list):
+            for item in value:
+                item_segments = PlannerService._split_traffic_road_segments(item)
+                raw_segments.extend(item_segments)
+        elif value is not None:
+            raw_segments.extend(PlannerService._split_traffic_road_segments(value))
+
+        if not raw_segments:
+            return [], False
+
+        parsed_records: list[dict[str, str]] = []
+        has_multiple = len(raw_segments) > 1
+        for segment in raw_segments:
+            segment_records = PlannerService._parse_traffic_road_segment(segment)
+            if len(segment_records) > 1:
+                has_multiple = True
+            for record in segment_records:
+                PlannerService._append_traffic_road_record(parsed_records, record)
+        return parsed_records, has_multiple
+
+    @staticmethod
+    def _split_traffic_road_segments(value: object) -> list[str]:
+        if value is None:
+            return []
+
+        normalized_value = str(value).strip()
+        if not normalized_value:
+            return []
+
+        segments = [
+            segment.strip()
+            for segment in _ROAD_SEGMENT_SPLIT_PATTERN.split(normalized_value)
+            if segment.strip()
+        ]
+        return segments or [normalized_value]
+
+    @staticmethod
+    def _parse_traffic_road_segment(segment: str) -> list[dict[str, str]]:
+        tokens = PlannerService._deduplicate_strings(
+            [match.group(0).strip() for match in _ROAD_TOKEN_PATTERN.finditer(segment)]
+        )
+        if not tokens:
+            return []
+
+        road_codes = [
+            token.upper() for token in tokens if PlannerService._looks_like_road_code(token)
+        ]
+        road_names = [
+            token for token in tokens if not PlannerService._looks_like_road_code(token)
+        ]
+
+        if len(road_codes) == 1 and len(road_names) == 1:
+            return [
+                {
+                    "road": road_names[0],
+                    "road_name": road_names[0],
+                    "road_code": road_codes[0],
+                }
+            ]
+
+        if len(tokens) == 1:
+            if road_codes:
+                return [{"road": road_codes[0], "road_code": road_codes[0]}]
+            return [{"road": road_names[0], "road_name": road_names[0]}]
+
+        parsed_records: list[dict[str, str]] = []
+        for token in tokens:
+            if PlannerService._looks_like_road_code(token):
+                normalized_code = token.upper()
+                parsed_records.append({"road": normalized_code, "road_code": normalized_code})
+            else:
+                parsed_records.append({"road": token, "road_name": token})
+        return parsed_records
+
+    @staticmethod
+    def _looks_like_road_code(value: str) -> bool:
+        normalized_value = value.strip().upper()
+        return _ROAD_CODE_ONLY_PATTERN.search(normalized_value) is not None
+
+    @staticmethod
+    def _merge_primary_traffic_road_record(
+        primary_record: dict[str, str],
+        candidate_record: dict[str, str],
+        *,
+        trust_pair: bool,
+    ) -> bool:
+        """Merge a single parsed road record into the primary record when compatible."""
+
+        if not primary_record:
+            primary_record.update(candidate_record)
+            return True
+
+        road_name = candidate_record.get("road_name")
+        road_code = candidate_record.get("road_code")
+        road = candidate_record.get("road")
+        has_shared_identifier = (
+            bool(road_name and primary_record.get("road_name") == road_name)
+            or bool(road_code and primary_record.get("road_code") == road_code)
+            or bool(road and primary_record.get("road") == road)
+        )
+        if not trust_pair and not has_shared_identifier:
+            return False
+
+        if road_name and not primary_record.get("road_name"):
+            primary_record["road_name"] = road_name
+        if road_code and not primary_record.get("road_code"):
+            primary_record["road_code"] = road_code
+        if not primary_record.get("road"):
+            primary_record["road"] = road or road_name or road_code or ""
+        return True
+
+    @staticmethod
+    def _append_traffic_road_record(
+        records: list[dict[str, str]],
+        candidate_record: dict[str, str],
+    ) -> None:
+        """Append a parsed road record, merging duplicates when identifiers match."""
+
+        candidate_road = candidate_record.get("road")
+        candidate_name = candidate_record.get("road_name")
+        candidate_code = candidate_record.get("road_code")
+        for existing_record in records:
+            has_shared_identifier = (
+                bool(candidate_name and existing_record.get("road_name") == candidate_name)
+                or bool(candidate_code and existing_record.get("road_code") == candidate_code)
+                or bool(candidate_road and existing_record.get("road") == candidate_road)
+            )
+            if not has_shared_identifier:
+                continue
+            if candidate_name and not existing_record.get("road_name"):
+                existing_record["road_name"] = candidate_name
+            if candidate_code and not existing_record.get("road_code"):
+                existing_record["road_code"] = candidate_code
+            if not existing_record.get("road"):
+                existing_record["road"] = candidate_road or candidate_name or candidate_code or ""
+            return
+
+        records.append(dict(candidate_record))
+
+    @staticmethod
+    def _select_query_road_identifier(record: dict[str, str]) -> str:
+        """Prefer road code for downstream queries, then fall back to name."""
+
+        return str(
+            record.get("road_code") or record.get("road_name") or record.get("road") or ""
+        ).strip()
 
     @staticmethod
     def _infer_step_metadata(
