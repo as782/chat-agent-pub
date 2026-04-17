@@ -12,7 +12,11 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from app.agent.prompts import PLANNER_JSON_OUTPUT_PROMPT, PLANNER_PROMPT
-from app.agent.road_inference import infer_traffic_context
+from app.agent.road_inference import (
+    infer_traffic_context,
+    normalize_road_query_list,
+    normalize_traffic_road_fields,
+)
 from app.agent.state import (
     AgentRoute,
     AgentState,
@@ -1031,6 +1035,19 @@ class PlannerService:
             normalized_metadata["direction"] = inferred_context.direction
         if inferred_context.toll_station is not None and not normalized_metadata.get("toll_station"):
             normalized_metadata["toll_station"] = inferred_context.toll_station
+
+        normalized_metadata.update(
+            normalize_traffic_road_fields(
+                road=normalized_metadata.get("road"),
+                road_name=normalized_metadata.get("road_name"),
+                road_code=normalized_metadata.get("road_code"),
+                prefer="name",
+            )
+        )
+
+        normalized_roads = normalize_road_query_list(explicit_roads, prefer="name")
+        if normalized_roads:
+            normalized_metadata["roads"] = normalized_roads
 
         return normalized_metadata
 

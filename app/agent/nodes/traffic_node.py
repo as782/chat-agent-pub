@@ -10,6 +10,10 @@ from collections.abc import Iterable
 from json import dumps, loads
 
 from app.agent.prompts import TRAFFIC_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
+from app.agent.road_inference import (
+    normalize_road_query_list,
+    normalize_traffic_road_fields,
+)
 from app.agent.state import (
     AgentState,
     ExecutorResult,
@@ -114,9 +118,24 @@ class TrafficNode:
             if isinstance(value, str) and not value.strip():
                 continue
             query_arguments[key] = value
+
+        query_arguments.update(
+            normalize_traffic_road_fields(
+                road=query_arguments.get("road"),
+                road_name=query_arguments.get("road_name"),
+                road_code=query_arguments.get("road_code"),
+                prefer="name",
+            )
+        )
+        normalized_queried_roads = normalize_road_query_list(queried_roads, prefer="name")
+        query_arguments["queried_roads"] = normalized_queried_roads
+        query_arguments["road"] = normalized_queried_roads[0] if normalized_queried_roads else str(
+            query_arguments.get("road") or ""
+        )
+
         if (
             str(resolved_arguments.arguments.get("query_intent") or "").strip() == "route_based_traffic"
-            and not queried_roads
+            and not normalized_queried_roads
         ):
             LOGGER.warning(
                 "Traffic node did not resolve concrete roads for route-based traffic query: step_id=%s target=%s query=%s",
@@ -195,23 +214,32 @@ class TrafficNode:
                         continue
                     route_summaries = dependency_result.normalized_result.get("route_summaries")
                     if isinstance(route_summaries, list):
-                        normalized_road_names = self._deduplicate_strings(
-                            road_name
-                            for route_summary in route_summaries
-                            if isinstance(route_summary, dict)
-                            for road_name in route_summary.get("road_names", [])
+                        normalized_road_names = normalize_road_query_list(
+                            [
+                                str(road_name)
+                                for route_summary in route_summaries
+                                if isinstance(route_summary, dict)
+                                for road_name in route_summary.get("road_names", [])
+                            ],
+                            prefer="name",
                         )
                         if normalized_road_names:
                             return normalized_road_names
                     road_names = dependency_result.normalized_result.get("road_names")
                     if isinstance(road_names, list):
-                        normalized_road_names = self._deduplicate_strings(road_names)
+                        normalized_road_names = normalize_road_query_list(
+                            [str(road_name) for road_name in road_names],
+                            prefer="name",
+                        )
                         if normalized_road_names:
                             return normalized_road_names
 
         resolved_roads = resolved_arguments.arguments.get("roads")
         if isinstance(resolved_roads, list):
-            normalized_road_names = self._deduplicate_strings(resolved_roads)
+            normalized_road_names = normalize_road_query_list(
+                [str(road_name) for road_name in resolved_roads],
+                prefer="name",
+            )
             if normalized_road_names:
                 return normalized_road_names
 
@@ -223,15 +251,25 @@ class TrafficNode:
         """Prefer structured LLM/planner road fields before falling back to raw text."""
 
         arguments = resolved_arguments.arguments
+        normalized_road_fields = normalize_traffic_road_fields(
+            road=arguments.get("road"),
+            road_name=arguments.get("road_name"),
+            road_code=arguments.get("road_code"),
+            prefer="name",
+        )
         query_intent = str(arguments.get("query_intent") or "").strip()
         if query_intent == "route_based_traffic":
-            for key in ("road_name", "road_code", "road"):
-                value = str(arguments.get(key) or "").strip()
+            for key in ("road", "road_name", "road_code"):
+                value = str(normalized_road_fields.get(key) or "").strip()
                 if value:
                     return value
             return ""
 
-        for key in ("road_name", "road_code", "road", "target", "query"):
+        for key in ("road", "road_name", "road_code"):
+            value = str(normalized_road_fields.get(key) or "").strip()
+            if value:
+                return value
+        for key in ("target", "query"):
             value = str(arguments.get(key) or "").strip()
             if value:
                 return value
