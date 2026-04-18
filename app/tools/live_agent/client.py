@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from json import dumps
 from time import perf_counter
 from typing import Any
 
@@ -16,6 +17,7 @@ DRIVING_PATH = "/agent/driving"
 EVENT_PATH = "/agent/event"
 SERVICE_PATH = "/agent/service"
 NETWORK_OVERVIEW_PATH = "/agent/topN"
+MAX_LOGGED_RESPONSE_LENGTH = 4000
 
 LOGGER = get_logger(__name__)
 
@@ -124,7 +126,7 @@ class LiveAgentClient:
             LOGGER.warning(
                 (
                     "Live Agent request failed: method=%s path=%s base_url=%s duration_ms=%.2f "
-                    "connect_timeout_seconds=%.2f status_code=%s"
+                    "connect_timeout_seconds=%.2f status_code=%s response_text=%s"
                 ),
                 method,
                 path,
@@ -132,6 +134,7 @@ class LiveAgentClient:
                 (perf_counter() - request_start_time) * 1000,
                 connect_timeout_seconds,
                 exception.response.status_code,
+                self._serialize_for_logging(exception.response.text),
             )
             raise UpstreamServiceException(
                 "Live-agent endpoint returned a non-success status code.",
@@ -164,13 +167,14 @@ class LiveAgentClient:
             LOGGER.warning(
                 (
                     "Live Agent response parsing failed: method=%s path=%s base_url=%s "
-                    "duration_ms=%.2f connect_timeout_seconds=%.2f"
+                    "duration_ms=%.2f connect_timeout_seconds=%.2f response_text=%s"
                 ),
                 method,
                 path,
                 base_url,
                 (perf_counter() - request_start_time) * 1000,
                 connect_timeout_seconds,
+                self._serialize_for_logging(response.text),
             )
             raise UpstreamServiceException(
                 "Live-agent endpoint returned invalid JSON.",
@@ -178,6 +182,14 @@ class LiveAgentClient:
                 details={"path": path},
             ) from exception
 
+        LOGGER.info(
+            "Live Agent response received: method=%s path=%s base_url=%s status_code=%s response_payload=%s",
+            method,
+            path,
+            base_url,
+            response.status_code,
+            self._serialize_for_logging(response_payload),
+        )
         LOGGER.info(
             (
                 "Live Agent request completed: method=%s path=%s base_url=%s status_code=%s "
@@ -212,6 +224,16 @@ class LiveAgentClient:
             if field_value is not None
         }
         return normalized_payload or None
+
+    @staticmethod
+    def _serialize_for_logging(payload: Any) -> str:
+        if isinstance(payload, str):
+            normalized_payload = payload
+        else:
+            normalized_payload = dumps(payload, ensure_ascii=False, default=str)
+        if len(normalized_payload) <= MAX_LOGGED_RESPONSE_LENGTH:
+            return normalized_payload
+        return normalized_payload[:MAX_LOGGED_RESPONSE_LENGTH] + " ...<truncated>"
 
     @staticmethod
     def _extract_envelope_data(response_payload: Any, *, path: str) -> Any:
