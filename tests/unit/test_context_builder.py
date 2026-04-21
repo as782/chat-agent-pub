@@ -250,3 +250,26 @@ def test_context_builder_includes_answer_instruction_and_business_contexts() -> 
         "system",
         "user",
     ]
+
+
+def test_context_builder_exposes_estimated_prompt_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """楠岃瘉鍑嗗鍚庣殑涓婁笅鏂囦細鎶婇浼拌 token 鏁版帴鍑恒€?"""
+
+    monkeypatch.setattr(
+        context_builder_module,
+        "estimate_messages_tokens",
+        lambda messages, model_name=None: 123,
+    )
+
+    builder = ContextBuilder()
+    prepared_context = builder.build_context(
+        input_messages=[LlmInputMessage(role="user", content="你好")],
+        recent_messages=[],
+        memory_summary=None,
+        need_session_memory=False,
+        model_name="gpt-4o-mini",
+    )
+
+    assert prepared_context.estimated_prompt_tokens == 123

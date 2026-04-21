@@ -7,10 +7,26 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from functools import lru_cache
+from json import dumps
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.agent.prompts import CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX, MEMORY_SUMMARY_PROMPT_PREFIX
+import tiktoken
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    ChatMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_openai import ChatOpenAI
+
+from app.agent.prompts import (
+    CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX,
+    MEMORY_SUMMARY_PROMPT_PREFIX,
+)
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity
@@ -126,6 +142,103 @@ def _build_current_datetime_context(timezone_name: str = "Asia/Shanghai") -> str
     )
 
 
+def _convert_input_message_to_langchain_message(message: LlmInputMessage) -> BaseMessage:
+    """灏?LlmInputMessage 杞崲涓?LangChain message锛屼究浜庤绠楀厜鍙ｆ暟銆?"""
+
+    normalized_content = message.content.strip()
+    if message.role == "user":
+        return HumanMessage(content=normalized_content, name=message.name)
+    if message.role == "assistant":
+        return AIMessage(
+            content=normalized_content,
+            name=message.name,
+            tool_calls=[
+                {
+                    "name": tool_call.tool_name,
+                    "args": tool_call.arguments,
+                    "id": tool_call.tool_call_id,
+                    "type": "tool_call",
+                }
+                for tool_call in message.tool_calls
+            ],
+        )
+    if message.role == "system":
+        return SystemMessage(content=normalized_content, name=message.name)
+    if message.role == "tool":
+        return ToolMessage(
+            content=normalized_content,
+            tool_call_id=message.tool_call_id or "",
+        )
+    return ChatMessage(role=message.role, content=normalized_content, name=message.name)
+
+
+@lru_cache(maxsize=32)
+def _get_token_counter_model(model_name: str) -> ChatOpenAI:
+    """鍒涘缓涓€涓粎鐢ㄤ簬璁＄畻 token 鐨勫鎴风瀵硅薄銆?"""
+
+    return ChatOpenAI(model=model_name, api_key="token-counter")
+
+
+def _get_token_encoding(model_name: str) -> tiktoken.Encoding:
+    """鑾峰彇鍙敤鐨勬柟璦€旇█缂栫爜銆?"""
+
+    try:
+        return tiktoken.encoding_for_model(model_name)
+    except Exception:
+        for encoding_name in ("o200k_base", "cl100k_base"):
+            try:
+                return tiktoken.get_encoding(encoding_name)
+            except Exception:
+                continue
+        return tiktoken.get_encoding("cl100k_base")
+
+
+def estimate_messages_tokens(
+    messages: Sequence[LlmInputMessage],
+    *,
+    model_name: str | None = None,
+) -> int:
+    """浼拌杈撳叆 messages 鐨勬秷鑰禝 token 鏁般€?"""
+
+    normalized_model_name = (model_name or "gpt-4o-mini").strip() or "gpt-4o-mini"
+    langchain_messages = [
+        _convert_input_message_to_langchain_message(message) for message in messages
+    ]
+
+    try:
+        return int(
+            _get_token_counter_model(normalized_model_name).get_num_tokens_from_messages(
+                langchain_messages
+            )
+        )
+    except Exception:
+        encoding = _get_token_encoding(normalized_model_name)
+        total_tokens = 0
+        for message in messages:
+            total_tokens += 3
+            total_tokens += len(encoding.encode(message.role))
+            total_tokens += len(encoding.encode(message.content.strip()))
+            if message.name:
+                total_tokens += 1 + len(encoding.encode(message.name))
+            if message.tool_call_id:
+                total_tokens += 1 + len(encoding.encode(message.tool_call_id))
+            if message.tool_calls:
+                tool_calls_payload = [
+                    {
+                        "tool_call_id": tool_call.tool_call_id,
+                        "tool_name": tool_call.tool_name,
+                        "arguments": tool_call.arguments,
+                    }
+                    for tool_call in message.tool_calls
+                ]
+                total_tokens += len(
+                    encoding.encode(
+                        dumps(tool_calls_payload, ensure_ascii=False, separators=(",", ":"))
+                    )
+                )
+        return total_tokens + 3
+
+
 class ContextBuilder:
     """对话上下文构建器。"""
 
@@ -192,6 +305,7 @@ class ContextBuilder:
         recent_messages: Sequence[LlmInputMessage],
         memory_summary: str | None,
         need_session_memory: bool,
+        model_name: str | None = None,
         answer_instruction: str | None = None,
         executor_results_context: str | None = None,
         knowledge_context: str | None = None,
@@ -233,6 +347,10 @@ class ContextBuilder:
             return PreparedContext(
                 messages=context_messages,
                 used_session_memory=False,
+                estimated_prompt_tokens=estimate_messages_tokens(
+                    context_messages,
+                    model_name=model_name,
+                ),
                 memory_summary=None,
                 knowledge_context=knowledge_context,
                 route_context=route_context,
@@ -264,6 +382,10 @@ class ContextBuilder:
             messages=context_messages,
             used_session_memory=bool(
                 memory_summary or recent_system_messages or deduplicated_recent_messages
+            ),
+            estimated_prompt_tokens=estimate_messages_tokens(
+                context_messages,
+                model_name=model_name,
             ),
             memory_summary=memory_summary,
             knowledge_context=knowledge_context,
