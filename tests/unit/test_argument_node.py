@@ -267,6 +267,44 @@ async def test_argument_node_prefers_planner_metadata_for_traffic_arguments() ->
 
 
 @pytest.mark.asyncio
+async def test_argument_node_drops_surface_roads_when_planner_provides_canonical_single_road() -> None:
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "沪杭高速沪向车道是否畅通",
+            "primary_category": "traffic_status",
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+                steps=[
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询沪杭高速沪向车道的通行状态",
+                        metadata={
+                            "query": "沪杭高速沪向车道是否畅通",
+                            "road": "G60",
+                            "road_name": "沪昆高速",
+                            "road_code": "G60",
+                            "target": "沪向车道",
+                            "direction": "沪向",
+                        },
+                    )
+                ],
+            ),
+        }
+    )
+
+    step_arguments = result["step_arguments"]["traffic_1"]
+    assert step_arguments.arguments["road"] == "G60"
+    assert step_arguments.arguments["road_name"] == "沪昆高速"
+    assert step_arguments.arguments["road_code"] == "G60"
+    assert "roads" not in step_arguments.arguments
+
+
+@pytest.mark.asyncio
 async def test_argument_node_extracts_reference_answer_for_report_requests() -> None:
     """报表类问题带上次回答时，应提取参考回答文本。"""
 

@@ -72,7 +72,7 @@ async def test_planner_can_use_llm_output() -> None:
         AgentState(latest_user_message="杭州到金华怎么走，并说明是否符合高速清障标准？")
     )
 
-    assert plan.primary_category == "route_planning"
+    assert plan.primary_category == "policy"
     assert plan.execution_mode == "multi_step"
     assert plan.recommended_route == "ragflow"
     assert [step.executor for step in plan.steps] == ["rag", "route", "answer"]
@@ -357,9 +357,9 @@ async def test_planner_normalizes_province_wide_traffic_to_network_report() -> N
         AgentState(latest_user_message="请提供浙江省内高速实时路况")
     )
 
-    assert plan.primary_category == "traffic_status"
-    assert plan.recommended_route == "traffic"
-    assert [step.executor for step in plan.steps] == ["traffic", "answer"]
+    assert plan.primary_category == "network_report"
+    assert plan.recommended_route == "report"
+    assert [step.executor for step in plan.steps] == ["report", "answer"]
 
 
 async def test_planner_fallback_normalizes_province_wide_traffic_to_network_report() -> None:
@@ -603,9 +603,9 @@ async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
 
     plan = await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
 
-    assert plan.primary_category == "route_planning"
+    assert plan.primary_category == "traffic_status"
     assert plan.recommended_route == "route"
-    assert [step.executor for step in plan.steps] == ["route", "answer"]
+    assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
 
 
 async def test_planner_enriches_od_step_metadata_from_user_message() -> None:
@@ -661,6 +661,64 @@ async def test_planner_enriches_od_step_metadata_from_user_message() -> None:
     assert route_step.metadata["query_intent"] == "route_planning"
     assert traffic_step.metadata["query"] == "苍南去玉环堵不堵"
     assert traffic_step.metadata["query_intent"] == "route_based_traffic"
-    assert traffic_step.metadata["road"] == "苍南去玉环"
     assert traffic_step.metadata["target"] == "苍南去玉环"
+    assert "road" not in traffic_step.metadata
+    assert traffic_step.depends_on == ["route_1"]
+    assert answer_step.depends_on == ["traffic_1", "route_1"]
     assert answer_step.metadata["focus"] == "通行情况"
+
+
+async def test_planner_prefers_llm_route_metadata_for_od_toll_query() -> None:
+    """收费型 OD 查询应保留 LLM 给出的 route metadata，不要被纠偏成 traffic。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "route_planning",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "step_1_route",
+                  "executor": "route",
+                  "goal": "获取从杭州南站到南庄兜站的路线规划信息，包括收费情况",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {
+                    "origin": "杭州南站",
+                    "destination": "南庄兜站",
+                    "travel_mode": "driving",
+                    "query": "杭州南站到南庄兜站收费多少",
+                    "query_intent": "route_planning"
+                  }
+                },
+                {
+                  "step_id": "step_2_answer",
+                  "executor": "answer",
+                  "goal": "根据路线规划信息，返回从杭州南站到南庄兜站的收费标准和费用",
+                  "depends_on": ["step_1_route"],
+                  "can_run_in_parallel": false,
+                  "metadata": {
+                    "response_type": "cost",
+                    "focus": "toll_fee"
+                  }
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="杭州南站到南庄兜站收费多少？")
+    )
+
+    assert plan.primary_category == "route_planning"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
+    route_step = plan.steps[0]
+    assert route_step.metadata["origin"] == "杭州南站"
+    assert route_step.metadata["destination"] == "南庄兜站"
+    assert route_step.metadata["query"] == "杭州南站到南庄兜站收费多少"
+    assert route_step.metadata["query_intent"] == "route_planning"

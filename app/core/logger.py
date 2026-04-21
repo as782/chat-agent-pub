@@ -132,7 +132,14 @@ def configure_logging(settings: Settings) -> None:
     formatter = _build_formatter()
     root_logger.addHandler(_create_console_handler(formatter))
     if settings.enable_file_logging:
-        root_logger.addHandler(_create_file_handler(settings, formatter))
+        try:
+            root_logger.addHandler(_create_file_handler(settings, formatter))
+        except OSError as exception:
+            root_logger.warning(
+                "文件日志初始化失败，已降级为仅控制台输出。日志目录: %s",
+                Path(settings.log_dir).expanduser().resolve(),
+                exc_info=exception,
+            )
 
     for logger_name, logger_level in NOISY_LOGGER_LEVELS.items():
         logging.getLogger(logger_name).setLevel(logger_level)

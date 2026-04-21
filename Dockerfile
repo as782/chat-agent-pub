@@ -43,7 +43,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace
 
-RUN addgroup --system app \
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system app \
     && adduser --system --ingroup app app \
     && mkdir -p /workspace \
     && chown -R app:app /workspace
@@ -51,6 +54,9 @@ RUN addgroup --system app \
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app pyproject.toml ./pyproject.toml
 COPY --chown=app:app app ./app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 RUN python - <<'PY'
 from hashlib import sha256
@@ -76,8 +82,7 @@ for path in sorted((workspace / "app").rglob("*")):
 )
 PY
 
-USER app
-
 EXPOSE 8000
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["sh", "-c", "exec uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8000}"]

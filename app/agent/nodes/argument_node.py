@@ -80,6 +80,11 @@ class ArgumentNode:
         for key, value in step.metadata.items():
             if not ArgumentNode._is_empty_metadata_value(value):
                 merged_arguments[key] = value
+        if step.executor == "traffic":
+            merged_arguments = ArgumentNode._normalize_traffic_road_arguments_after_merge(
+                merged_arguments=merged_arguments,
+                planner_metadata=step.metadata,
+            )
 
         extraction_mode = resolved_arguments.extraction_mode
         if "planner_metadata" not in extraction_mode:
@@ -91,6 +96,26 @@ class ArgumentNode:
             missing_fields=list(resolved_arguments.missing_fields),
             extraction_mode=extraction_mode,
         )
+
+    @staticmethod
+    def _normalize_traffic_road_arguments_after_merge(
+        *,
+        merged_arguments: dict[str, object],
+        planner_metadata: dict[str, object],
+    ) -> dict[str, object]:
+        """Prefer planner canonical single-road fields over resolver surface roads."""
+
+        normalized_arguments = dict(merged_arguments)
+        has_planner_single_road = any(
+            not ArgumentNode._is_empty_metadata_value(planner_metadata.get(field_name))
+            for field_name in ("road", "road_name", "road_code")
+        )
+        has_planner_multi_roads = not ArgumentNode._is_empty_metadata_value(
+            planner_metadata.get("roads")
+        )
+        if has_planner_single_road and not has_planner_multi_roads:
+            normalized_arguments.pop("roads", None)
+        return normalized_arguments
 
     @staticmethod
     def _is_empty_metadata_value(value: object) -> bool:
