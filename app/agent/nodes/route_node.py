@@ -60,7 +60,7 @@ class RouteNode:
                 summary=self._build_success_summary(response_payload),
             )
             return {
-                "route_context": self._build_route_context(
+                "route_context": self._build_compact_route_context(
                     resolved_arguments=resolved_arguments,
                     response_payload=response_payload,
                 ),
@@ -248,6 +248,203 @@ class RouteNode:
             seen.add(value)
             ordered_values.append(value)
         return ordered_values
+
+    @staticmethod
+    def _normalize_route_direction(direction_type: object, direction_name: object) -> str:
+        direction_name_text = str(direction_name or "").strip()
+        if direction_name_text:
+            return direction_name_text
+        direction_type_text = str(direction_type or "").strip()
+        if direction_type_text in {"00", "0", "双向"}:
+            return "双向"
+        stripped_direction = direction_type_text.lstrip("0")
+        if stripped_direction == "1":
+            return "上行"
+        if stripped_direction == "2":
+            return "下行"
+        return direction_type_text or "未知"
+
+    @staticmethod
+    def _string_or_placeholder(value: object, placeholder: str) -> str:
+        if value is None:
+            return placeholder
+        text = str(value).strip()
+        return text or placeholder
+
+    @staticmethod
+    def _format_distance_km(distance_meters: object) -> str:
+        if isinstance(distance_meters, (int, float)):
+            return f"{distance_meters / 1000:g}"
+        return "0"
+
+    @staticmethod
+    def _format_duration_hm(duration_minutes: object) -> str:
+        if not isinstance(duration_minutes, (int, float)):
+            return "0分"
+        total_minutes = int(duration_minutes)
+        hours, minutes = divmod(total_minutes, 60)
+        if hours and minutes:
+            return f"{hours}小时{minutes}分"
+        if hours:
+            return f"{hours}小时"
+        return f"{minutes}分"
+
+    @staticmethod
+    def _format_toll(toll: object) -> str:
+        if isinstance(toll, (int, float)):
+            return f"{toll:g}"
+        return "0"
+
+    @staticmethod
+    def _format_time_range(start_time: object, end_time: object) -> str:
+        return (
+            f"{RouteNode._string_or_placeholder(start_time, '未知')}"
+            f"~{RouteNode._string_or_placeholder(end_time, '未知')}"
+        )
+
+    @staticmethod
+    def _format_milestone(value: object) -> str:
+        return RouteNode._string_or_placeholder(value, "未知")
+
+    @staticmethod
+    def _extract_route_service_items(sections: list[dict[str, object]]) -> list[dict[str, str]]:
+        service_items: list[dict[str, str]] = []
+        for section in sections:
+            raw_service_areas = section.get("serviceAreas", [])
+            if not isinstance(raw_service_areas, list):
+                continue
+            for service_area in raw_service_areas:
+                if not isinstance(service_area, dict):
+                    continue
+                service_name = str(service_area.get("serviceName") or "").strip()
+                if not service_name:
+                    continue
+                service_items.append(
+                    {
+                        "service_name": service_name,
+                        "direction": RouteNode._normalize_route_direction(
+                            service_area.get("directionType"),
+                            service_area.get("directionName"),
+                        ),
+                    }
+                )
+        return service_items
+
+    @staticmethod
+    def _extract_route_control_items(sections: list[dict[str, object]]) -> list[dict[str, str]]:
+        control_items: list[dict[str, str]] = []
+        for section in sections:
+            raw_controls = section.get("trafficControls", [])
+            if not isinstance(raw_controls, list):
+                continue
+            for control in raw_controls:
+                if not isinstance(control, dict):
+                    continue
+                control_items.append(
+                    {
+                        "begin_milestone": RouteNode._string_or_placeholder(
+                            control.get("beginMilestone"),
+                            "未知",
+                        ),
+                        "end_milestone": RouteNode._string_or_placeholder(
+                            control.get("endMilestone"),
+                            "未知",
+                        ),
+                        "direction": RouteNode._normalize_route_direction(
+                            control.get("directionType"),
+                            control.get("directionName"),
+                        ),
+                        "description": RouteNode._string_or_placeholder(
+                            control.get("des") or control.get("description"),
+                            "暂无描述",
+                        ),
+                        "begin_time": RouteNode._string_or_placeholder(
+                            control.get("beginTime"),
+                            "未知",
+                        ),
+                        "expected_end_time": RouteNode._string_or_placeholder(
+                            control.get("expectedEndTime") or control.get("endTime"),
+                            "未知",
+                        ),
+                        "control_measures": RouteNode._string_or_placeholder(
+                            control.get("controlMeasures"),
+                            "暂无",
+                        ),
+                    }
+                )
+        return control_items
+
+    @staticmethod
+    def _build_compact_route_block(*, route: dict[str, object], route_index: int) -> str:
+        tags = RouteNode._deduplicate_strings(route.get("tags", []))
+        tag_text = "、".join(tags) if tags else "未标注"
+        distance_km = RouteNode._format_distance_km(route.get("distance"))
+        duration_hm = RouteNode._format_duration_hm(route.get("duration"))
+        toll_text = RouteNode._format_toll(route.get("toll"))
+
+        sections = RouteNode._extract_sections(route)
+        road_names = RouteNode._extract_road_names(sections)
+        service_items = RouteNode._extract_route_service_items(sections)
+        control_items = RouteNode._extract_route_control_items(sections)
+
+        lines = [
+            f"方案 {route_index} [{tag_text}]：路线共{distance_km}km | 预计耗时{duration_hm} | 费用过路费{toll_text}元",
+            "途经路段：" + (" → ".join(road_names) if road_names else "暂无"),
+            "途经服务区：",
+        ]
+
+        if service_items:
+            lines.append("、".join(f"{item['service_name']}（{item['direction']}）" for item in service_items) + "、")
+        else:
+            lines.append("暂无")
+
+        lines.append("沿途交通管制：")
+        if control_items:
+            for item in control_items:
+                lines.append(
+                    "  - "
+                    f"K{item['begin_milestone']}~K{item['end_milestone']}"
+                    f"（{item['direction']}）：{item['description']} | "
+                    f"{item['begin_time']}~{item['expected_end_time']} | "
+                    f"管制措施：{item['control_measures']}"
+                )
+        else:
+            lines.append("  - 暂无")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_compact_route_context(
+        *,
+        resolved_arguments: ResolvedArguments,
+        response_payload: dict[str, object],
+    ) -> str:
+        routes = response_payload.get("routes", [])
+        normalized_routes = (
+            [route for route in routes if isinstance(route, dict)]
+            if isinstance(routes, list)
+            else []
+        )
+        if not normalized_routes:
+            return ""
+
+        route_count = response_payload.get("routesCount")
+        if route_count is None:
+            route_count = len(normalized_routes)
+
+        lines = [
+            ROUTE_CONTEXT_PROMPT_PREFIX.rstrip(),
+            (
+                f"查询参数：起点：{RouteNode._string_or_placeholder(resolved_arguments.arguments.get('origin'), '未知')}，"
+                f"终点：{RouteNode._string_or_placeholder(resolved_arguments.arguments.get('destination'), '未知')},"
+                f"共查询路线方案（共 {route_count} 条）："
+            ),
+        ]
+
+        for route_index, route in enumerate(normalized_routes, start=1):
+            lines.append(RouteNode._build_compact_route_block(route=route, route_index=route_index))
+
+        return "\n".join(lines)
 
     @staticmethod
     def _build_success_summary(response_payload: dict[str, object]) -> str:
