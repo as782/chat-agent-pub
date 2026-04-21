@@ -14,13 +14,13 @@ class _FailingPlannerLlmClient:
         raise RuntimeError("force fallback")
 
 
-async def test_explicit_route_queries_use_route_then_traffic_plan() -> None:
+async def test_explicit_route_queries_use_route_only_plan() -> None:
     planner = PlannerService(llm_client=_FailingPlannerLlmClient())
 
     queries = [
-        "从杭州去舟山怎么走不堵",
+        "从杭州去舟山怎么走不堵？",
         "从宁波到温州走哪条路最快？",
-        "长沙到杭州萧山那条高速不堵？",
+        "长沙到杭州萧山那条高速不堵吗？",
         "上海到台州，马上出发，推荐一下路线，谢谢",
         "深圳到湖北怎么开？",
     ]
@@ -28,29 +28,31 @@ async def test_explicit_route_queries_use_route_then_traffic_plan() -> None:
     for query in queries:
         plan = await planner.build_plan_async(AgentState(latest_user_message=query))
         assert plan.primary_category == "route_planning"
+        assert plan.execution_mode == "single_step"
         assert plan.recommended_route == "route"
-        assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
-        assert plan.steps[2].depends_on == ["route_1", "traffic_1"]
+        assert [step.executor for step in plan.steps] == ["route", "answer"]
+        assert plan.steps[1].depends_on == ["route_1"]
 
 
-async def test_od_traffic_queries_default_to_route_then_traffic_plan() -> None:
+async def test_od_traffic_queries_default_to_route_only_plan() -> None:
     planner = PlannerService(llm_client=_FailingPlannerLlmClient())
 
     queries = [
         "我从衢州去宁波？",
         "上饶到温州堵车吗？",
         "安徽到浙江堵吗？",
-        "屯溪到慈溪怎么样？",
+        "婺源到慈溪怎么样？",
         "杭州收费站到金华正常通行吗？",
         "温州回杭州堵吗？",
     ]
 
     for query in queries:
         plan = await planner.build_plan_async(AgentState(latest_user_message=query))
-        assert plan.primary_category == "traffic_status"
+        assert plan.primary_category == "route_planning"
+        assert plan.execution_mode == "single_step"
         assert plan.recommended_route == "route"
-        assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
-        assert plan.steps[2].depends_on == ["route_1", "traffic_1"]
+        assert [step.executor for step in plan.steps] == ["route", "answer"]
+        assert plan.steps[1].depends_on == ["route_1"]
 
 
 async def test_direct_traffic_queries_use_traffic_only_plan() -> None:
@@ -58,14 +60,15 @@ async def test_direct_traffic_queries_use_traffic_only_plan() -> None:
 
     queries = [
         "衢州东那边能看一下吗？",
-        "沪武高咋样？",
-        "沪昆常山西往上海方向不可以上吗？",
+        "沪武高速堵不堵？",
+        "沪武高速现在怎么样？",
         "白果收费站进口是正常的吗",
     ]
 
     for query in queries:
         plan = await planner.build_plan_async(AgentState(latest_user_message=query))
         assert plan.primary_category == "traffic_status"
+        assert plan.execution_mode == "single_step"
         assert plan.recommended_route == "traffic"
         assert [step.executor for step in plan.steps] == ["traffic", "answer"]
 
@@ -94,7 +97,7 @@ def test_argument_resolver_cleans_colloquial_od_endpoints() -> None:
 def test_answer_node_prefers_composite_route_and_traffic_prompt_structure() -> None:
     state = {
         "primary_category": "route_planning",
-        "latest_user_message": "从杭州去舟山怎么走不堵",
+        "latest_user_message": "从杭州去舟山怎么走不堵？",
         "execution_plan": ExecutionPlan(
             primary_category="route_planning",
             execution_mode="multi_step",
@@ -125,5 +128,5 @@ def test_answer_node_prefers_composite_route_and_traffic_prompt_structure() -> N
     assert AnswerNode._resolve_answer_prompt_name(state) == "COMPOSITE_ANSWER_PROMPT"
     assert "推荐路线" in instruction
     assert "预计时长" in COMPOSITE_ANSWER_PROMPT
-    assert "口述式总结" in COMPOSITE_ANSWER_PROMPT
-    assert "大流量情况" in TRAFFIC_SUMMARY_PROMPT
+    assert "综合回答器" in COMPOSITE_ANSWER_PROMPT
+    assert "整体路况判断" in TRAFFIC_SUMMARY_PROMPT

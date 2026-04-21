@@ -115,13 +115,14 @@ def test_planner_coerces_multi_road_string_into_roads_list() -> None:
 def test_planner_prompt_requires_llm_to_infer_canonical_road() -> None:
     combined_prompt = f"{PLANNER_PROMPT}\n{PLANNER_JSON_OUTPUT_PROMPT}"
 
-    assert "不要假设本地还有额外映射表帮你兜底" in combined_prompt
-    assert "诸暨北收费站温州方向出口堵吗" in combined_prompt
-    assert "沪杭高速沪向车道全部畅通吗" in combined_prompt
-    assert "单路场景至少必须填写 road" in combined_prompt
-    assert "road_name、road_code 也必须一起补齐" in combined_prompt
-    assert "默认优先填写纯道路编号" in combined_prompt
-    assert "不能写成 “G92杭州湾跨海大桥连接线”" in combined_prompt
+    assert "OD + 怎么走/拥堵/事故/施工：route -> answer" in combined_prompt
+    assert "请只保留当前分类真正会用到的字段" in combined_prompt
+    assert "traffic 类问题" in combined_prompt
+    assert "traffic 字段生成约束" in combined_prompt
+    assert "road: 只能表示单条道路" in combined_prompt
+    assert "roads: 只能是数组" in combined_prompt
+    assert "road_name: 只能是单条道路名称" in combined_prompt
+    assert "road_code: 只能是单条道路编号" in combined_prompt
 
 
 class _CapturingToolRegistry:

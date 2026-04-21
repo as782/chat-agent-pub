@@ -18,7 +18,7 @@ class _FakePlannerLlmClient:
         )
 
 
-async def test_planner_preserves_valid_llm_route_then_traffic_steps_after_category_normalization() -> None:
+async def test_planner_routes_od_traffic_queries_to_route_only_plan() -> None:
     planner = PlannerService(
         llm_client=_FakePlannerLlmClient(
             """
@@ -28,40 +28,26 @@ async def test_planner_preserves_valid_llm_route_then_traffic_steps_after_catego
               "clarification_question": null,
               "steps": [
                 {
-                  "step_id": "1",
+                  "step_id": "route_1",
                   "executor": "route",
-                  "goal": "规划从宁波到杭州的推荐行驶路线",
+                  "goal": "查路线",
                   "depends_on": [],
                   "can_run_in_parallel": false,
                   "metadata": {
                     "origin": "宁波",
                     "destination": "杭州",
                     "travel_mode": "driving",
-                    "query": "宁波到杭州路况如何"
+                    "query": "宁波到杭州路况如何",
+                    "query_intent": "route_planning"
                   }
                 },
                 {
-                  "step_id": "2",
-                  "executor": "traffic",
-                  "goal": "查询规划路线涉及路段的实时路况",
-                  "depends_on": ["1"],
-                  "can_run_in_parallel": true,
-                  "metadata": {
-                    "query": "宁波到杭州路况",
-                    "roads": "通过步骤1获取的具体高速/道路编号及名称列表",
-                    "target": "宁波至杭州全程",
-                    "query_intent": "route_based_traffic"
-                  }
-                },
-                {
-                  "step_id": "3",
+                  "step_id": "answer_1",
                   "executor": "answer",
-                  "goal": "汇总路线和路况信息",
-                  "depends_on": ["1", "2"],
+                  "goal": "总结结果",
+                  "depends_on": ["route_1"],
                   "can_run_in_parallel": false,
-                  "metadata": {
-                    "focus": "路线推荐、拥堵程度"
-                  }
+                  "metadata": {}
                 }
               ]
             }
@@ -71,11 +57,12 @@ async def test_planner_preserves_valid_llm_route_then_traffic_steps_after_catego
 
     plan = await planner.build_plan_async(AgentState(latest_user_message="宁波到杭州路况如何？"))
 
-    assert plan.primary_category == "traffic_status"
-    assert plan.execution_mode == "multi_step"
+    assert plan.primary_category == "route_planning"
+    assert plan.execution_mode == "single_step"
     assert plan.recommended_route == "route"
-    assert [step.step_id for step in plan.steps] == ["1", "2", "3"]
-    assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
-    assert plan.steps[1].depends_on == ["1"]
-    assert plan.steps[1].metadata["target"] == "宁波至杭州全程"
-    assert plan.steps[2].depends_on == ["1", "2"]
+    assert [step.step_id for step in plan.steps] == ["route_1", "answer_1"]
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
+    assert plan.steps[0].metadata["origin"] == "宁波"
+    assert plan.steps[0].metadata["destination"] == "杭州"
+    assert plan.steps[0].metadata["query_intent"] == "route_planning"
+    assert plan.steps[1].depends_on == ["route_1"]

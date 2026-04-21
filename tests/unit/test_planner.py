@@ -515,9 +515,9 @@ async def test_planner_logs_final_execution_plan(caplog) -> None:
     await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
 
     assert "Planner final execution plan:" in caplog.text
-    assert '"primary_category": "traffic_status"' in caplog.text
+    assert '"primary_category": "route_planning"' in caplog.text
     assert '"executor": "route"' in caplog.text
-    assert '"executor": "traffic"' in caplog.text
+    assert '"executor": "traffic"' not in caplog.text
 
 
 async def test_planner_fallback_routes_direct_traffic_question_to_traffic() -> None:
@@ -556,16 +556,17 @@ async def test_planner_fallback_routes_network_report_question_to_report() -> No
     assert [step.executor for step in plan.steps] == ["report", "answer"]
 
 
-async def test_planner_fallback_routes_od_congestion_to_route_then_traffic() -> None:
-    """OD + 拥堵问题应走 route -> traffic -> answer。"""
+async def test_planner_fallback_routes_od_congestion_to_route_only() -> None:
+    """OD + 拥堵问题应走 route -> answer。"""
 
     planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
 
     plan = await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
 
-    assert plan.primary_category == "traffic_status"
+    assert plan.primary_category == "route_planning"
+    assert plan.execution_mode == "single_step"
     assert plan.recommended_route == "route"
-    assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
 
 
 async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
@@ -603,13 +604,13 @@ async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
 
     plan = await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
 
-    assert plan.primary_category == "traffic_status"
+    assert plan.primary_category == "route_planning"
     assert plan.recommended_route == "route"
-    assert [step.executor for step in plan.steps] == ["route", "traffic", "answer"]
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
 
 
 async def test_planner_enriches_od_step_metadata_from_user_message() -> None:
-    """当 LLM 没把 metadata 写全时，planner 仍应补齐 route/traffic 的关键参数。"""
+    """LLM 已经给出 route 步骤时，planner 仍应补齐 OD 元数据但不引入 traffic。"""
 
     planner = PlannerService(
         llm_client=_FakePlannerLlmClient(
@@ -622,24 +623,16 @@ async def test_planner_enriches_od_step_metadata_from_user_message() -> None:
                 {
                   "step_id": "route_1",
                   "executor": "route",
-                  "goal": "规划从苍南到玉环的推荐路线",
+                  "goal": "查询宁波到杭州的推荐路线",
                   "depends_on": [],
-                  "can_run_in_parallel": false,
-                  "metadata": {}
-                },
-                {
-                  "step_id": "traffic_1",
-                  "executor": "traffic",
-                  "goal": "获取规划路线上各路段的实时路况（拥堵、事故、施工等）",
-                  "depends_on": ["route_1"],
                   "can_run_in_parallel": false,
                   "metadata": {}
                 },
                 {
                   "step_id": "answer_1",
                   "executor": "answer",
-                  "goal": "综合路线与路况信息，回答苍南去玉环是否拥堵",
-                  "depends_on": ["traffic_1"],
+                  "goal": "总结路线结果并回答用户",
+                  "depends_on": ["route_1"],
                   "can_run_in_parallel": false,
                   "metadata": {}
                 }
@@ -649,23 +642,16 @@ async def test_planner_enriches_od_step_metadata_from_user_message() -> None:
         )
     )
 
-    plan = await planner.build_plan_async(AgentState(latest_user_message="苍南去玉环堵不堵"))
+    plan = await planner.build_plan_async(AgentState(latest_user_message="宁波到杭州怎么走？"))
 
+    assert plan.execution_mode == "single_step"
     route_step = plan.steps[0]
-    traffic_step = plan.steps[1]
-    answer_step = plan.steps[2]
-    assert route_step.metadata["origin"] == "苍南"
-    assert route_step.metadata["destination"] == "玉环"
-    assert route_step.metadata["travel_mode"] == "auto"
-    assert route_step.metadata["query"] == "苍南去玉环堵不堵"
+    answer_step = plan.steps[1]
+    assert route_step.metadata["origin"] == "宁波"
+    assert route_step.metadata["destination"] == "杭州"
+    assert route_step.metadata["query"] == "宁波到杭州怎么走？"
     assert route_step.metadata["query_intent"] == "route_planning"
-    assert traffic_step.metadata["query"] == "苍南去玉环堵不堵"
-    assert traffic_step.metadata["query_intent"] == "route_based_traffic"
-    assert traffic_step.metadata["target"] == "苍南去玉环"
-    assert "road" not in traffic_step.metadata
-    assert traffic_step.depends_on == ["route_1"]
-    assert answer_step.depends_on == ["traffic_1", "route_1"]
-    assert answer_step.metadata["focus"] == "通行情况"
+    assert answer_step.depends_on == ["route_1"]
 
 
 async def test_planner_prefers_llm_route_metadata_for_od_toll_query() -> None:
