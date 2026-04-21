@@ -178,6 +178,9 @@ class RouteNode:
 
     @staticmethod
     def _extract_road_names(sections: list[dict[str, object]]) -> list[str]:
+        """
+        提取路线中的道路名称。
+        """
         return RouteNode._deduplicate_strings(
             str(section.get("roadName") or "").strip()
             for section in sections
@@ -199,10 +202,11 @@ class RouteNode:
                         "road_name": road_name,
                         "control_id": control.get("id"),
                         "control_name": control.get("name") or control.get("controlName"),
-                        "control_type": control.get("type") or control.get("controlType"),
-                        "start_time": control.get("startTime"),
-                        "end_time": control.get("endTime"),
-                        "description": control.get("description") or control.get("content"),
+                        "control_type": control.get("eventType")  or control.get("type") ,
+                        "start_time":  control.get("beginTime") or control.get("startTime"),
+                        "end_time":control.get("expectEndTime") or control.get("endTime"),
+                        "description": control.get("des") or control.get("description"),
+                        
                     }
                 )
         return traffic_controls
@@ -232,6 +236,9 @@ class RouteNode:
 
     @staticmethod
     def _deduplicate_strings(values: Iterable[object]) -> list[str]:
+        """
+            去重字符串
+        """
         seen: set[str] = set()
         ordered_values: list[str] = []
         for raw_value in values:
