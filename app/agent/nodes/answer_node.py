@@ -705,28 +705,6 @@ class AnswerNode:
         return "\n\n".join(instruction_parts)
 
     @staticmethod
-    def _resolve_answer_focus(state: AgentState) -> str:
-        message = str(state.get("latest_user_message", "")).strip()
-
-        if any(keyword in message for keyword in _TOLL_KEYWORDS):
-            return "收费判断。优先回答是否收费、免费时间窗口、按什么时间规则判定，以及还缺哪些条件。"
-        if AnswerNode._looks_like_traffic_query(message):
-            return "通行情况。优先回答是否拥堵、关键路段、预计影响和是否需要绕行。"
-        if AnswerNode._looks_like_service_query(message):
-            return "服务区设施。优先回答是否有充电桩、主要配套和繁忙程度。"
-        if AnswerNode._looks_like_policy_query(message):
-            return "政策规则。优先回答适用范围、判断依据、关键条件和限制。"
-        if AnswerNode._looks_like_report_query(message):
-            return "路网汇总。优先概括整体态势、变化重点和需要关注的路段。"
-        if AnswerNode._looks_like_route_query(message):
-            return "出行方案。优先回答推荐路线、时间成本、费用和关键提醒。"
-        return "综合结论。优先直接回答用户问题，再补充最关键的支撑信息。"
-
-    @staticmethod
-    def _looks_like_traffic_query(message: str) -> bool:
-        return any(keyword in message for keyword in _TRAFFIC_KEYWORDS)
-
-    @staticmethod
     def _looks_like_service_query(message: str) -> bool:
         return any(keyword in message for keyword in _SERVICE_KEYWORDS)
 
@@ -734,9 +712,6 @@ class AnswerNode:
     def _looks_like_policy_query(message: str) -> bool:
         return any(keyword in message for keyword in _POLICY_KEYWORDS)
 
-    @staticmethod
-    def _looks_like_route_query(message: str) -> bool:
-        return any(keyword in message for keyword in _ROUTE_KEYWORDS)
 
     @staticmethod
     def _looks_like_report_query(message: str) -> bool:
