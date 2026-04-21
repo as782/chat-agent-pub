@@ -71,7 +71,7 @@ class TrafficNode:
                 ),
             )
             return {
-                "traffic_context": self._build_traffic_context(
+                "traffic_context": self._build_compact_traffic_context(
                     query_arguments=query_arguments,
                     response_payload=response_payload,
                     per_road_results=per_road_results,
@@ -776,7 +776,7 @@ class TrafficNode:
 
     @staticmethod
     def _resolve_station_status_label(status_code: object) -> str | None:
-        normalized_status = str(status_code or "").strip()
+        normalized_status = TrafficNode._normalize_status_code(status_code)
         if not normalized_status:
             return None
         if normalized_status == "0":
@@ -793,6 +793,229 @@ class TrafficNode:
     def _resolve_service_status_label(status_tag: object) -> str | None:
         normalized_status_tag = str(status_tag or "").strip()
         return normalized_status_tag or None
+
+    @staticmethod
+    def _normalize_status_code(status_code: object) -> str | None:
+        """把 int / float / numeric string 统一成同一种状态码表示。"""
+
+        if status_code is None:
+            return None
+        if isinstance(status_code, bool):
+            return str(int(status_code))
+        if isinstance(status_code, int):
+            return str(status_code)
+        if isinstance(status_code, float) and status_code.is_integer():
+            return str(int(status_code))
+
+        normalized = str(status_code).strip()
+        if not normalized:
+            return None
+        if normalized.isdigit():
+            return str(int(normalized))
+        return normalized
+
+    @staticmethod
+    def _build_compact_traffic_context(
+        *,
+        query_arguments: dict[str, object],
+        response_payload: list[dict[str, object]],
+        per_road_results: list[dict[str, object]],
+    ) -> str:
+        """把路况查询结果整理成适合直接喂给模型的模板化文本。"""
+
+        _ = query_arguments
+        context_blocks = TrafficNode._build_compact_traffic_context_blocks(
+            response_payload=response_payload,
+            per_road_results=per_road_results,
+        )
+        if not context_blocks:
+            return ""
+
+        return "\n\n".join([TRAFFIC_CONTEXT_PROMPT_PREFIX.rstrip(), *context_blocks])
+
+    @staticmethod
+    def _build_compact_traffic_context_blocks(
+        *,
+        response_payload: list[dict[str, object]],
+        per_road_results: list[dict[str, object]],
+    ) -> list[str]:
+        """按道路拆分输出摘要块，尽量避免把原始 JSON 直接塞进上下文。"""
+
+        source_results = per_road_results if per_road_results else [{"api_result": response_payload}]
+        road_blocks: list[str] = []
+        seen_roads: set[tuple[str, str]] = set()
+
+        for road_result in source_results:
+            api_result = road_result.get("api_result")
+            if not isinstance(api_result, list):
+                continue
+            for road in api_result:
+                if not isinstance(road, dict):
+                    continue
+                road_name = str(road.get("roadName") or "").strip()
+                road_code = str(road.get("roadGbCode") or "").strip()
+                road_key = (road_name, road_code)
+                if road_key in seen_roads:
+                    continue
+                seen_roads.add(road_key)
+                block = TrafficNode._build_compact_traffic_road_block(road)
+                if block:
+                    road_blocks.append(block)
+
+        return road_blocks
+
+    @staticmethod
+    def _build_compact_traffic_road_block(road: dict[str, object]) -> str:
+        """单条道路的路况摘要模板。"""
+
+        road_name = TrafficNode._string_or_placeholder(road.get("roadName"), "未知道路")
+        road_code = TrafficNode._string_or_placeholder(road.get("roadGbCode"), "未知")
+
+        congestion_items = TrafficNode._extract_congestion_items([road])
+        traffic_control_items = TrafficNode._extract_traffic_control_items([road])
+        service_area_items = TrafficNode._extract_service_area_items([road])
+        exit_items = TrafficNode._extract_exit_items([road])
+
+        abnormal_toll_count = sum(
+            1
+            for item in exit_items
+            if TrafficNode._is_abnormal_station_status(item.get("entrance_status"))
+            or TrafficNode._is_abnormal_station_status(item.get("export_status"))
+        )
+        busy_service_count = sum(
+            1
+            for item in service_area_items
+            if TrafficNode._is_busy_service_area(item.get("status_tag"))
+        )
+        overall_status = TrafficNode._resolve_overall_status(
+            congestion_count=len(congestion_items),
+            control_count=len(traffic_control_items),
+            abnormal_toll_count=abnormal_toll_count,
+            busy_service_count=busy_service_count,
+        )
+
+        lines: list[str] = [
+            f"道路名称：{road_name} 编号：{road_code}，路况如下：",
+            (
+                "整体判断： 当前状态："
+                f"{overall_status}  , 拥堵/缓行事件：{len(congestion_items)}条 "
+                f",交通管制事件：{len(traffic_control_items)}条 , 异常收费站：{abnormal_toll_count}个 "
+                f",状态异常服务区 ：{busy_service_count}个"
+            ),
+        ]
+
+        if congestion_items:
+            lines.append("拥堵/缓行：")
+            for item in congestion_items[:3]:
+                lines.append(
+                    "  - "
+                    f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
+                    f"~K{TrafficNode._format_milestone(item.get('end_milestone'))}"
+                    f"（{TrafficNode._format_direction(item)}）："
+                    f"{TrafficNode._string_or_placeholder(item.get('description'), '暂无描述')} | "
+                    f"缓行{TrafficNode._format_number(item.get('road_amble_mile'))}公里 | "
+                    f"{TrafficNode._format_time_range(item.get('start_time'), item.get('end_time'))}"
+                )
+
+        if traffic_control_items:
+            lines.append("交通管制列表：")
+            for item in traffic_control_items[:3]:
+                lines.append(
+                    "  - "
+                    f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
+                    f"~K{TrafficNode._format_milestone(item.get('end_milestone'))}"
+                    f"（{TrafficNode._format_direction(item)}）："
+                    f"{TrafficNode._string_or_placeholder(item.get('description'), '暂无描述')} | "
+                    f"{TrafficNode._format_time_range(item.get('start_time'), item.get('end_time'))} | "
+                    f"管制措施：{TrafficNode._string_or_placeholder(item.get('control_measures'), '暂无')}"
+                )
+
+        if exit_items:
+            lines.append("收费站列表：")
+            for item in exit_items[:3]:
+                lines.append(
+                    "  - "
+                    f"{TrafficNode._string_or_placeholder(item.get('toll_name'), '未知收费站')}："
+                    f"入口{TrafficNode._string_or_placeholder(item.get('entrance_status_label'), '未知')} / "
+                    f"出口{TrafficNode._string_or_placeholder(item.get('export_status_label'), '未知')}"
+                )
+
+        if service_area_items:
+            lines.append("服务区列表：")
+            for item in service_area_items[:3]:
+                lines.append(
+                    "  - "
+                    f"{TrafficNode._string_or_placeholder(item.get('service_name'), '未知服务区')}"
+                    f"（{TrafficNode._format_direction(item)}）："
+                    f"{TrafficNode._string_or_placeholder(item.get('status_label'), '未知')}"
+                )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_direction(item: dict[str, object]) -> str:
+        direction_label = str(item.get("direction_label") or "").strip()
+        if direction_label:
+            return direction_label
+        direction_type = str(item.get("direction_type") or "").strip()
+        return direction_type or "未知"
+
+    @staticmethod
+    def _format_milestone(value: object) -> str:
+        return TrafficNode._string_or_placeholder(value, "未知")
+
+    @staticmethod
+    def _format_number(value: object) -> str:
+        if isinstance(value, (int, float)):
+            text = f"{value:g}"
+            return text if text else "0"
+        return TrafficNode._string_or_placeholder(value, "0")
+
+    @staticmethod
+    def _format_time_range(start_time: object, end_time: object) -> str:
+        start_text = TrafficNode._string_or_placeholder(start_time, "未知")
+        end_text = TrafficNode._string_or_placeholder(end_time, "未知")
+        return f"{start_text}~{end_text}"
+
+    @staticmethod
+    def _resolve_overall_status(
+        *,
+        congestion_count: int,
+        control_count: int,
+        abnormal_toll_count: int,
+        busy_service_count: int,
+    ) -> str:
+        if congestion_count > 0 and control_count > 0:
+            return "拥堵/缓行与交通管制并存"
+        if congestion_count > 0:
+            return "存在拥堵/缓行"
+        if control_count > 0:
+            return "存在交通管制"
+        if abnormal_toll_count > 0 or busy_service_count > 0:
+            return "存在设施状态异常"
+        return "通行基本正常"
+
+    @staticmethod
+    def _is_abnormal_station_status(status_value: object) -> bool:
+        status_label = str(TrafficNode._resolve_station_status_label(status_value) or "").strip()
+        if not status_label:
+            return False
+        return status_label != "开启"
+
+    @staticmethod
+    def _is_busy_service_area(status_value: object) -> bool:
+        status_label = str(TrafficNode._resolve_service_status_label(status_value) or "").strip()
+        if not status_label:
+            return False
+        normalized_label = status_label.replace(" ", "")
+        return normalized_label not in {"正常", "通畅", "畅通", "空闲", "不拥挤", "不繁忙", "无异常"}
+
+    @staticmethod
+    def _string_or_placeholder(value: object, placeholder: str) -> str:
+        if value is None:
+            return placeholder
+        text = str(value).strip()
+        return text or placeholder
 
     @staticmethod
     def _deduplicate_strings(values: Iterable[object]) -> list[str]:
