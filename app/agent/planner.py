@@ -1,4 +1,4 @@
-"""Agent 规划器模块。
+﻿"""Agent 规划器模块。
 负责根据用户问题给出业务分类和最小执行计划。
 当前同时支持规则式规划和可选的 LLM planner，并统一输出 ExecutionPlan。
 """
@@ -422,15 +422,22 @@ class PlannerService:
             has_requested_tools=bool(requested_tool_names),
         )
 
+        need_clarification = self._coerce_bool(payload.get("need_clarification"))
         clarification_question = payload.get("clarification_question")
         if clarification_question is not None and not isinstance(clarification_question, str):
+            clarification_question = None
+        if self._should_ignore_llm_clarification(
+            latest_user_message=latest_user_message,
+            primary_category=primary_category,
+        ):
+            need_clarification = False
             clarification_question = None
 
         return ExecutionPlan(
             primary_category=primary_category,
             execution_mode=self._resolve_execution_mode(steps),
             recommended_route=recommended_route,
-            need_clarification=self._coerce_bool(payload.get("need_clarification")),
+            need_clarification=need_clarification,
             clarification_question=clarification_question,
             steps=steps,
         )
@@ -602,6 +609,18 @@ class PlannerService:
         return False
 
     @staticmethod
+    def _should_ignore_llm_clarification(
+        *,
+        latest_user_message: str,
+        primary_category: ProblemCategory,
+    ) -> bool:
+        """Ignore route-vs-traffic clarifications for identifiable OD queries."""
+
+        if primary_category not in {"route_planning", "traffic_status"}:
+            return False
+        return PlannerService._looks_like_od_query(latest_user_message)
+
+    @staticmethod
     def _should_rebuild_steps_for_primary_category(
         *,
         steps: list[ExecutionStep],
@@ -619,7 +638,7 @@ class PlannerService:
         if primary_category == "policy":
             return "rag" not in planned_executors
         if primary_category == "route_planning":
-            return "route" not in planned_executors
+            return planned_executors != {"route"}
         if primary_category == "traffic_status":
             return "report" in planned_executors or "traffic" not in planned_executors
         if primary_category == "service_area":
@@ -1813,6 +1832,10 @@ class PlannerService:
             latest_user_message
         ):
             return "route_planning"
+        if primary_category == "traffic_status" and PlannerService._looks_like_od_query(
+            latest_user_message
+        ):
+            return "route_planning"
         if PlannerService._should_force_multi_road_traffic(latest_user_message):
             return "traffic_status"
         if PlannerService._should_force_network_report(latest_user_message):
@@ -2050,10 +2073,10 @@ class PlannerService:
             for keyword in ("全路网", "路网", "日报", "周报", "月报", "表格", "对比")
         ):
             return "network_report"
-        if PlannerService._looks_like_traffic_status_query(latest_user_message):
-            return "traffic_status"
         if PlannerService._looks_like_od_query(latest_user_message):
             return "route_planning"
+        if PlannerService._looks_like_traffic_status_query(latest_user_message):
+            return "traffic_status"
         if (
             "到" in latest_user_message
             and any(keyword in latest_user_message for keyword in ("怎么走", "怎么去", "路线", "导航"))
@@ -2253,62 +2276,20 @@ class PlannerService:
 
         if primary_category == "route_planning":
             if PlannerService._looks_like_od_query(latest_user_message):
-                if PlannerService._looks_like_od_toll_query(latest_user_message):
-                    return [
-                        ExecutionStep(
-                            step_id="route_1",
-                            executor="route",
-                            goal="查询起点到终点的推荐路线与收费信息",
-                            metadata=self._enrich_step_metadata(
-                                executor="route",
-                                metadata={},
-                                latest_user_message=latest_user_message,
-                                primary_category=primary_category,
-                            ),
-                        ),
-                        ExecutionStep(
-                            step_id="answer_1",
-                            executor="answer",
-                            goal="总结路线与收费结果并回答用户",
-                            depends_on=["route_1"],
-                        ),
-                    ]
-                return [
-                    ExecutionStep(
-                        step_id="route_1",
-                        executor="route",
-                        goal="查询起点到终点的推荐路线",
-                        metadata=self._enrich_step_metadata(
-                            executor="route",
-                            metadata={},
-                            latest_user_message=latest_user_message,
-                            primary_category=primary_category,
-                        ),
-                    ),
-                    ExecutionStep(
-                        step_id="traffic_1",
-                        executor="traffic",
-                        goal="查询推荐路线沿线的关键路况和管制信息",
-                        depends_on=["route_1"],
-                        metadata=self._enrich_step_metadata(
-                            executor="traffic",
-                            metadata={},
-                            latest_user_message=latest_user_message,
-                            primary_category=primary_category,
-                        ),
-                    ),
-                    ExecutionStep(
-                        step_id="answer_1",
-                        executor="answer",
-                        goal="综合路线方案和沿线路况生成出行建议",
-                        depends_on=["route_1", "traffic_1"],
-                    ),
-                ]
+                goal = "查询起点到终点的推荐路线与收费信息" if PlannerService._looks_like_od_toll_query(
+                    latest_user_message
+                ) else "查询起点到终点的推荐路线"
+                answer_goal = "总结路线与收费结果并回答用户" if PlannerService._looks_like_od_toll_query(
+                    latest_user_message
+                ) else "总结路线结果并回答用户"
+            else:
+                goal = "查询路线规划相关数据"
+                answer_goal = "总结路线结果并回答用户"
             return [
                 ExecutionStep(
                     step_id="route_1",
                     executor="route",
-                    goal="查询路线规划相关数据",
+                    goal=goal,
                     metadata=self._enrich_step_metadata(
                         executor="route",
                         metadata={},
@@ -2319,7 +2300,7 @@ class PlannerService:
                 ExecutionStep(
                     step_id="answer_1",
                     executor="answer",
-                    goal="总结路线结果并回答用户",
+                    goal=answer_goal,
                     depends_on=["route_1"],
                 ),
             ]
@@ -2343,38 +2324,6 @@ class PlannerService:
                         executor="answer",
                         goal="总结路况结果并回答用户",
                         depends_on=["traffic_1"],
-                    ),
-                ]
-            if PlannerService._looks_like_od_query(latest_user_message):
-                return [
-                    ExecutionStep(
-                        step_id="route_1",
-                        executor="route",
-                        goal="规划起点到终点的路线并提取沿途道路",
-                        metadata=self._enrich_step_metadata(
-                            executor="route",
-                            metadata={},
-                            latest_user_message=latest_user_message,
-                            primary_category=primary_category,
-                        ),
-                    ),
-                    ExecutionStep(
-                        step_id="traffic_1",
-                        executor="traffic",
-                        goal="根据路线查询主线路况和拥堵信息",
-                        depends_on=["route_1"],
-                        metadata=self._enrich_step_metadata(
-                            executor="traffic",
-                            metadata={},
-                            latest_user_message=latest_user_message,
-                            primary_category=primary_category,
-                        ),
-                    ),
-                    ExecutionStep(
-                        step_id="answer_1",
-                        executor="answer",
-                        goal="结合路线和路况结果回答用户",
-                        depends_on=["route_1", "traffic_1"],
                     ),
                 ]
             return [

@@ -569,6 +569,32 @@ async def test_planner_fallback_routes_od_congestion_to_route_only() -> None:
     assert [step.executor for step in plan.steps] == ["route", "answer"]
 
 
+async def test_planner_ignores_od_clarification_and_keeps_route_only_plan() -> None:
+    """OD 问句里的 route/traffic 澄清不应打断可执行计划。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "route_planning",
+              "need_clarification": true,
+              "clarification_question": "请问您是想查询北京到上海的行车路线，还是想询问两地路况是否拥堵？",
+              "steps": []
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="北京到上海堵吗"))
+
+    assert plan.primary_category == "route_planning"
+    assert plan.need_clarification is False
+    assert plan.clarification_question is None
+    assert plan.execution_mode == "single_step"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
+
+
 async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
     """当 LLM 已经给出有效步骤时，应保留其原始计划，只做合法性补齐。"""
 
