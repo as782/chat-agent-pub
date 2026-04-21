@@ -97,6 +97,7 @@ class PreparedContext:
 
     messages: list[LlmInputMessage]
     used_session_memory: bool
+    estimated_prompt_tokens: int | None = None
     memory_summary: str | None = None
     knowledge_context: str | None = None
     route_context: str | None = None

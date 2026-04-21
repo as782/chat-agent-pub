@@ -282,6 +282,7 @@ class AnswerNode:
             recent_messages=recent_messages,
             memory_summary=memory_summary,
             need_session_memory=execution_request.need_session_memory,
+            model_name=execution_request.model_name,
             answer_instruction=answer_instruction,
             executor_results_context=executor_results_context,
             knowledge_context=knowledge_context,
@@ -317,6 +318,13 @@ class AnswerNode:
             traffic_context=state.get("traffic_context"),
             service_context=state.get("service_context"),
             report_context=state.get("report_context"),
+        )
+        LOGGER.info(
+            "Prepared context estimate: model=%s estimated_prompt_tokens=%s message_count=%s used_session_memory=%s",
+            execution_request.model_name or self._settings.openai_model,
+            prepared_context.estimated_prompt_tokens,
+            len(prepared_context.messages),
+            prepared_context.used_session_memory,
         )
         return {"prepared_context": prepared_context}
 
