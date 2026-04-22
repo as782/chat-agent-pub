@@ -116,13 +116,16 @@ def test_planner_prompt_requires_llm_to_infer_canonical_road() -> None:
     combined_prompt = f"{PLANNER_PROMPT}\n{PLANNER_JSON_OUTPUT_PROMPT}"
 
     assert "OD + 怎么走/拥堵/事故/施工：route -> answer" in combined_prompt
+    assert "只要问题中能明确识别出起点和终点" in combined_prompt
+    assert "route metadata 必须写 origin=\"衢州\"、destination=\"杭州\"" in combined_prompt
+    assert "不能写 destination=\"杭州走杭金衢高速\"" in combined_prompt
     assert "请只保留当前分类真正会用到的字段" in combined_prompt
     assert "traffic 类问题" in combined_prompt
     assert "traffic 字段生成约束" in combined_prompt
-    assert "road: 只能表示单条道路" in combined_prompt
-    assert "roads: 只能是数组" in combined_prompt
-    assert "road_name: 只能是单条道路名称" in combined_prompt
-    assert "road_code: 只能是单条道路编号" in combined_prompt
+    assert "road: string，只能表示单条道路" in combined_prompt
+    assert "roads: string[]，只能是数组" in combined_prompt
+    assert "road_name: string，只能是单条道路名称" in combined_prompt
+    assert "road_code: string，只能是单条道路编号" in combined_prompt
 
 
 class _CapturingToolRegistry:

@@ -49,7 +49,7 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 
 分类标准：
 - policy：政策、制度、标准、规范、口径解释
-- route_planning：路线规划、从 A 到 B 怎么走、 A 到 B堵不堵 、 A 到 B 路况如何、出行方案
+- route_planning：路线规划、从 A 到 B 怎么走、A 到 B 堵不堵、A 到 B 路况如何、出行方案；只要问题中能稳定识别出 A 到 B / A 去 B / A 回 B / A 至 B 这类 OD 结构，即使是在问拥堵、路况、是否好走，也优先归类为 route_planning
 - traffic_status：问高速/路段的路况、拥堵、封闭、施工、事故、实时状态
 - service_area：服务区、充电桩、配套设施、繁忙情况
 - network_report：全省、全网、多路段路况汇总、对比、报表、整体路况，今日路况等宽泛询问。
@@ -58,6 +58,8 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 补充判断：
 - 多个明确指定的高速/路段之间比较拥堵、车流量、事故或施工情况，优先归类为 traffic_status，而不是 network_report。
 - 只有用户明确要求全省/全网/路网汇总、报表、表格、日报周报月报时，才优先归类为 network_report。
+- 只要问题中能明确识别出起点和终点，例如“衢州到杭州走杭金衢高速堵不堵”“温州回杭州堵吗”，就优先归类为 route_planning，不要因为出现“堵不堵/路况/拥堵”等词改判成 traffic_status。
+
 - traffic_status 场景里，如果用户没有直接说标准高速名，而是用了旧称、俗称、收费站、枢纽、方向或口语化描述，你要主动推断对应的标准高速名称或编号，并写进 metadata。
 - 这类推断必须由你基于问题语义自行完成，不要假设本地还有额外映射表帮你兜底。
 
@@ -71,7 +73,7 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 7. 每个非 answer step 都要尽量在 metadata 中写入该步骤执行所需的关键参数，不要把参数留到后续节点再猜。
 
 推荐模式：
-- OD + 拥堵/事故/施工：route - -> answer
+- OD + 怎么走/拥堵/事故/施工：route -> answer
 - OD + 服务区：route -> service -> answer
 - OD + 政策/规则：route -> rag -> answer
 - 单条、多条路的路况：traffic -> answer
