@@ -354,7 +354,7 @@ async def test_report_node_builds_business_context() -> None:
     )
 
     assert result["report_context"] is not None
-    assert "queryTime" in result["report_context"]
+    assert "查询时间" in result["report_context"]
     assert result["step_results"]["report_1"].executor == "report"
     assert result["step_results"]["report_1"].normalized_result["congestion_total_mile"] == 12.5
     assert result["step_results"]["report_1"].normalized_result["congestion_top_items"][0]["roadName"] == "沪昆高速"
