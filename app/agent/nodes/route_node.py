@@ -118,6 +118,18 @@ class RouteNode:
             for item in route_summary.get("service_areas", [])
             if isinstance(item, dict)
         ]
+        exit_items = [
+            item
+            for route_summary in route_summaries
+            for item in route_summary.get("exit_items", [])
+            if isinstance(item, dict)
+        ]
+        congestion_items = [
+            item
+            for route_summary in route_summaries
+            for item in route_summary.get("congestion_items", [])
+            if isinstance(item, dict)
+        ]
         road_names = RouteNode._deduplicate_strings(
             road_name
             for route_summary in route_summaries
@@ -141,8 +153,12 @@ class RouteNode:
             "service_area_names": RouteNode._deduplicate_strings(service_area_names),
             "traffic_controls": traffic_controls,
             "service_areas": service_areas,
+            "exit_items": exit_items,
+            "congestion_items": congestion_items,
             "traffic_control_count": len(traffic_controls),
             "service_area_count": len(service_areas),
+            "exit_count": len(exit_items),
+            "congestion_count": len(congestion_items),
         }
 
     @staticmethod
@@ -152,6 +168,8 @@ class RouteNode:
             sections = RouteNode._extract_sections(route)
             traffic_controls = RouteNode._extract_traffic_controls(sections)
             service_areas = RouteNode._extract_service_areas(sections)
+            exit_items = RouteNode._extract_exit_items(sections)
+            congestion_items = RouteNode._extract_congestion_items(sections)
             road_names = RouteNode._extract_road_names(sections)
             route_summaries.append(
                 {
@@ -163,8 +181,12 @@ class RouteNode:
                     "road_names": road_names,
                     "traffic_controls": traffic_controls,
                     "service_areas": service_areas,
+                    "exit_items": exit_items,
+                    "congestion_items": congestion_items,
                     "traffic_control_count": len(traffic_controls),
                     "service_area_count": len(service_areas),
+                    "exit_count": len(exit_items),
+                    "congestion_count": len(congestion_items),
                 }
             )
         return route_summaries
@@ -235,6 +257,71 @@ class RouteNode:
         return service_areas
 
     @staticmethod
+    def _extract_exit_items(sections: list[dict[str, object]]) -> list[dict[str, object]]:
+        exit_items: list[dict[str, object]] = []
+        for section in sections:
+            road_name = str(section.get("roadName") or "").strip()
+            raw_exit_infos = section.get("exitInfos", [])
+            if not isinstance(raw_exit_infos, list):
+                continue
+            for exit_info in raw_exit_infos:
+                if not isinstance(exit_info, dict):
+                    continue
+                exit_items.append(
+                    {
+                        "road_name": road_name,
+                        "toll_name": str(exit_info.get("tollName") or "").strip(),
+                        "toll_id": exit_info.get("tollId"),
+                        "entrance_status": exit_info.get("entranceStatus"),
+                        "entrance_status_label": RouteNode._resolve_station_status_label(
+                            exit_info.get("entranceStatus")
+                        ),
+                        "export_status": exit_info.get("exportStatus"),
+                        "export_status_label": RouteNode._resolve_station_status_label(
+                            exit_info.get("exportStatus")
+                        ),
+                    }
+                )
+        return exit_items
+
+    @staticmethod
+    def _extract_congestion_items(sections: list[dict[str, object]]) -> list[dict[str, object]]:
+        congestion_items: list[dict[str, object]] = []
+        for section in sections:
+            road_name = str(section.get("roadName") or "").strip()
+            raw_congestions = section.get("trafficCongestions", [])
+            if not isinstance(raw_congestions, list):
+                continue
+            for congestion in raw_congestions:
+                if not isinstance(congestion, dict):
+                    continue
+                begin_milestone = congestion.get("beginMilestone")
+                end_milestone = congestion.get("endMilestone")
+                congestion_items.append(
+                    {
+                        "road_name": road_name,
+                        "congestion_id": congestion.get("id"),
+                        "description": str(
+                            congestion.get("des") or congestion.get("description") or ""
+                        ).strip(),
+                        "begin_time": congestion.get("beginTime"),
+                        "control_measures": congestion.get("controlMeasures"),
+                        "direction_type": congestion.get("directionType"),
+                        "direction_label": RouteNode._normalize_route_direction(
+                            congestion.get("directionType"),
+                            congestion.get("directionName"),
+                        ),
+                        "begin_milestone": begin_milestone,
+                        "end_milestone": end_milestone,
+                        "event_type": congestion.get("eventType"),
+                        "sub_event_type": congestion.get("subEventType"),
+                        "road_amble_mile": congestion.get("roadAmbleMile"),
+                        "road_id": congestion.get("roadId"),
+                    }
+                )
+        return congestion_items
+
+    @staticmethod
     def _deduplicate_strings(values: Iterable[object]) -> list[str]:
         """
             去重字符串
@@ -263,6 +350,39 @@ class RouteNode:
         if stripped_direction == "2":
             return "下行"
         return direction_type_text or "未知"
+
+    @staticmethod
+    def _normalize_status_code(status_code: object) -> str | None:
+        if status_code is None:
+            return None
+        if isinstance(status_code, bool):
+            return str(int(status_code))
+        if isinstance(status_code, int):
+            return str(status_code)
+        if isinstance(status_code, float) and status_code.is_integer():
+            return str(int(status_code))
+
+        normalized = str(status_code).strip()
+        if not normalized:
+            return None
+        if normalized.isdigit():
+            return str(int(normalized))
+        return normalized
+
+    @staticmethod
+    def _resolve_station_status_label(status_code: object) -> str | None:
+        normalized_status = RouteNode._normalize_status_code(status_code)
+        if not normalized_status:
+            return None
+        if normalized_status == "0":
+            return "开启"
+        if normalized_status == "10202":
+            return "关闭"
+        if normalized_status == "10203":
+            return "限流"
+        if normalized_status == "10204":
+            return "分流"
+        return normalized_status
 
     @staticmethod
     def _string_or_placeholder(value: object, placeholder: str) -> str:
@@ -386,6 +506,8 @@ class RouteNode:
         road_names = RouteNode._extract_road_names(sections)
         service_items = RouteNode._extract_route_service_items(sections)
         control_items = RouteNode._extract_route_control_items(sections)
+        exit_items = RouteNode._extract_exit_items(sections)
+        congestion_items = RouteNode._extract_congestion_items(sections)
 
         lines = [
             f"方案 {route_index} [{tag_text}]：路线共{distance_km}km | 预计耗时{duration_hm} | 费用过路费{toll_text}元",
@@ -407,6 +529,32 @@ class RouteNode:
                     f"（{item['direction']}）：{item['description']} | "
                     f"{item['begin_time']}~{item['expected_end_time']} | "
                     f"管制措施：{item['control_measures']}"
+                )
+        else:
+            lines.append("  - 暂无")
+
+        lines.append("沿途收费站/出口：")
+        if exit_items:
+            for item in exit_items:
+                lines.append(
+                    "  - "
+                    f"{item['toll_name'] or '未知收费站'}"
+                    f"（入口{item['entrance_status_label'] or '未知'} / "
+                    f"出口{item['export_status_label'] or '未知'}）"
+                )
+        else:
+            lines.append("  - 暂无")
+
+        lines.append("沿途拥堵信息：")
+        if congestion_items:
+            for item in congestion_items:
+                lines.append(
+                    "  - "
+                    f"K{RouteNode._format_milestone(item['begin_milestone'])}"
+                    f"~K{RouteNode._format_milestone(item['end_milestone'])}"
+                    f"（{item['direction_label']}）：{item['description'] or '暂无描述'} | "
+                    f"开始时间：{RouteNode._string_or_placeholder(item['begin_time'], '未知')} | "
+                    f"管制措施：{RouteNode._string_or_placeholder(item['control_measures'], '暂无')}"
                 )
         else:
             lines.append("  - 暂无")

@@ -25,8 +25,26 @@ class _RouteTemplateRegistry:
                         "sections": [
                             {
                                 "roadName": "杭金衢高速",
+                                "exitInfos": [
+                                    {
+                                        "tollName": "诸暨北收费站",
+                                        "entranceStatus": 0,
+                                        "exportStatus": 10203,
+                                    }
+                                ],
                                 "serviceAreas": [
                                     {"serviceName": "诸暨服务区", "directionType": "1"}
+                                ],
+                                "trafficCongestions": [
+                                    {
+                                        "id": "cg-1",
+                                        "beginMilestone": 120,
+                                        "endMilestone": 128,
+                                        "directionType": "1",
+                                        "des": "金华方向缓行",
+                                        "beginTime": "2026-04-15 08:00:00",
+                                        "controlMeasures": "借道通行",
+                                    }
                                 ],
                                 "trafficControls": [
                                     {
@@ -99,6 +117,8 @@ async def test_route_node_builds_template_style_route_context() -> None:
     assert "途经路段：杭金衢高速 → 沪昆高速" in route_context
     assert "诸暨服务区（上行）" in route_context
     assert "K120~K128（上行）：金华方向缓行 | 2026-04-15 08:00:00~2026-04-15 10:30:00 | 管制措施：借道通行" in route_context
+    assert "诸暨北收费站（入口开启 / 出口限流）" in route_context
+    assert "K120~K128（上行）：金华方向缓行 | 开始时间：2026-04-15 08:00:00 | 管制措施：借道通行" in route_context
     assert "方案 2 [备选]：路线共195km | 预计耗时2小时15分 | 费用过路费78元" in route_context
     assert "杭州绕城高速" in route_context
     assert "金华服务区（下行）" in route_context

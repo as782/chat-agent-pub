@@ -55,11 +55,22 @@
 
 **Sections**
 
-| 参数名称        | 参数说明     | 类型   | schema          |
-| --------------- | ------------ | ------ | --------------- |
-| roadName        | 高速名称     | string |                 |
-| serviceAreas    | 沿途服务区   | array  | ServiceAreas    |
-| trafficControls | 沿途管制事件 | array  | TrafficControls |
+| 参数名称           | 参数说明     | 类型   | schema             |
+| ------------------ | ------------ | ------ | ------------------ |
+| exitInfos          | 沿途收费站   | array  | ExitInfos          |
+| roadName           | 高速名称     | string |                    |
+| serviceAreas       | 沿途服务区   | array  | ServiceAreas       |
+| trafficCongestions | 沿途拥堵事件 | array  | TrafficCongestions |
+| trafficControls    | 沿途管制事件 | array  | TrafficControls    |
+
+**ExitInfos**
+
+| 参数名称       | 参数说明                                                 | 类型           | schema |
+| -------------- | -------------------------------------------------------- | -------------- | ------ |
+| entranceStatus | 收费站入口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
+| exportStatus   | 收费站出口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
+| tollId         | 收费站id                                                 | integer(int32) |        |
+| tollName       | 收费站名称                                               | string         |        |
 
 **ServiceAreas**
 
@@ -72,6 +83,22 @@
 | serviceId     | 服务区id                      | integer(int64) |        |
 | serviceName   | 服务区名称                    | string         |        |
 
+**TrafficCongestions**
+
+| 参数名称        | 参数说明                                      | 类型           | schema |
+| --------------- | --------------------------------------------- | -------------- | ------ |
+| beginMilestone  | 开始桩号                                      | integer(int32) |        |
+| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| controlMeasures | 管制说明                                      | string         |        |
+| des             | 事件描述                                      | string         |        |
+| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
+| endMilestone    | 结束桩号                                      | integer(int32) |        |
+| eventType       | 事件大类编码                                  | string         |        |
+| id              | 事件id                                        | string         |        |
+| roadAmbleMile   | 缓行公里数                                    | number(double) |        |
+| roadId          | 高速id                                        | integer(int32) |        |
+| subEventType    | 事件小类编码                                  | string         |        |
+
 **TrafficControls**
 
 | 参数名称        | 参数说明                                      | 类型           | schema |
@@ -83,7 +110,6 @@
 | directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
 | endMilestone    | 结束桩号                                      | integer(int32) |        |
 | eventType       | 事件大类编码                                  | string         |        |
-| expectedEndTime | 预计结束时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | id              | 事件id                                        | string         |        |
 | roadAmbleMile   | 缓行公里数                                    | number(double) |        |
 | roadId          | 高速id                                        | integer(int32) |        |
@@ -101,6 +127,14 @@
         "duration": 0,
         "sections": [
           {
+            "exitInfos": [
+              {
+                "entranceStatus": 0,
+                "exportStatus": 0,
+                "tollId": 0,
+                "tollName": ""
+              }
+            ],
             "roadName": "",
             "serviceAreas": [
               {
@@ -112,6 +146,21 @@
                 "serviceName": ""
               }
             ],
+            "trafficCongestions": [
+              {
+                "beginMilestone": 0,
+                "beginTime": "",
+                "controlMeasures": "",
+                "des": "",
+                "directionType": "",
+                "endMilestone": 0,
+                "eventType": "",
+                "id": "",
+                "roadAmbleMile": 0,
+                "roadId": 0,
+                "subEventType": ""
+              }
+            ],
             "trafficControls": [
               {
                 "beginMilestone": 0,
@@ -121,7 +170,6 @@
                 "directionType": "",
                 "endMilestone": 0,
                 "eventType": "",
-                "expectedEndTime": "",
                 "id": "",
                 "roadAmbleMile": 0,
                 "roadId": 0,

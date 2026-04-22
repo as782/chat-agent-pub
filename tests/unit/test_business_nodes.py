@@ -25,13 +25,32 @@ class _FakeToolRegistry:
                             "duration": 120,
                             "toll": 85,
                             "sections": [
-                                {
-                                    "roadName": "杭金衢高速",
-                                    "trafficControls": [{"id": "tc-1"}],
-                                    "serviceAreas": [{"serviceName": "诸暨服务区"}],
-                                },
-                                {
-                                    "roadName": "沪昆高速",
+                            {
+                                "roadName": "杭金衢高速",
+                                "exitInfos": [
+                                    {
+                                        "tollName": "杭州南收费站",
+                                        "entranceStatus": 0,
+                                        "exportStatus": 10203,
+                                    }
+                                ],
+                                "trafficCongestions": [
+                                    {
+                                        "id": "cg-1",
+                                        "beginMilestone": 120,
+                                        "endMilestone": 128,
+                                        "directionType": "1",
+                                        "des": "金华方向缓行",
+                                        "beginTime": "2026-04-15 08:00:00",
+                                        "controlMeasures": "借道通行",
+                                        "eventType": "congestion",
+                                    }
+                                ],
+                                "trafficControls": [{"id": "tc-1"}],
+                                "serviceAreas": [{"serviceName": "诸暨服务区"}],
+                            },
+                            {
+                                "roadName": "沪昆高速",
                                     "trafficControls": [{"id": "tc-2"}],
                                     "serviceAreas": [{"serviceName": "金华服务区"}],
                                 }
@@ -118,6 +137,10 @@ async def test_route_node_builds_business_context() -> None:
         "诸暨服务区",
         "金华服务区",
     ]
+    assert result["step_results"]["route_1"].normalized_result["exit_count"] == 1
+    assert result["step_results"]["route_1"].normalized_result["congestion_count"] == 1
+    assert result["step_results"]["route_1"].normalized_result["exit_items"][0]["toll_name"] == "杭州南收费站"
+    assert result["step_results"]["route_1"].normalized_result["congestion_items"][0]["description"] == "金华方向缓行"
     assert result["step_results"]["route_1"].normalized_result["traffic_controls"][0]["control_id"] == "tc-1"
 
 
