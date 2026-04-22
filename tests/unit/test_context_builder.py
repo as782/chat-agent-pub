@@ -273,3 +273,15 @@ def test_context_builder_exposes_estimated_prompt_tokens(
     )
 
     assert prepared_context.estimated_prompt_tokens == 123
+
+
+def test_estimate_messages_tokens_handles_custom_model_name() -> None:
+    """Unknown custom model names should still produce a safe token estimate."""
+
+    tokens = context_builder_module.estimate_messages_tokens(
+        [LlmInputMessage(role="user", content="北京到上海怎么走")],
+        model_name="qwen3535ba3b",
+    )
+
+    assert isinstance(tokens, int)
+    assert tokens > 0
