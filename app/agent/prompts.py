@@ -49,10 +49,10 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 
 分类标准：
 - policy：政策、制度、标准、规范、口径解释
-- route_planning：路线规划、从 A 到 B 怎么走、出行方案
-- traffic_status：单条道路/高速/路段的路况、拥堵、封闭、施工、事故、实时状态
+- route_planning：路线规划、从 A 到 B 怎么走、 A 到 B堵不堵 、 A 到 B 路况如何、出行方案
+- traffic_status：问高速/路段的路况、拥堵、封闭、施工、事故、实时状态
 - service_area：服务区、充电桩、配套设施、繁忙情况
-- network_report：全省、全网、多路段路况汇总、对比、报表
+- network_report：全省、全网、多路段路况汇总、对比、报表、整体路况，今日路况等宽泛询问。
 - general：普通问答、计算、时间、工具类问题
 
 补充判断：
