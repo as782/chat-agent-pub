@@ -518,9 +518,9 @@ class RouteNode:
             for item in control_items:
                 lines.append(
                     "  - "
-                    f"K{item['begin_milestone']}~K{item['end_milestone']}"
+                    f"K{item['begin_milestone']}-K{item['end_milestone']}"
                     f"（{item['direction']}）：{item['description']} | "
-                    f"{item['begin_time']}~{item['expected_end_time']} | "
+                    f"{item['begin_time']}-{item['expected_end_time']} | "
                     f"管制措施：{item['control_measures']}"
                 )
         else:
@@ -544,7 +544,7 @@ class RouteNode:
                 lines.append(
                     "  - "
                     f"K{RouteNode._format_milestone(item['begin_milestone'])}"
-                    f"~K{RouteNode._format_milestone(item['end_milestone'])}"
+                    f"-K{RouteNode._format_milestone(item['end_milestone'])}"
                     f"（{item['direction_label']}）：{item['description'] or '暂无描述'} | "
                     f"开始时间：{RouteNode._string_or_placeholder(item['begin_time'], '未知')} | "
                     f"管制措施：{RouteNode._string_or_placeholder(item['control_measures'], '暂无')}"

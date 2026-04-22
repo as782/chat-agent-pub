@@ -887,30 +887,24 @@ class TrafficNode:
             for item in service_area_items
             if TrafficNode._is_busy_service_area(item.get("status_tag"))
         )
-        overall_status = TrafficNode._resolve_overall_status(
-            congestion_count=len(congestion_items),
-            control_count=len(traffic_control_items),
-            abnormal_toll_count=abnormal_toll_count,
-            busy_service_count=busy_service_count,
-        )
 
         lines: list[str] = [
             f"道路名称：{road_name} 编号：{road_code}，路况如下：",
             (
-                "整体判断： 当前状态："
-                f"{overall_status}  , 拥堵/缓行事件：{len(congestion_items)}条 "
+                "整体统计："
+                f"拥堵/缓行事件：{len(congestion_items)}条 "
                 f",交通管制事件：{len(traffic_control_items)}条 , 异常收费站：{abnormal_toll_count}个 "
                 f",状态异常服务区 ：{busy_service_count}个"
             ),
         ]
 
         if congestion_items:
-            lines.append("拥堵/缓行：")
+            lines.append("拥堵/缓行列表：")
             for item in congestion_items[:3]:
                 lines.append(
                     "  - "
                     f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
-                    f"~K{TrafficNode._format_milestone(item.get('end_milestone'))}"
+                    f"-K{TrafficNode._format_milestone(item.get('end_milestone'))}"
                     f"（{TrafficNode._format_direction(item)}）："
                     f"{TrafficNode._string_or_placeholder(item.get('description'), '暂无描述')} | "
                     f"缓行{TrafficNode._format_number(item.get('road_amble_mile'))}公里 | "
@@ -923,7 +917,7 @@ class TrafficNode:
                 lines.append(
                     "  - "
                     f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
-                    f"~K{TrafficNode._format_milestone(item.get('end_milestone'))}"
+                    f"-K{TrafficNode._format_milestone(item.get('end_milestone'))}"
                     f"（{TrafficNode._format_direction(item)}）："
                     f"{TrafficNode._string_or_placeholder(item.get('description'), '暂无描述')} | "
                     f"{TrafficNode._format_time_range(item.get('start_time'), item.get('end_time'))} | "
@@ -975,25 +969,7 @@ class TrafficNode:
     def _format_time_range(start_time: object, end_time: object) -> str:
         start_text = TrafficNode._string_or_placeholder(start_time, "未知")
         end_text = TrafficNode._string_or_placeholder(end_time, "未知")
-        return f"{start_text}~{end_text}"
-
-    @staticmethod
-    def _resolve_overall_status(
-        *,
-        congestion_count: int,
-        control_count: int,
-        abnormal_toll_count: int,
-        busy_service_count: int,
-    ) -> str:
-        if congestion_count > 0 and control_count > 0:
-            return "拥堵/缓行与交通管制并存"
-        if congestion_count > 0:
-            return "存在拥堵/缓行"
-        if control_count > 0:
-            return "存在交通管制"
-        if abnormal_toll_count > 0 or busy_service_count > 0:
-            return "存在设施状态异常"
-        return "通行基本正常"
+        return f"{start_text}-{end_text}"
 
     @staticmethod
     def _is_abnormal_station_status(status_value: object) -> bool:
