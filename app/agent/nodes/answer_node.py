@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context_builder import ContextBuilder
+from app.agent.history_utils import MAX_CONTEXT_MESSAGES
 from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     GENERAL_ANSWER_PROMPT,
@@ -38,7 +39,7 @@ from app.tools.registry import ExecutedToolCall, ToolRegistry
 
 LOGGER = get_logger(__name__)
 
-RECENT_CONTEXT_WINDOW_SIZE = 8
+RECENT_CONTEXT_WINDOW_SIZE = MAX_CONTEXT_MESSAGES
 _PROMPT_NAME_BY_CATEGORY = {
     "composite": "COMPOSITE_ANSWER_PROMPT",
     "policy": "POLICY_SUMMARY_PROMPT",
@@ -271,16 +272,13 @@ class AnswerNode:
         """根据执行请求和节点状态准备上下文。"""
 
         recent_messages: list[LlmInputMessage] = []
-        memory_summary: str | None = None
         if execution_request.need_session_memory and execution_request.session_id is not None:
-            memory_snapshot = await self._memory_manager.load_snapshot(execution_request.session_id)
             recent_messages = await self._load_recent_messages(execution_request.session_id)
-            memory_summary = memory_snapshot.summary
 
         return self._context_builder.build_context(
             input_messages=execution_request.input_messages,
             recent_messages=recent_messages,
-            memory_summary=memory_summary,
+            memory_summary=None,
             need_session_memory=execution_request.need_session_memory,
             model_name=execution_request.model_name,
             answer_instruction=answer_instruction,

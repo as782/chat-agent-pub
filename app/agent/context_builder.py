@@ -20,6 +20,7 @@ from app.agent.prompts import (
     CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX,
     MEMORY_SUMMARY_PROMPT_PREFIX,
 )
+from app.agent.history_utils import limit_messages_to_recent_turns
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity
@@ -371,6 +372,7 @@ class ContextBuilder:
             *deduplicated_recent_messages,
             *input_non_system_messages,
         ]
+        context_messages = limit_messages_to_recent_turns(context_messages)
         return PreparedContext(
             messages=context_messages,
             used_session_memory=bool(

@@ -9,11 +9,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.agent.context_builder import message_entity_to_input_message
+from app.agent.history_utils import MAX_CONTEXT_MESSAGES
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.models import MessageEntity
 
-DEFAULT_CONTEXT_WINDOW_SIZE = 6
-DEFAULT_SUMMARY_TRIGGER_COUNT = 6
+DEFAULT_CONTEXT_WINDOW_SIZE = MAX_CONTEXT_MESSAGES
+DEFAULT_SUMMARY_TRIGGER_COUNT = MAX_CONTEXT_MESSAGES
 DEFAULT_SUMMARY_LINE_LIMIT = 8
 
 

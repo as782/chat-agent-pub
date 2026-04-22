@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context_builder import deserialize_input_messages, serialize_input_messages
+from app.agent.history_utils import MAX_CONTEXT_MESSAGES
 from app.clients.llm_client import LlmInputMessage
 from app.memory.checkpoint_store import CheckpointStore
 from app.memory.summarizer import MemorySummarizer
@@ -89,7 +90,7 @@ class MemoryManager:
         """根据最新会话消息刷新短期记忆快照。"""
 
         message_count = await self._message_repository.count_by_session(session_id)
-        query_limit = min(max(message_count, 1), 100)
+        query_limit = min(max(message_count, 1), MAX_CONTEXT_MESSAGES)
         query_offset = max(message_count - query_limit, 0)
         session_messages = await self._message_repository.list_by_session(
             session_id,
