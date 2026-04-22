@@ -802,7 +802,7 @@ class AnswerNode:
         if any(keyword in message for keyword in _TOLL_KEYWORDS):
             return "收费判断。优先回答是否收费、免费时间窗口、按什么时间规则判定，以及还缺哪些条件。"
         if AnswerNode._looks_like_traffic_query(message):
-            return "路况与管制。优先按“大流量情况 -> 管制情况 -> 事件情况 -> 总结性回复”组织回答。"
+            return "路况与管制。"
         if AnswerNode._looks_like_service_query(message):
             return "服务区设施。优先回答是否有充电桩、主要配套和繁忙程度。"
         if AnswerNode._looks_like_policy_query(message):

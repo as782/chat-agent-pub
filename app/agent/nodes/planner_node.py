@@ -30,4 +30,6 @@ class PlannerNode:
             "execution_plan": execution_plan,
             "need_clarification": execution_plan.need_clarification,
             "clarification_question": execution_plan.clarification_question,
+            "steps": execution_plan.steps,
+            
         }

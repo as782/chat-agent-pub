@@ -404,10 +404,12 @@ class PlannerService:
             latest_user_message=latest_user_message,
             primary_category=primary_category,
         )
-        if self._should_rebuild_steps_for_primary_category(
+        answer_metadata = self._extract_step_metadata(steps, executor="answer")
+        should_rebuild_steps = self._should_rebuild_steps_for_primary_category(
             steps=steps,
             primary_category=primary_category,
-        ):
+        )
+        if should_rebuild_steps:
             steps = []
         if not steps:
             steps = self._build_steps(
@@ -415,7 +417,19 @@ class PlannerService:
                 has_requested_tools=bool(requested_tool_names),
                 general_tool_name=general_tool_name,
                 latest_user_message=latest_user_message,
+                answer_metadata=answer_metadata,
             )
+            if should_rebuild_steps and answer_metadata is not None:
+                answer_step_metadata = self._enrich_step_metadata(
+                    executor="answer",
+                    metadata=dict(answer_metadata),
+                    latest_user_message=latest_user_message,
+                    primary_category=primary_category,
+                )
+                for step in steps:
+                    if step.executor == "answer":
+                        step.metadata = answer_step_metadata
+                        break
         recommended_route = self._derive_recommended_route(
             steps=steps,
             primary_category=primary_category,
@@ -589,6 +603,19 @@ class PlannerService:
                 )
             steps = normalized_steps
         return steps
+
+    @staticmethod
+    def _extract_step_metadata(
+        steps: list[ExecutionStep],
+        *,
+        executor: ExecutorType,
+    ) -> dict[str, object] | None:
+        """提取某个 executor 的原始 metadata，便于重建时继承。"""
+
+        for step in steps:
+            if step.executor == executor and step.metadata:
+                return dict(step.metadata)
+        return None
 
     @staticmethod
     def _coerce_executor(value: object) -> ExecutorType | None:
@@ -2177,6 +2204,7 @@ class PlannerService:
         has_requested_tools: bool,
         general_tool_name: str | None = None,
         latest_user_message: str = "",
+        answer_metadata: dict[str, object] | None = None,
     ) -> list[ExecutionStep]:
         """Build stable execution steps with OD route+traffic as the default highway flow."""
 

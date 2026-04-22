@@ -595,6 +595,57 @@ async def test_planner_ignores_od_clarification_and_keeps_route_only_plan() -> N
     assert [step.executor for step in plan.steps] == ["route", "answer"]
 
 
+async def test_planner_preserves_answer_metadata_when_rebuilding_route_plan() -> None:
+    """当 route_planning 计划被规则重建时，answer 元数据仍应保留。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "traffic_status",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "traffic_1",
+                  "executor": "traffic",
+                  "goal": "查询衢州至杭州路段的实时路况及拥堵情况",
+                  "depends_on": [],
+                  "can_run_in_parallel": true,
+                  "metadata": {
+                    "road_name": "沪昆高速",
+                    "road_code": "G60",
+                    "road": "G60",
+                    "target": "衢州至杭州路段",
+                    "direction": "衢州至杭州方向"
+                  }
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "根据路况查询结果回答用户关于衢州到杭州是否拥堵的问题",
+                  "depends_on": ["traffic_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {
+                    "response_type": "natural_language",
+                    "focus": "拥堵状态"
+                  }
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="衢州到杭州堵不堵"))
+
+    assert plan.primary_category == "route_planning"
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
+    answer_step = plan.steps[1]
+    assert answer_step.metadata["response_type"] == "natural_language"
+    assert answer_step.metadata["focus"] == "拥堵状态"
+
+
 async def test_planner_keeps_llm_route_plan_when_it_is_valid() -> None:
     """当 LLM 已经给出有效步骤时，应保留其原始计划，只做合法性补齐。"""
 
