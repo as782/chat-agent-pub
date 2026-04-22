@@ -155,9 +155,9 @@ class ReportNode:
         """把任意值转成可读字符串，缺失时返回占位符。"""
 
         if value is None:
-            return "-"
+            return "无"
         text = str(value).strip()
-        return text if text else "-"
+        return text if text else "无"
 
     @classmethod
     def _format_direction(cls, direction_type: object | None) -> str:
@@ -176,10 +176,10 @@ class ReportNode:
         """格式化桩号。"""
 
         if value is None:
-            return "-"
+            return "未知"
         if isinstance(value, str):
             text = value.strip()
-            return text if text else "-"
+            return text if text else "未知"
         return str(value)
 
     @staticmethod
@@ -187,10 +187,10 @@ class ReportNode:
         """格式化数值。"""
 
         if value is None:
-            return "-"
+            return "未知"
         if isinstance(value, str):
             text = value.strip()
-            return text if text else "-"
+            return text if text else "未知"
         return str(value)
 
     @classmethod
