@@ -618,8 +618,8 @@ class AnswerNode:
         category = AnswerNode._resolve_answer_topic(state)
         if category == "policy":
             return POLICY_SUMMARY_PROMPT
-        if category == "route_planning":
-            return ROUTE_SUMMARY_PROMPT
+        if category == "route_planning" or AnswerNode._should_use_route_summary_prompt(state):
+            return AnswerNode._build_route_answer_instruction(state)
         if category == "traffic_status":
             return TRAFFIC_SUMMARY_PROMPT
         if category == "service_area":
@@ -634,6 +634,8 @@ class AnswerNode:
             return "COMPOSITE_ANSWER_PROMPT"
 
         category = AnswerNode._resolve_answer_topic(state)
+        if category == "route_planning" or AnswerNode._should_use_route_summary_prompt(state):
+            return "ROUTE_SUMMARY_PROMPT"
         return _PROMPT_NAME_BY_CATEGORY.get(category, "GENERAL_ANSWER_PROMPT")
 
     @staticmethod
@@ -698,7 +700,7 @@ class AnswerNode:
 
     @staticmethod
     def _build_composite_answer_instruction(state: AgentState) -> str:
-        focus = AnswerNode._resolve_answer_focus(state)
+        focus = AnswerNode._resolve_planner_focus(state) or AnswerNode._resolve_answer_focus(state)
         executed_executors = sorted(AnswerNode._collect_executed_executors(state))
 
         instruction_parts = [COMPOSITE_ANSWER_PROMPT]
@@ -713,6 +715,13 @@ class AnswerNode:
         return "\n\n".join(instruction_parts)
 
     @staticmethod
+    def _build_route_answer_instruction(state: AgentState) -> str:
+        """优先使用 planner 在 answer 步骤 metadata 中注入的焦点。"""
+
+        focus = AnswerNode._resolve_planner_focus(state) or AnswerNode._resolve_answer_focus(state)
+        return ROUTE_SUMMARY_PROMPT.format(focus=focus or "未提供")
+
+    @staticmethod
     def _looks_like_service_query(message: str) -> bool:
         return any(keyword in message for keyword in _SERVICE_KEYWORDS)
 
@@ -724,6 +733,49 @@ class AnswerNode:
     @staticmethod
     def _looks_like_report_query(message: str) -> bool:
         return any(keyword in message for keyword in _REPORT_KEYWORDS)
+
+    @staticmethod
+    def _resolve_planner_focus(state: AgentState) -> str | None:
+        """读取 planner 为当前 answer 步骤写入的 metadata.focus。"""
+
+        current_step_id = state.get("current_step_id")
+        if isinstance(current_step_id, str):
+            current_step = get_execution_step(state, step_id=current_step_id)
+            focus = AnswerNode._extract_step_focus(current_step)
+            if focus:
+                return focus
+
+        answer_step = get_execution_step(state, executor="answer")
+        return AnswerNode._extract_step_focus(answer_step)
+
+    @staticmethod
+    def _should_use_route_summary_prompt(state: AgentState) -> bool:
+        """只要本轮已经有 route 步骤，就优先使用路线回答模板。"""
+
+        step_results = state.get("step_results", {})
+        if not isinstance(step_results, dict):
+            return False
+
+        for result in step_results.values():
+            if isinstance(result, ExecutorResult) and result.executor == "route":
+                return True
+        return False
+
+    @staticmethod
+    def _extract_step_focus(step) -> str | None:
+        if step is None:
+            return None
+
+        metadata = getattr(step, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+
+        focus = metadata.get("focus")
+        if isinstance(focus, str):
+            stripped_focus = focus.strip()
+            if stripped_focus:
+                return stripped_focus
+        return None
 
     @staticmethod
     def _has_route_and_traffic_context(state: AgentState) -> bool:

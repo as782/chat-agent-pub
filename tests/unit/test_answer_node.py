@@ -11,6 +11,7 @@ from app.agent.nodes.answer_node import AnswerNode
 from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
+    ROUTE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
@@ -131,7 +132,8 @@ def test_traffic_prompts_require_detailed_event_breakdown() -> None:
     assert "路线/道路 -> 事件类别 -> 详细内容" in TRAFFIC_SUMMARY_PROMPT
     assert "起止时间" in TRAFFIC_SUMMARY_PROMPT
     assert "event_items" in COMPOSITE_ANSWER_PROMPT
-    assert "整体结论 -> 路线/道路 -> 事件明细" in COMPOSITE_ANSWER_PROMPT
+    assert "推荐路线 -> 预计时长 -> 线路路况 -> 总结" in COMPOSITE_ANSWER_PROMPT
+    assert "整体路况判断" in COMPOSITE_ANSWER_PROMPT
 
 
 def test_network_report_prompt_requires_strict_table_column_rules() -> None:
@@ -158,6 +160,98 @@ def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
     }
 
     assert AnswerNode._resolve_answer_prompt_name(state) == "ROUTE_SUMMARY_PROMPT"
+
+
+def test_route_summary_prompt_supports_dual_focus_modes() -> None:
+    assert "出行方案" in ROUTE_SUMMARY_PROMPT
+    assert "路况与管制" in ROUTE_SUMMARY_PROMPT
+    assert "输出结构建议一" in ROUTE_SUMMARY_PROMPT
+    assert "输出结构建议二" in ROUTE_SUMMARY_PROMPT
+    assert "整体通行判断" in ROUTE_SUMMARY_PROMPT
+    assert "{focus}" in ROUTE_SUMMARY_PROMPT
+
+
+def test_answer_node_route_instruction_prioritizes_route_for_wayfinding() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "杭州到金华怎么走",
+        "current_step_id": "answer_1",
+        "execution_plan": ExecutionPlan(
+            primary_category="route_planning",
+            execution_mode="single_step",
+            recommended_route="route",
+            steps=[
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询起点到终点的推荐路线",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路线结果并回答用户",
+                    depends_on=["route_1"],
+                    metadata={"focus": "出行方案"},
+                ),
+            ],
+        ),
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+        },
+    }
+
+    instruction = AnswerNode._resolve_answer_instruction(state)
+
+    assert "本轮回答焦点：出行方案" in instruction
+    assert "输出结构建议一" in instruction
+
+
+def test_answer_node_route_instruction_prioritizes_congestion_for_od_traffic() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "北京到上海堵吗",
+        "current_step_id": "answer_1",
+        "execution_plan": ExecutionPlan(
+            primary_category="route_planning",
+            execution_mode="single_step",
+            recommended_route="route",
+            steps=[
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询起点到终点的推荐路线",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="根据路况查询结果回答用户关于北京到上海是否堵车的问题",
+                    depends_on=["route_1"],
+                    metadata={
+                        "response_type": "text",
+                        "focus": "拥堵状态反馈",
+                    },
+                ),
+            ],
+        ),
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "ROUTE_SUMMARY_PROMPT"
+
+    instruction = AnswerNode._resolve_answer_instruction(state)
+
+    assert "本轮回答焦点：拥堵状态反馈" in instruction
+    assert "{focus}" not in instruction
 
 
 def test_answer_node_uses_composite_prompt_for_route_and_rag_results() -> None:
