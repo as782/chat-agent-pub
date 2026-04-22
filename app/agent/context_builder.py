@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from json import dumps
+import math
+import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -139,12 +141,53 @@ def _get_token_encoding(model_name: str) -> tiktoken.Encoding:
     try:
         return tiktoken.encoding_for_model(model_name)
     except Exception:
-        for encoding_name in ("o200k_base", "cl100k_base"):
-            try:
-                return tiktoken.get_encoding(encoding_name)
-            except Exception:
-                continue
-        return tiktoken.get_encoding("cl100k_base")
+        raise
+
+
+_TEXT_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\s]")
+
+
+def _estimate_text_tokens_locally(text: str) -> int:
+    """Estimate tokens without relying on tokenizer downloads or network access."""
+
+    normalized_text = text.strip()
+    if not normalized_text:
+        return 0
+
+    token_count = 0
+    for piece in _TEXT_TOKEN_PATTERN.findall(normalized_text):
+        if piece.isascii() and (piece.isalnum() or "_" in piece):
+            token_count += max(1, math.ceil(len(piece) / 4))
+        else:
+            token_count += 1
+    return token_count
+
+
+def _estimate_messages_tokens_locally(messages: Sequence[LlmInputMessage]) -> int:
+    """Fallback estimator used when tokenizer resolution is unavailable."""
+
+    total_tokens = 3
+    for message in messages:
+        total_tokens += 3
+        total_tokens += _estimate_text_tokens_locally(message.role)
+        total_tokens += _estimate_text_tokens_locally(message.content)
+        if message.name:
+            total_tokens += 1 + _estimate_text_tokens_locally(message.name)
+        if message.tool_call_id:
+            total_tokens += 1 + _estimate_text_tokens_locally(message.tool_call_id)
+        if message.tool_calls:
+            tool_calls_payload = [
+                {
+                    "tool_call_id": tool_call.tool_call_id,
+                    "tool_name": tool_call.tool_name,
+                    "arguments": tool_call.arguments,
+                }
+                for tool_call in message.tool_calls
+            ]
+            total_tokens += _estimate_text_tokens_locally(
+                dumps(tool_calls_payload, ensure_ascii=False, separators=(",", ":"))
+            )
+    return total_tokens
 
 
 def estimate_messages_tokens(
@@ -158,34 +201,40 @@ def estimate_messages_tokens(
     """
 
     normalized_model_name = (model_name or "gpt-4o-mini").strip() or "gpt-4o-mini"
-    encoding = _get_token_encoding(normalized_model_name)
+    try:
+        encoding = _get_token_encoding(normalized_model_name)
+    except Exception:
+        return _estimate_messages_tokens_locally(messages)
 
     # Approximate ChatML-style overhead: a few tokens per message plus the
     # encoded content. We prefer stability over exact parity with a provider.
     total_tokens = 3
-    for message in messages:
-        total_tokens += 3
-        total_tokens += len(encoding.encode(message.role))
-        total_tokens += len(encoding.encode(message.content.strip()))
-        if message.name:
-            total_tokens += 1 + len(encoding.encode(message.name))
-        if message.tool_call_id:
-            total_tokens += 1 + len(encoding.encode(message.tool_call_id))
-        if message.tool_calls:
-            tool_calls_payload = [
-                {
-                    "tool_call_id": tool_call.tool_call_id,
-                    "tool_name": tool_call.tool_name,
-                    "arguments": tool_call.arguments,
-                }
-                for tool_call in message.tool_calls
-            ]
-            total_tokens += len(
-                encoding.encode(
-                    dumps(tool_calls_payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        for message in messages:
+            total_tokens += 3
+            total_tokens += len(encoding.encode(message.role))
+            total_tokens += len(encoding.encode(message.content.strip()))
+            if message.name:
+                total_tokens += 1 + len(encoding.encode(message.name))
+            if message.tool_call_id:
+                total_tokens += 1 + len(encoding.encode(message.tool_call_id))
+            if message.tool_calls:
+                tool_calls_payload = [
+                    {
+                        "tool_call_id": tool_call.tool_call_id,
+                        "tool_name": tool_call.tool_name,
+                        "arguments": tool_call.arguments,
+                    }
+                    for tool_call in message.tool_calls
+                ]
+                total_tokens += len(
+                    encoding.encode(
+                        dumps(tool_calls_payload, ensure_ascii=False, separators=(",", ":"))
+                    )
                 )
-            )
-    return total_tokens
+        return total_tokens
+    except Exception:
+        return _estimate_messages_tokens_locally(messages)
 
 
 class ContextBuilder:
