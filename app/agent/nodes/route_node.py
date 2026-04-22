@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from json import dumps, loads
+from json import loads
 
 from app.agent.prompts import ROUTE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
@@ -416,13 +416,6 @@ class RouteNode:
         return "0"
 
     @staticmethod
-    def _format_time_range(start_time: object, end_time: object) -> str:
-        return (
-            f"{RouteNode._string_or_placeholder(start_time, '未知')}"
-            f"~{RouteNode._string_or_placeholder(end_time, '未知')}"
-        )
-
-    @staticmethod
     def _format_milestone(value: object) -> str:
         return RouteNode._string_or_placeholder(value, "未知")
 
@@ -603,25 +596,3 @@ class RouteNode:
         if route_count is None and isinstance(routes, list):
             route_count = len(routes)
         return f"路线查询成功，命中 {route_count or 0} 条路线方案。"
-
-    @staticmethod
-    def _build_route_context(
-        *,
-        resolved_arguments: ResolvedArguments,
-        response_payload: dict[str, object],
-    ) -> str:
-        """把结构化参数和接口返回拼成路线类 system 上下文。"""
-
-        return "\n".join(
-            [
-                ROUTE_CONTEXT_PROMPT_PREFIX,
-                dumps(
-                    {
-                        "query_arguments": dict(resolved_arguments.arguments),
-                        "api_result": response_payload,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            ]
-        )
