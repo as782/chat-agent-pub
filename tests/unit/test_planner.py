@@ -376,6 +376,86 @@ async def test_planner_fallback_normalizes_province_wide_traffic_to_network_repo
     assert [step.executor for step in plan.steps] == ["report", "answer"]
 
 
+async def test_planner_rejects_report_classification_for_single_province_name() -> None:
+    """单独省名不应被 LLM 误判成 network_report。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "network_report",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "report_1",
+                  "executor": "report",
+                  "goal": "汇总路网",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "输出结果",
+                  "depends_on": ["report_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="浙江"))
+
+    assert plan.primary_category == "general"
+    assert plan.recommended_route == "answer"
+    assert [step.executor for step in plan.steps] == ["answer"]
+
+
+async def test_planner_rewrites_od_traffic_misclassified_as_report_to_route() -> None:
+    """OD 路况问题即使被 LLM 误判成 report，也要纠正回 route。"""
+
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "network_report",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "report_1",
+                  "executor": "report",
+                  "goal": "汇总路网",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "输出结果",
+                  "depends_on": ["report_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="贵州到浙江堵不堵"))
+
+    assert plan.primary_category == "route_planning"
+    assert plan.recommended_route == "route"
+    assert [step.executor for step in plan.steps] == ["route", "answer"]
+
+
 async def test_planner_routes_current_time_to_builtin_tool() -> None:
     """当前时间类问题应保持 general 分类，但走 tool -> answer。"""
 

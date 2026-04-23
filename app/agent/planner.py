@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage
 
 from app.agent.prompts import PLANNER_JSON_OUTPUT_PROMPT, PLANNER_PROMPT
 from app.agent.road_inference import infer_traffic_context
+from app.agent.tool_traffic_intent import looks_like_traffic_query_v1
 from app.agent.state import (
     AgentRoute,
     AgentState,
@@ -672,6 +673,8 @@ class PlannerService:
             return "service" not in planned_executors
         if primary_category == "network_report":
             return planned_executors != {"report"}
+        if primary_category == "general":
+            return any(executor in planned_executors for executor in {"rag", "route", "traffic", "service", "report"})
         return False
 
     @staticmethod
@@ -1863,6 +1866,20 @@ class PlannerService:
             latest_user_message
         ):
             return "route_planning"
+        if primary_category == "network_report":
+            if PlannerService._should_force_network_report(latest_user_message):
+                return "network_report"
+            if PlannerService._looks_like_od_query(latest_user_message):
+                return "route_planning"
+            if PlannerService._looks_like_traffic_status_query(latest_user_message):
+                return "traffic_status"
+            inferred_primary_category = PlannerService._infer_primary_category(
+                latest_user_message=latest_user_message,
+                has_requested_tools=False,
+            )
+            if inferred_primary_category != "general":
+                return inferred_primary_category
+            return "general"
         if PlannerService._should_force_multi_road_traffic(latest_user_message):
             return "traffic_status"
         if PlannerService._should_force_network_report(latest_user_message):
@@ -2047,6 +2064,8 @@ class PlannerService:
 
     @staticmethod
     def _looks_like_traffic_status_query(latest_user_message: str) -> bool:
+        if looks_like_traffic_query_v1(latest_user_message):
+            return True
         if any(keyword in latest_user_message for keyword in _TRAFFIC_STATUS_HARD_KEYWORDS):
             return True
         if PlannerService._looks_like_od_query(latest_user_message):

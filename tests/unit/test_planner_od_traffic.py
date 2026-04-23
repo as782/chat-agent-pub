@@ -66,3 +66,8 @@ async def test_planner_routes_od_traffic_queries_to_route_only_plan() -> None:
     assert plan.steps[0].metadata["destination"] == "杭州"
     assert plan.steps[0].metadata["query_intent"] == "route_planning"
     assert plan.steps[1].depends_on == ["route_1"]
+
+
+def test_planner_traffic_status_detection_uses_stronger_intent() -> None:
+    assert PlannerService._looks_like_traffic_status_query("G25今天堵不堵")
+    assert not PlannerService._looks_like_traffic_status_query("浙江")
