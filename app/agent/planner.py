@@ -306,6 +306,7 @@ class PlannerService:
                 if self._settings.planner_enable_thinking is not None
                 else False
             ),
+            log_format="curl",
         )
         LOGGER.info(
             "Planner LLM response received: content=%s reasoning_content=%s",

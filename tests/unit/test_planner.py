@@ -122,6 +122,7 @@ async def test_planner_prefers_dedicated_base_url(monkeypatch) -> None:
     assert fake_llm_client.last_kwargs is not None
     assert fake_llm_client.last_kwargs["model_name"] == "planner-model"
     assert fake_llm_client.last_kwargs["base_url"] == "https://planner.example.com/v1"
+    assert fake_llm_client.last_kwargs["log_format"] == "curl"
 
 
 async def test_planner_prefers_dedicated_api_key(monkeypatch) -> None:
