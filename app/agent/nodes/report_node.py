@@ -260,7 +260,7 @@ class ReportNode:
             if isinstance(congestion_payload, dict):
                 congestion_total_mile = congestion_payload.get("totalMile")
         congestion_items = cls._extract_payload_items(response_payload, "congestionTopN")
-        accident_items = cls._extract_payload_items(response_payload, "accidentTopN")
+        # accident_items = cls._extract_payload_items(response_payload, "accidentTopN")
         control_items = cls._extract_payload_items(response_payload, "controlTopN")
 
         lines = [f"查询时间：{query_time}"]
@@ -268,8 +268,8 @@ class ReportNode:
             lines.append(f"拥堵总里程：{cls._format_number(congestion_total_mile)} 公里")
         lines.append(cls._build_report_section("拥堵列表", congestion_items))
         lines.append("")
-        lines.append(cls._build_report_section("事故列表", accident_items))
-        lines.append("")
+        # lines.append(cls._build_report_section("事故列表", accident_items))
+        # lines.append("")
         lines.append(cls._build_report_section("管制列表", control_items))
         return "\n".join(lines)
 

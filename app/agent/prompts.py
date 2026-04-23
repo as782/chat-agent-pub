@@ -59,9 +59,9 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 - 多个明确指定的高速/路段之间比较拥堵、车流量、事故或施工情况，优先归类为 traffic_status，而不是 network_report。
 - 只有用户明确要求全省/全网/路网汇总、报表、表格、日报周报月报时，才优先归类为 network_report。
 - 只要问题中能明确识别出起点和终点，例如“衢州到杭州走杭金衢高速堵不堵”“温州回杭州堵吗”，就优先归类为 route_planning，不要因为出现“堵不堵/路况/拥堵”等词改判成 traffic_status。
-
 - traffic_status 场景里，如果用户没有直接说标准高速名，而是用了旧称、俗称、收费站、枢纽、方向或口语化描述，你要主动推断对应的标准高速名称或编号，并写进 metadata。
 - 这类推断必须由你基于问题语义自行完成，不要假设本地还有额外映射表帮你兜底。
+- （G60那些服务区比较空，沪昆高速有哪些服务区比较空）这类高速路/高速编号+ 服务区，问某条路上服务区状况，就优先归类为 traffic_status
 
 编排原则：
 1. 优先选择最贴近问题的首个 executor，不要默认先走 route。
@@ -76,6 +76,7 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 - OD + 怎么走/拥堵/事故/施工：route -> answer
 - OD + 服务区：route -> service -> answer
 - OD + 政策/规则：route -> rag -> answer
+- 高速路/高速编号+ 服务区 （G60那些服务区比较空，沪昆高速有哪些服务区比较空） traffic -> service -> answer
 - 单条、多条路的路况：traffic -> answer
 - 单纯政策：rag -> answer
 - 单纯报表：report -> answer
