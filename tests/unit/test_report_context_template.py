@@ -1,4 +1,4 @@
-"""路网报告上下文模板测试。"""
+"""Network report context template tests."""
 
 from json import dumps
 
@@ -15,64 +15,59 @@ class _TemplateReportToolRegistry:
         del arguments
         return dumps(
             {
-                "queryTime": "2026-03-31 09:00:00",
-                "congestion": {"totalMile": 12.5},
-                "congestionTopN": [
-                    {
-                        "roadGBCode": "G60",
-                        "roadName": "沪昆高速",
-                        "directionType": "1",
-                        "beginMilestone": 120,
-                        "endMilestone": 128,
-                        "roadAmbleMile": 8.0,
-                        "controlMeasures": "借道通行",
-                        "situationRemark": "主线缓行",
-                        "jeeves": "占用1车道",
-                        "beginTime": "2026-03-31 08:20:00",
-                        "expectedTime": "2026-03-31 10:00:00",
-                        "des": "金华方向缓行",
-                    }
-                ],
-                "accidentTopN": [
-                    {
-                        "roadGBCode": "G2501",
-                        "roadName": "杭州绕城高速",
-                        "directionType": "2",
-                        "beginMilestone": 32,
-                        "endMilestone": 36,
-                        "roadAmbleMile": 4.5,
-                        "controlMeasures": "封闭应急车道",
-                        "situationRemark": "事故处理",
-                        "jeeves": "占用2车道",
-                        "beginTime": "2026-03-31 08:40:00",
-                        "expectedTime": "2026-03-31 11:30:00",
-                        "des": "追尾事故",
-                    }
-                ],
-                "controlTopN": [
-                    {
-                        "roadGBCode": "G25",
-                        "roadName": "长深高速",
-                        "directionType": "0",
-                        "beginMilestone": 210,
-                        "endMilestone": 212,
-                        "roadAmbleMile": 0.0,
-                        "controlMeasures": "货车分流",
-                        "situationRemark": "入口管制",
-                        "jeeves": "占用0车道",
-                        "beginTime": "2026-03-31 08:10:00",
-                        "expectedTime": "2026-03-31 12:00:00",
-                        "des": "入口限流",
-                    }
-                ],
-                "exitTopN": [
-                    {
-                        "tollId": 1029,
-                        "tollName": "萧山收费站",
-                        "entranceStatus": 0,
-                        "exportStatus": 10202,
-                    }
-                ],
+                "code": 0,
+                "data": {
+                    "queryTime": "2026-03-31 09:00:00",
+                    "congestion": {"totalMile": 12.5},
+                    "congestionTopN": [
+                        {
+                            "roadGBCode": "G60",
+                            "roadName": "沪昆高速",
+                            "directionType": "1",
+                            "beginMilestone": 120,
+                            "endMilestone": 128,
+                            "roadAmbleMile": 8.0,
+                            "controlMeasures": "借道通行",
+                            "situationRemark": "主线缓行",
+                            "jeeves": "占用1车道",
+                            "beginTime": "2026-03-31 08:20:00",
+                            "expectedTime": "2026-03-31 10:00:00",
+                            "eventClass": "03",
+                            "eventType": "105",
+                            "subEventType": "施工缓行",
+                            "des": "金华方向缓行",
+                        }
+                    ],
+                    "controlTopN": [
+                        {
+                            "roadGBCode": "G25",
+                            "roadName": "长深高速",
+                            "direction": "0",
+                            "tollName": "诸暨北收费站",
+                            "entrance": 1,
+                            "controlTypeName": "入口管制",
+                            "limitMeasureTypeName": "货车分流",
+                            "startTime": "2026-03-31 08:10:00",
+                            "endTime": "2026-03-31 12:00:00",
+                            "des": "入口限流",
+                        }
+                    ],
+                    "exitTopN": [
+                        {
+                            "roadGbCode": "G60",
+                            "roadName": "沪昆高速",
+                            "directionName": "下行",
+                            "tollName": "萧山收费站",
+                            "entrance": 0,
+                            "controlTypeName": "关闭",
+                            "limitMeasureTypeName": "收费站管制",
+                            "startTime": "2026-03-31 09:30:00",
+                            "endTime": "2026-03-31 11:30:00",
+                            "des": "收费站关闭",
+                        }
+                    ],
+                },
+                "message": "",
             },
             ensure_ascii=False,
         )
@@ -91,7 +86,7 @@ async def test_report_node_builds_template_context() -> None:
             ),
             "resolved_arguments": ResolvedArguments(
                 category="network_report",
-                arguments={"query": "请生成今日全路网路况对比表格"},
+                arguments={"query": "生成全路网路况对比表格"},
             ),
         }
     )
@@ -100,11 +95,24 @@ async def test_report_node_builds_template_context() -> None:
     assert report_context is not None
     assert "查询时间：2026-03-31 09:00:00" in report_context
     assert "拥堵总里程：12.5 公里" in report_context
-    assert "拥堵列表：" in report_context
-    assert "- G60，沪昆高速，方向：上行，K120~K128，缓行约 8.0 公里，管制措施：借道通行，现场情况备注：主线缓行，占道情况：占用1车道，开始时间：2026-03-31 08:20:00-预期结束时间：2026-03-31 10:00:00，事件描述：金华方向缓行" in report_context
-    assert "管制列表：" in report_context
-    assert "- G25，长深高速，方向：双向，K210~K212，缓行约 0.0 公里，管制措施：货车分流，现场情况备注：入口管制，占道情况：占用0车道，开始时间：2026-03-31 08:10:00-预期结束时间：2026-03-31 12:00:00，事件描述：入口限流" in report_context
-    assert "收费站列表：" in report_context
-    assert "- 萧山收费站（ID 1029），入口：开启，出口：关闭" in report_context
+    assert "拥堵汇总（1条）：" in report_context
+    assert "G60 / 沪昆高速" in report_context
+    assert "方向 上行" in report_context
+    assert "区间 K120-K128" in report_context
+    assert "事件分类 交通气象（道路缓行）" in report_context
+    assert "施工缓行" not in report_context
+    assert "主线管制（1条）：" in report_context
+    assert "G25 / 长深高速" in report_context
+    assert "收费站 诸暨北收费站" in report_context
+    assert "收费站管制（1条）：" in report_context
+    assert "收费站 萧山收费站" in report_context
     assert "api_result" not in report_context
     assert "queryTime" not in report_context
+
+    step_results = result["step_results"]
+    assert "report_1" in step_results
+    normalized_result = step_results["report_1"].normalized_result
+    assert normalized_result["query_time"] == "2026-03-31 09:00:00"
+    assert normalized_result["congestion_top_count"] == 1
+    assert normalized_result["control_top_count"] == 1
+    assert normalized_result["exit_top_count"] == 1

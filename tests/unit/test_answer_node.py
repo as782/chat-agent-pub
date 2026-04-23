@@ -139,13 +139,30 @@ def test_traffic_prompts_require_detailed_event_breakdown() -> None:
 
 
 def test_network_report_prompt_requires_strict_table_column_rules() -> None:
-    assert "| 序号 | 道路编号 | 高速名称 | 高速路段 | 收费站管控情况 | 路况 |" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert (
+        "| 序号 | 道路编号 | 高速名称 | 高速路段 | 收费站管控情况 | 路况 |"
+        in NETWORK_REPORT_SUMMARY_PROMPT
+    )
     assert "序号：只能输出阿拉伯数字" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "道路编号：只能输出类似 G25、G60 这种道路编号" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "高速名称：只输出高速名称本身，不带前置编号" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "高速路段：只输出具体路段信息" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "收费站管控情况：这一列只能写收费站入口、收费站出口的管控情况" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "路况：非收费站情况" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert (
+        "收费站管控情况：只写收费站入口/出口的管控结果"
+        in NETWORK_REPORT_SUMMARY_PROMPT
+    )
+    assert "路况：只写非收费站路段的通行情况" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "返回的结果包含：查询时间、拥堵汇总、主线管制、收费站管制" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "拥堵汇总每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "事件分类, 管制措施, 现场情况, 占道情况, 开始时间, 预期结束时间, 事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "主线管制每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "收费站名称, 出入口" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "管制类型, 措施, 开始时间, 结束时间, 事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "收费站管制每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "管制状态, 措施, 开始时间, 结束时间, 事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "没有明确管控时固定写“无”" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "只写非收费站路段的通行情况" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "没有明确路况时固定写“无”" in NETWORK_REPORT_SUMMARY_PROMPT
 
 
 def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
