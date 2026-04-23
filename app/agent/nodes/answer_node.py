@@ -268,6 +268,7 @@ class AnswerNode:
         traffic_context: str | None,
         service_context: str | None,
         report_context: str | None,
+        max_turns: int,
     ) -> PreparedContext:
         """根据执行请求和节点状态准备上下文。"""
 
@@ -280,6 +281,7 @@ class AnswerNode:
             recent_messages=recent_messages,
             memory_summary=None,
             need_session_memory=execution_request.need_session_memory,
+            max_turns=max_turns,
             model_name=execution_request.model_name,
             answer_instruction=answer_instruction,
             executor_results_context=executor_results_context,
@@ -296,6 +298,7 @@ class AnswerNode:
 
         execution_request = self._build_execution_request_from_state(state)
         answer_instruction = self._resolve_answer_instruction(state)
+        max_turns = 2 if state.get("primary_category") == "network_report" else 1
         LOGGER.info(
             "Answer prompt selected: category=%s prompt=%s current_step_id=%s",
             state.get("primary_category", "general"),
@@ -316,6 +319,7 @@ class AnswerNode:
             traffic_context=state.get("traffic_context"),
             service_context=state.get("service_context"),
             report_context=state.get("report_context"),
+            max_turns=max_turns,
         )
         LOGGER.info(
             "Prepared context estimate: model=%s estimated_prompt_tokens=%s message_count=%s used_session_memory=%s",

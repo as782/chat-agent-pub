@@ -304,6 +304,7 @@ class ContextBuilder:
         recent_messages: Sequence[LlmInputMessage],
         memory_summary: str | None,
         need_session_memory: bool,
+        max_turns: int = 1,
         model_name: str | None = None,
         answer_instruction: str | None = None,
         executor_results_context: str | None = None,
@@ -338,6 +339,10 @@ class ContextBuilder:
                 *input_system_messages,
                 *input_non_system_messages,
             ]
+            context_messages = limit_messages_to_recent_turns(
+                context_messages,
+                max_turns=max_turns,
+            )
             return PreparedContext(
                 messages=context_messages,
                 used_session_memory=False,
@@ -372,7 +377,10 @@ class ContextBuilder:
             *deduplicated_recent_messages,
             *input_non_system_messages,
         ]
-        context_messages = limit_messages_to_recent_turns(context_messages)
+        context_messages = limit_messages_to_recent_turns(
+            context_messages,
+            max_turns=max_turns,
+        )
         return PreparedContext(
             messages=context_messages,
             used_session_memory=bool(
