@@ -273,10 +273,7 @@ class PlannerService:
             )
             plan = self._build_fallback_plan(state)
 
-        LOGGER.info(
-            "Planner final execution plan: %s",
-            dumps(self._serialize_execution_plan(plan), ensure_ascii=False),
-        )
+        LOGGER.info(self._format_execution_plan_log(plan))
         return plan
 
     async def _build_plan_with_llm(self, state: AgentState) -> ExecutionPlan:
@@ -307,11 +304,6 @@ class PlannerService:
                 else False
             ),
             log_format="curl",
-        )
-        LOGGER.info(
-            "Planner LLM response received: content=%s reasoning_content=%s",
-            self._extract_message_text(completion_result),
-            self._extract_reasoning_text(completion_result) or "",
         )
         return self._parse_llm_plan(state, completion_result)
 
@@ -479,6 +471,16 @@ class PlannerService:
                 for step in plan.steps
             ],
         }
+
+    @classmethod
+    def _format_execution_plan_log(cls, plan: ExecutionPlan) -> str:
+        """构造格式化后的 planner 执行计划日志。"""
+
+        return "Planner execution plan:\n" + dumps(
+            cls._serialize_execution_plan(plan),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     @staticmethod
     def _extract_json_payload(raw_content: str) -> dict[str, Any]:
