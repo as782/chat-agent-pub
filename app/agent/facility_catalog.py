@@ -21,6 +21,26 @@ DEFAULT_CATALOG_PATH = Path(__file__).with_name("data") / "facility_catalog.json
 _NORMALIZE_PATTERN = re.compile(r"[\s\-_—–,，。\.、;；:：/\\|·`'\"“”‘’（）()【】\[\]{}<>《》]+")
 _PAREN_PATTERN = re.compile(r"[（(][^（）()]*[）)]")
 _ROAD_CODE_PATTERN = re.compile(r"^[GS]\d{1,4}$", re.IGNORECASE)
+_GENERIC_TOLL_TOKENS: tuple[str, ...] = (
+    "收费站",
+    "收费口",
+    "收费主站",
+    "收费副站",
+    "主站",
+    "副站",
+)
+_TOLL_QUERY_STATUS_TOKENS: tuple[str, ...] = (
+    "关闭",
+    "封闭",
+    "管制",
+    "施工",
+    "事故",
+    "堵车",
+    "拥堵",
+    "缓行",
+    "通行",
+    "正常",
+)
 
 
 def _unique_strings(values: list[str]) -> tuple[str, ...]:
@@ -534,6 +554,17 @@ class FacilityCatalog:
 
     def best_toll_station(self, query: str, *, source: str | None = None) -> TollStationRecord | None:
         started_at = time.perf_counter()
+        query_norm = _normalize_text(query)
+        if _is_generic_toll_query(query_norm):
+            self._log_lookup(
+                lookup_type="toll",
+                source=source,
+                query=query,
+                matches=[],
+                started_at=started_at,
+                accepted=False,
+            )
+            return None
         matches = self.match_toll_station(query, limit=3)
         if not matches:
             self._log_lookup(
@@ -761,6 +792,35 @@ class FacilityCatalog:
                     add(100, f"fallback:{term}", term_length=len(term))
 
         return score, specificity, tuple(_unique_strings(reasons))
+
+
+def _is_generic_toll_query(query_norm: str) -> bool:
+    if not query_norm:
+        return True
+
+    stripped = query_norm
+    for token in _GENERIC_TOLL_TOKENS:
+        stripped = stripped.replace(_normalize_text(token), "")
+
+    stripped = stripped.strip()
+    if not stripped:
+        return True
+
+    stripped = re.sub(r"[gs]\d{1,4}", "", stripped, flags=re.IGNORECASE).strip()
+    if not stripped:
+        return True
+
+    if any(token in query_norm for token in ("那个", "这个", "该", "哪", "几", "些")):
+        if any(status_token in query_norm for status_token in _TOLL_QUERY_STATUS_TOKENS):
+            return True
+
+    if stripped in _TOLL_QUERY_STATUS_TOKENS:
+        return True
+
+    if len(stripped) < 2:
+        return True
+
+    return False
 
 
 def _reason_specificity(reason: str) -> int:

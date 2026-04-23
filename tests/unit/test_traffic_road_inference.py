@@ -113,6 +113,29 @@ def test_planner_keeps_direct_road_identifier_without_toll_override() -> None:
     assert metadata["road_code"] == "G92"
 
 
+def test_planner_does_not_override_road_for_generic_toll_station_queries() -> None:
+    planner = PlannerService()
+
+    metadata = planner._enrich_step_metadata(
+        executor="traffic",
+        metadata={
+            "query": "G25那个收费站关闭",
+            "road": "G25",
+            "road_name": "长深高速",
+            "road_code": "G25",
+            "toll_station": "收费站",
+            "target": "收费站关闭",
+            "query_intent": "traffic_status",
+        },
+        latest_user_message="G25那个收费站关闭",
+        primary_category="traffic_status",
+    )
+
+    assert metadata["road"] == "G25"
+    assert metadata["road_name"] == "长深高速"
+    assert metadata["road_code"] == "G25"
+
+
 def test_planner_coerces_multi_road_string_into_roads_list() -> None:
     planner = PlannerService()
 

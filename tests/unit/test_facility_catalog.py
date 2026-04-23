@@ -108,3 +108,10 @@ def test_service_area_match_prefers_more_specific_prefix_name() -> None:
     catalog = FacilityCatalog.load_default()
 
     assert catalog.best_service_keyword("神仙居服务区状况如何", source="test") == "神仙居服务区"
+
+
+def test_toll_station_lookup_rejects_generic_station_queries() -> None:
+    catalog = FacilityCatalog.load_default()
+
+    assert catalog.best_toll_station("收费站关闭", source="test") is None
+    assert catalog.best_toll_station("G25收费站关闭", source="test") is None
