@@ -36,6 +36,7 @@ from app.core.logger import get_logger
 from app.memory.manager import MemoryManager
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry
+from app.agent.tool_traffic_intent import  looks_like_traffic_query_v1
 
 LOGGER = get_logger(__name__)
 
@@ -50,21 +51,21 @@ _PROMPT_NAME_BY_CATEGORY = {
     "general": "GENERAL_ANSWER_PROMPT",
 }
 
-_TRAFFIC_KEYWORDS = (
-    "堵不堵",
-    "拥堵",
-    "路况",
-    "堵吗",
-    "缓行",
-    "施工",
-    "事故",
-    "封闭",
-    "管制",
-    "通行",
-    "是否畅通",
-    "是否拥堵",
-    "会不会堵",
-)
+# _TRAFFIC_KEYWORDS = (
+#     "堵不堵",
+#     "拥堵",
+#     "路况",
+#     "堵吗",
+#     "缓行",
+#     "施工",
+#     "事故",
+#     "封闭",
+#     "管制",
+#     "通行",
+#     "是否畅通",
+#     "是否拥堵",
+#     "会不会堵",
+# )
 _SERVICE_KEYWORDS = (
     "服务区",
     "充电桩",
@@ -72,6 +73,7 @@ _SERVICE_KEYWORDS = (
     "加油",
     "休息区",
     "配套",
+    "快充"
 )
 _POLICY_KEYWORDS = (
     "政策",
@@ -718,9 +720,9 @@ class AnswerNode:
 
     @staticmethod
     def _build_route_answer_instruction(state: AgentState) -> str:
-        """优先使用 planner 在 answer 步骤 metadata 中注入的焦点。"""
+        """优先根据用户问题正则判断焦点，metadata.focus 作为兜底。"""
 
-        focus = AnswerNode._resolve_planner_focus(state) or AnswerNode._resolve_answer_focus(state)
+        focus = AnswerNode._resolve_route_summary_focus(state) or AnswerNode._resolve_planner_focus(state)
         return ROUTE_SUMMARY_PROMPT.format(focus=focus or "未提供")
 
     @staticmethod
@@ -749,6 +751,40 @@ class AnswerNode:
 
         answer_step = get_execution_step(state, executor="answer")
         return AnswerNode._extract_step_focus(answer_step)
+
+    @staticmethod
+    def _resolve_route_summary_focus(state: AgentState) -> str | None:
+        """优先根据用户当前问题和已执行上下文推断 route summary 的焦点。"""
+
+        message = str(state.get("latest_user_message", "")).strip()
+        executed_executors = AnswerNode._collect_executed_executors(state)
+        execution_plan = state.get("execution_plan")
+        planned_executors: set[str] = set()
+        if isinstance(execution_plan, object) and hasattr(execution_plan, "steps"):
+            planned_executors = {
+                step.executor
+                for step in execution_plan.steps
+                if step.executor != "answer"
+            }
+        has_route_context = "route" in executed_executors or "route" in planned_executors
+
+        if any(keyword in message for keyword in _TOLL_KEYWORDS):
+            return "收费判断。优先回答是否收费、免费时间窗口、按什么时间规则判定，以及还缺哪些条件。"
+        if has_route_context:
+            if AnswerNode._looks_like_route_query(message):
+                return "路线推荐与关键路况。优先按“推荐路线 -> 预计时长 -> 关键路况 -> 口述式总结”组织回答。"
+            return "路况与管制。优先给整体通行判断，再补充关键路段、收费站、匝道和必要的路线补充。"
+        if AnswerNode._looks_like_traffic_query(message):
+            return "路况与管制。"
+        if AnswerNode._looks_like_service_query(message):
+            return "服务区设施。优先回答是否有充电桩、主要配套和繁忙程度。"
+        if AnswerNode._looks_like_policy_query(message):
+            return "政策规则。优先回答适用范围、判断依据、关键条件和限制。"
+        if AnswerNode._looks_like_report_query(message):
+            return "路网汇总。优先概括整体态势、变化重点和需要关注的路段。"
+        if AnswerNode._looks_like_route_query(message):
+            return "出行方案。优先回答推荐路线、预计时长和关键提醒。"
+        return None
 
     @staticmethod
     def _should_use_route_summary_prompt(state: AgentState) -> bool:
@@ -798,11 +834,25 @@ class AnswerNode:
     @staticmethod
     def _resolve_answer_focus(state: AgentState) -> str:
         message = str(state.get("latest_user_message", "")).strip()
+        executed_executors = AnswerNode._collect_executed_executors(state)
+        execution_plan = state.get("execution_plan")
+        planned_executors: set[str] = set()
+        if isinstance(execution_plan, object) and hasattr(execution_plan, "steps"):
+            planned_executors = {
+                step.executor
+                for step in execution_plan.steps
+                if step.executor != "answer"
+            }
+        has_route_context = "route" in executed_executors or "route" in planned_executors
 
-        if AnswerNode._has_route_and_traffic_context(state):
-            return "路线推荐与关键路况。优先按“推荐路线 -> 预计时长 -> 关键路况 -> 口述式总结”组织回答。"
         if any(keyword in message for keyword in _TOLL_KEYWORDS):
             return "收费判断。优先回答是否收费、免费时间窗口、按什么时间规则判定，以及还缺哪些条件。"
+        if has_route_context:
+            if AnswerNode._looks_like_route_query(message):
+                return "路线推荐与关键路况。优先按“推荐路线 -> 预计时长 -> 关键路况 -> 口述式总结”组织回答。"
+            return "路况与管制。优先给整体通行判断，再补充关键路段、收费站、匝道和必要的路线补充。"
+        if AnswerNode._looks_like_route_query(message):
+            return "出行方案。优先回答推荐路线、预计时长和关键提醒。"
         if AnswerNode._looks_like_traffic_query(message):
             return "路况与管制。"
         if AnswerNode._looks_like_service_query(message):
@@ -817,16 +867,22 @@ class AnswerNode:
 
     @staticmethod
     def _looks_like_traffic_query(message: str) -> bool:
-        traffic_keywords = _TRAFFIC_KEYWORDS + (
-            "堵车",
-            "怎么样",
-            "咋样",
-            "正常通行",
-            "正常吗",
-            "看一下",
-            "可以上吗",
-        )
-        return any(keyword in message for keyword in traffic_keywords)
+        # traffic_keywords = _TRAFFIC_KEYWORDS + (
+        #     "堵车",
+        #     "怎么样",
+        #     "咋样",
+        #     "正常通行",
+        #     "正常吗",
+        #     "看一下",
+        #     "可以上吗",
+        #     "可以走吗",
+        #     "可以走",
+        #     "可以上",
+        #     "情况"
+        #     "看看",
+        # )
+        # return any(keyword in message for keyword in traffic_keywords)
+        return looks_like_traffic_query_v1(message)
 
     @staticmethod
     def _looks_like_route_query(message: str) -> bool:

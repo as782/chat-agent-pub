@@ -128,12 +128,14 @@ def test_answer_node_keeps_traffic_prompt_for_traffic_only_questions() -> None:
 
 
 def test_traffic_prompts_require_detailed_event_breakdown() -> None:
-    assert "event_items" in TRAFFIC_SUMMARY_PROMPT
-    assert "路线/道路 -> 事件类别 -> 详细内容" in TRAFFIC_SUMMARY_PROMPT
-    assert "起止时间" in TRAFFIC_SUMMARY_PROMPT
-    assert "event_items" in COMPOSITE_ANSWER_PROMPT
-    assert "推荐路线 -> 预计时长 -> 线路路况 -> 总结" in COMPOSITE_ANSWER_PROMPT
-    assert "整体路况判断" in COMPOSITE_ANSWER_PROMPT
+    assert "整体路况判断" in TRAFFIC_SUMMARY_PROMPT
+    assert "拥堵情况" in TRAFFIC_SUMMARY_PROMPT
+    assert "管制情况" in TRAFFIC_SUMMARY_PROMPT
+    assert "事件情况" in TRAFFIC_SUMMARY_PROMPT
+    assert "目前路况良好，通行基本正常" in TRAFFIC_SUMMARY_PROMPT
+    assert "核心要求" in COMPOSITE_ANSWER_PROMPT
+    assert "综合回答器" in COMPOSITE_ANSWER_PROMPT
+    assert "用户最关心的结论" in COMPOSITE_ANSWER_PROMPT
 
 
 def test_network_report_prompt_requires_strict_table_column_rules() -> None:
@@ -143,7 +145,7 @@ def test_network_report_prompt_requires_strict_table_column_rules() -> None:
     assert "高速名称：只输出高速名称本身，不带前置编号" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "高速路段：只输出具体路段信息" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "收费站管控情况：这一列只能写收费站入口、收费站出口的管控情况" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "路况：必须按“高速方向，具体路段，情况描述”组织" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "路况：非收费站情况" in NETWORK_REPORT_SUMMARY_PROMPT
 
 
 def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
@@ -163,6 +165,8 @@ def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
 
 
 def test_route_summary_prompt_supports_dual_focus_modes() -> None:
+    assert "默认以“路况与管制”为主" in ROUTE_SUMMARY_PROMPT
+    assert "默认优先路况" in ROUTE_SUMMARY_PROMPT
     assert "出行方案" in ROUTE_SUMMARY_PROMPT
     assert "路况与管制" in ROUTE_SUMMARY_PROMPT
     assert "输出结构建议一" in ROUTE_SUMMARY_PROMPT
@@ -206,8 +210,48 @@ def test_answer_node_route_instruction_prioritizes_route_for_wayfinding() -> Non
 
     instruction = AnswerNode._resolve_answer_instruction(state)
 
-    assert "本轮回答焦点：出行方案" in instruction
+    assert "本轮回答焦点：路线推荐与关键路况" in instruction
+    assert "推荐路线 -> 预计时长 -> 关键路况" in instruction
     assert "输出结构建议一" in instruction
+
+
+def test_answer_node_route_instruction_defaults_to_traffic_for_generic_od() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "latest_user_message": "杭州到金华",
+        "current_step_id": "answer_1",
+        "execution_plan": ExecutionPlan(
+            primary_category="route_planning",
+            execution_mode="single_step",
+            recommended_route="route",
+            steps=[
+                ExecutionStep(
+                    step_id="route_1",
+                    executor="route",
+                    goal="查询起点到终点的推荐路线",
+                ),
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="总结路线结果并回答用户",
+                    depends_on=["route_1"],
+                    metadata={},
+                ),
+            ],
+        ),
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+        },
+    }
+
+    instruction = AnswerNode._resolve_answer_instruction(state)
+
+    assert "本轮回答焦点：路况与管制" in instruction
+    assert "默认以“路况与管制”为主" in instruction
 
 
 def test_answer_node_route_instruction_prioritizes_congestion_for_od_traffic() -> None:
@@ -232,7 +276,7 @@ def test_answer_node_route_instruction_prioritizes_congestion_for_od_traffic() -
                     depends_on=["route_1"],
                     metadata={
                         "response_type": "text",
-                        "focus": "拥堵状态反馈",
+                        "focus": "出行方案",
                     },
                 ),
             ],
@@ -250,7 +294,8 @@ def test_answer_node_route_instruction_prioritizes_congestion_for_od_traffic() -
 
     instruction = AnswerNode._resolve_answer_instruction(state)
 
-    assert "本轮回答焦点：拥堵状态反馈" in instruction
+    assert "本轮回答焦点：路况与管制" in instruction
+    assert "优先给整体通行判断" in instruction
     assert "{focus}" not in instruction
 
 
