@@ -19,7 +19,7 @@ from app.agent.state import (
 )
 from app.core.exceptions import UpstreamServiceException
 from app.tools.registry import ToolRegistry
-
+import re
 
 class ReportNode:
     """LangGraph 路网报告业务节点。"""
@@ -176,9 +176,9 @@ class ReportNode:
 
         normalized = cls._string_or_placeholder(direction_type)
         direction_map = {
-            "0": "双向",
-            "1": "上行",
-            "2": "下行",
+            "00": "双向",
+            "01": "上行",
+            "02": "下行",
         }
         return direction_map.get(normalized, normalized)
 
@@ -306,18 +306,70 @@ class ReportNode:
         lines.append(cls._build_exit_section("收费站列表", exit_items))
         return "\n".join(lines)
 
+    @staticmethod
+    def parse_des(des: str, road_name: str, code: str) -> dict[str, str]:
+        result = {
+            "toll_road_name": road_name or "",
+            "toll_station_name": "",
+            "control_status": "",
+            "expressway_code": ""
+        }
+        if not des:
+            return result
+
+        content = des.strip()
+
+         # 提取高速编号：优先从 road_name 提取
+        source_for_code = road_name or content
+        m_code = re.match(r'^([^\u4e00-\u9fa5]+)', source_for_code)
+        if m_code:
+            result["expressway_code"] = m_code.group(1).strip() or code
+
+        if road_name and content.startswith(road_name):
+            content = content[len(road_name):].strip()
+
+        m_station = re.search(r'([^，,]*?收费站)', content)
+        if m_station:
+            result["toll_station_name"] = m_station.group(1).strip()
+            content = content[m_station.end():]
+
+        result["control_status"] = content.strip('，, ')
+
+        return result
+
     @classmethod
     def _build_exit_station_line(cls, item: dict[str, object]) -> str:
         """把单条收费站 topN 记录整理成一行模板文本。"""
 
-        toll_name = cls._string_or_placeholder(item.get("tollName"))
-        toll_id = cls._string_or_placeholder(item.get("tollId"))
-        entrance_status = cls._resolve_station_status_label(item.get("entranceStatus"))
-        export_status = cls._resolve_station_status_label(item.get("exportStatus"))
-        toll_id_suffix = f"（ID {toll_id}）" if toll_id != "无" else ""
-        return (
-            f"- {toll_name}{toll_id_suffix}，入口：{entrance_status}，出口：{export_status}"
+        road_code = cls._string_or_placeholder(item.get("roadGBCode") or item.get("roadGbCode"))
+        road_name = cls._string_or_placeholder(item.get("roadName"))
+        direction = cls._format_direction(item.get("directionType"))
+        begin = cls._format_milestone(item.get("beginMilestone"))
+        end = cls._format_milestone(item.get("endMilestone"))
+        road_amble_mile = cls._format_number(item.get("roadAmbleMile"))
+        # control_measures = cls._string_or_placeholder(item.get("controlMeasures"))
+        situation_remark = cls._string_or_placeholder(item.get("situationRemark"))
+        jeeves = cls._string_or_placeholder(item.get("jeeves"))
+        begin_time = cls._string_or_placeholder(item.get("beginTime"))
+        expected_end_time = cls._string_or_placeholder(
+            item.get("expectedEndTime") or item.get("expectedTime") or item.get("endTime")
         )
+        des = cls._string_or_placeholder(item.get("des"))
+
+        result = cls.parse_des(des, road_name, road_code)
+
+        toll_road_name = cls._string_or_placeholder(result.get("toll_road_name"))
+        expressway_code = cls._string_or_placeholder(result.get("expressway_code"))
+        control_status = cls._string_or_placeholder(result.get("control_status"))
+        toll_station_name = cls._string_or_placeholder(result.get("toll_station_name"))
+
+        return (
+            f"- {expressway_code}，{toll_road_name}，方向：{direction}，K{begin}~K{end}，"
+            f"缓行约 {road_amble_mile} 公里，"
+            f"现场情况备注：{situation_remark}，占道情况：{jeeves}，"
+            f"开始时间：{begin_time}，收费站名称：{toll_station_name}，收费站管控情况：{control_status} 事件描述：{des}"
+        )
+    
 
     @classmethod
     def _build_exit_section(cls, title: str, items: list[dict[str, object]]) -> str:
