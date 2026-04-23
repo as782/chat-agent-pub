@@ -74,6 +74,7 @@ _SERVICE_KEYWORDS = (
     "休息区",
     "配套",
     "快充"
+    "快充"
 )
 _POLICY_KEYWORDS = (
     "政策",
