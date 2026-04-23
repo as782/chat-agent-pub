@@ -105,9 +105,11 @@ class ReportNode:
             congestion_top_count = 0
             accident_top_count = 0
             control_top_count = 0
+            exit_top_count = 0
             congestion_top_items: list[dict[str, object]] = []
             accident_top_items: list[dict[str, object]] = []
             control_top_items: list[dict[str, object]] = []
+            exit_top_items: list[dict[str, object]] = []
         else:
             congestion_payload = response_payload.get("congestion", {})
             congestion_total_mile = (
@@ -119,9 +121,11 @@ class ReportNode:
             congestion_top = response_payload.get("congestionTopN", [])
             accident_top = response_payload.get("accidentTopN", [])
             control_top = response_payload.get("controlTopN", [])
+            exit_top = response_payload.get("exitTopN", [])
             congestion_top_count = len(congestion_top) if isinstance(congestion_top, list) else 0
             accident_top_count = len(accident_top) if isinstance(accident_top, list) else 0
             control_top_count = len(control_top) if isinstance(control_top, list) else 0
+            exit_top_count = len(exit_top) if isinstance(exit_top, list) else 0
             congestion_top_items = (
                 [item for item in congestion_top if isinstance(item, dict)]
                 if isinstance(congestion_top, list)
@@ -137,6 +141,11 @@ class ReportNode:
                 if isinstance(control_top, list)
                 else []
             )
+            exit_top_items = (
+                [item for item in exit_top if isinstance(item, dict)]
+                if isinstance(exit_top, list)
+                else []
+            )
             record_count = 1
         return {
             "record_count": record_count,
@@ -145,9 +154,11 @@ class ReportNode:
             "congestion_top_count": congestion_top_count,
             "accident_top_count": accident_top_count,
             "control_top_count": control_top_count,
+            "exit_top_count": exit_top_count,
             "congestion_top_items": congestion_top_items,
             "accident_top_items": accident_top_items,
             "control_top_items": control_top_items,
+            "exit_top_items": exit_top_items,
         }
 
     @staticmethod
@@ -244,6 +255,25 @@ class ReportNode:
             return []
         return [item for item in items if isinstance(item, dict)]
 
+    @staticmethod
+    def _resolve_station_status_label(status_code: object) -> str:
+        """把收费站状态码转换成可读中文。"""
+
+        if status_code is None:
+            return "未知"
+        normalized_status = str(status_code).strip()
+        if not normalized_status:
+            return "未知"
+        if normalized_status == "0":
+            return "开启"
+        if normalized_status == "10202":
+            return "关闭"
+        if normalized_status == "10203":
+            return "限流"
+        if normalized_status == "10204":
+            return "分流"
+        return normalized_status
+
     @classmethod
     def _build_compact_report_context(
         cls,
@@ -262,6 +292,7 @@ class ReportNode:
         congestion_items = cls._extract_payload_items(response_payload, "congestionTopN")
         # accident_items = cls._extract_payload_items(response_payload, "accidentTopN")
         control_items = cls._extract_payload_items(response_payload, "controlTopN")
+        exit_items = cls._extract_payload_items(response_payload, "exitTopN")
 
         lines = [f"查询时间：{query_time}"]
         if congestion_total_mile is not None:
@@ -271,6 +302,33 @@ class ReportNode:
         # lines.append(cls._build_report_section("事故列表", accident_items))
         # lines.append("")
         lines.append(cls._build_report_section("管制列表", control_items))
+        lines.append("")
+        lines.append(cls._build_exit_section("收费站列表", exit_items))
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_exit_station_line(cls, item: dict[str, object]) -> str:
+        """把单条收费站 topN 记录整理成一行模板文本。"""
+
+        toll_name = cls._string_or_placeholder(item.get("tollName"))
+        toll_id = cls._string_or_placeholder(item.get("tollId"))
+        entrance_status = cls._resolve_station_status_label(item.get("entranceStatus"))
+        export_status = cls._resolve_station_status_label(item.get("exportStatus"))
+        toll_id_suffix = f"（ID {toll_id}）" if toll_id != "无" else ""
+        return (
+            f"- {toll_name}{toll_id_suffix}，入口：{entrance_status}，出口：{export_status}"
+        )
+
+    @classmethod
+    def _build_exit_section(cls, title: str, items: list[dict[str, object]]) -> str:
+        """把收费站 topN 记录整理成分组文本。"""
+
+        lines = [f"{title}："]
+        if not items:
+            lines.append("- 暂无")
+            return "\n".join(lines)
+        for item in items:
+            lines.append(cls._build_exit_station_line(item))
         return "\n".join(lines)
 
     @staticmethod

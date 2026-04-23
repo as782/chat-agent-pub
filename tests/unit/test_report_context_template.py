@@ -65,6 +65,14 @@ class _TemplateReportToolRegistry:
                         "des": "入口限流",
                     }
                 ],
+                "exitTopN": [
+                    {
+                        "tollId": 1029,
+                        "tollName": "萧山收费站",
+                        "entranceStatus": 0,
+                        "exportStatus": 10202,
+                    }
+                ],
             },
             ensure_ascii=False,
         )
@@ -94,9 +102,9 @@ async def test_report_node_builds_template_context() -> None:
     assert "拥堵总里程：12.5 公里" in report_context
     assert "拥堵列表：" in report_context
     assert "- G60，沪昆高速，方向：上行，K120~K128，缓行约 8.0 公里，管制措施：借道通行，现场情况备注：主线缓行，占道情况：占用1车道，开始时间：2026-03-31 08:20:00-预期结束时间：2026-03-31 10:00:00，事件描述：金华方向缓行" in report_context
-    assert "事故列表：" in report_context
-    assert "- G2501，杭州绕城高速，方向：下行，K32~K36，缓行约 4.5 公里，管制措施：封闭应急车道，现场情况备注：事故处理，占道情况：占用2车道，开始时间：2026-03-31 08:40:00-预期结束时间：2026-03-31 11:30:00，事件描述：追尾事故" in report_context
     assert "管制列表：" in report_context
     assert "- G25，长深高速，方向：双向，K210~K212，缓行约 0.0 公里，管制措施：货车分流，现场情况备注：入口管制，占道情况：占用0车道，开始时间：2026-03-31 08:10:00-预期结束时间：2026-03-31 12:00:00，事件描述：入口限流" in report_context
+    assert "收费站列表：" in report_context
+    assert "- 萧山收费站（ID 1029），入口：开启，出口：关闭" in report_context
     assert "api_result" not in report_context
     assert "queryTime" not in report_context

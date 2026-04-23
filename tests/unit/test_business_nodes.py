@@ -95,6 +95,14 @@ class _FakeToolRegistry:
                     "congestionTopN": [{"id": "cg-1", "roadName": "沪昆高速"}],
                     "accidentTopN": [{"id": "ac-1", "roadName": "杭州绕城高速"}],
                     "controlTopN": [{"id": "ct-1", "roadName": "长深高速"}],
+                    "exitTopN": [
+                        {
+                            "tollId": 1029,
+                            "tollName": "萧山收费站",
+                            "entranceStatus": 0,
+                            "exportStatus": 10202,
+                        }
+                    ],
                 },
                 ensure_ascii=False,
             )
@@ -360,6 +368,8 @@ async def test_report_node_builds_business_context() -> None:
     assert result["step_results"]["report_1"].normalized_result["congestion_top_items"][0]["roadName"] == "沪昆高速"
     assert result["step_results"]["report_1"].normalized_result["accident_top_items"][0]["roadName"] == "杭州绕城高速"
     assert result["step_results"]["report_1"].normalized_result["control_top_items"][0]["roadName"] == "长深高速"
+    assert result["step_results"]["report_1"].normalized_result["exit_top_count"] == 1
+    assert result["step_results"]["report_1"].normalized_result["exit_top_items"][0]["tollName"] == "萧山收费站"
 class _MultiRouteToolRegistry:
     async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
         if tool_name == "live_driving_query":
