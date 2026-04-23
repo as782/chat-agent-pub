@@ -102,6 +102,12 @@ class ServiceNode:
         """Prefer structured service fields before falling back to raw query text."""
 
         arguments = resolved_arguments.arguments
+        raw_query_terms = arguments.get("service_query_terms")
+        if isinstance(raw_query_terms, list):
+            for raw_term in raw_query_terms:
+                value = str(raw_term).strip()
+                if value:
+                    return value
         for key in ("service_name", "keyword", "road_name", "facility_type", "query"):
             value = str(arguments.get(key) or "").strip()
             if value:

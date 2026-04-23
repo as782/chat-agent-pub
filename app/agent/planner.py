@@ -11,6 +11,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from app.agent.facility_catalog import load_default_facility_catalog
 from app.agent.prompts import PLANNER_JSON_OUTPUT_PROMPT, PLANNER_PROMPT
 from app.agent.road_inference import infer_traffic_context
 from app.agent.tool_traffic_intent import looks_like_traffic_query_v1
@@ -1071,11 +1072,13 @@ class PlannerService:
             normalized_metadata.get("target") or PlannerService._normalize_traffic_target(message) or ""
         ).strip()
         raw_roads = normalized_metadata.get("roads")
+        message_explicit_roads = PlannerService._extract_explicit_road_targets(message)
         explicit_roads = (
             [str(item).strip() for item in raw_roads if str(item).strip()]
             if isinstance(raw_roads, list)
             else []
         )
+        has_explicit_road_hint = bool(message_explicit_roads)
 
         inferred_context = infer_traffic_context(
             message=message,
@@ -1083,10 +1086,9 @@ class PlannerService:
             explicit_roads=explicit_roads,
         )
 
-        has_road_metadata = any(
+        if inferred_context.road is not None and not any(
             normalized_metadata.get(key) for key in ("road", "roads", "road_name", "road_code")
-        )
-        if inferred_context.road is not None and not has_road_metadata:
+        ):
             normalized_metadata["road"] = inferred_context.road
         if inferred_context.roads and not normalized_metadata.get("roads"):
             normalized_metadata["roads"] = list(inferred_context.roads)
@@ -1094,8 +1096,26 @@ class PlannerService:
             normalized_metadata["target"] = inferred_context.target
         if inferred_context.direction is not None and not normalized_metadata.get("direction"):
             normalized_metadata["direction"] = inferred_context.direction
-        if inferred_context.toll_station is not None and not normalized_metadata.get("toll_station"):
-            normalized_metadata["toll_station"] = inferred_context.toll_station
+        has_road_hints = has_explicit_road_hint
+        toll_station = str(
+            normalized_metadata.get("toll_station") or inferred_context.toll_station or ""
+        ).strip()
+        if toll_station:
+            normalized_metadata["toll_station"] = toll_station
+            catalog = load_default_facility_catalog()
+            toll_match = catalog.best_toll_station(
+                f"{toll_station} {message}",
+                source="planner",
+            )
+            if toll_match is not None and not has_road_hints:
+                normalized_metadata["toll_station"] = toll_match.canonical_name
+                if toll_match.road_code:
+                    normalized_metadata["road_code"] = toll_match.road_code
+                    normalized_metadata["road"] = toll_match.road_code
+                elif toll_match.road_name_core and not normalized_metadata.get("road"):
+                    normalized_metadata["road"] = toll_match.road_name_core
+                if toll_match.road_name_core:
+                    normalized_metadata["road_name"] = toll_match.road_name_core
 
         return PlannerService._normalize_traffic_road_fields(normalized_metadata)
 
@@ -1383,8 +1403,15 @@ class PlannerService:
                 "query": normalized_message,
                 "query_intent": "service_lookup",
             }
+            catalog = load_default_facility_catalog()
+            service_keyword = catalog.best_service_keyword(normalized_message, source="planner")
+            if service_keyword is not None:
+                metadata["keyword"] = service_keyword
+                service_terms = catalog.resolve_service_query_terms(normalized_message)
+                if service_terms:
+                    metadata["service_query_terms"] = service_terms
             keyword = PlannerService._infer_service_keyword(normalized_message)
-            if keyword is not None:
+            if keyword is not None and not metadata.get("keyword"):
                 metadata["keyword"] = keyword
             facility_type = PlannerService._infer_service_facility_type(normalized_message)
             if facility_type is not None:

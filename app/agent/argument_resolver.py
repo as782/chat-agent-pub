@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from app.agent.facility_catalog import load_default_facility_catalog
 from app.agent.road_inference import infer_traffic_context
 from app.agent.state import AgentState, ExecutorType, ProblemCategory, ResolvedArguments
 from app.clients.llm_client import LlmInputMessage
@@ -165,6 +166,20 @@ class ArgumentResolver:
             arguments["direction"] = inferred_context.direction
         if inferred_context.toll_station is not None:
             arguments["toll_station"] = inferred_context.toll_station
+            catalog = load_default_facility_catalog()
+            toll_match = catalog.best_toll_station(
+                f"{inferred_context.toll_station} {normalized_query}",
+                source="resolver",
+            )
+            if toll_match is not None and not roads:
+                arguments["toll_station"] = toll_match.canonical_name
+                if toll_match.road_code:
+                    arguments["road_code"] = toll_match.road_code
+                    arguments["road"] = toll_match.road_code
+                elif toll_match.road_name_core and not arguments.get("road"):
+                    arguments["road"] = toll_match.road_name_core
+                if toll_match.road_name_core:
+                    arguments["road_name"] = toll_match.road_name_core
         time_range = self._infer_time_range(normalized_query)
         if time_range is not None:
             arguments["time_range"] = time_range
@@ -179,12 +194,19 @@ class ArgumentResolver:
         """提取服务区问题中的服务区或设施关键词。"""
 
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("service:",))
-        keyword = self._infer_service_keyword(normalized_query)
+        catalog = load_default_facility_catalog()
+        keyword = catalog.best_service_keyword(normalized_query, source="resolver")
+        if keyword is None:
+            keyword = self._infer_service_keyword(normalized_query)
         if keyword is None:
             keyword = normalized_query.strip()
+        service_terms = catalog.resolve_service_query_terms(normalized_query)
+        arguments: dict[str, object] = {"query": normalized_query, "keyword": keyword}
+        if service_terms:
+            arguments["service_query_terms"] = service_terms
         return ResolvedArguments(
             category=category,
-            arguments={"query": normalized_query, "keyword": keyword},
+            arguments=arguments,
         )
 
     def _resolve_report_arguments(

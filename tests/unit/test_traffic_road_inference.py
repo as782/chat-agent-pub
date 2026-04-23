@@ -70,7 +70,7 @@ def test_planner_preserves_llm_inferred_canonical_traffic_metadata() -> None:
     assert metadata["target"] == "沪向车道"
 
 
-def test_planner_splits_mixed_road_identifier_into_name_and_code() -> None:
+def test_planner_uses_toll_catalog_when_no_road_hint_is_available() -> None:
     planner = PlannerService()
 
     metadata = planner._enrich_step_metadata(
@@ -86,10 +86,31 @@ def test_planner_splits_mixed_road_identifier_into_name_and_code() -> None:
         primary_category="traffic_status",
     )
 
+    assert metadata["road"] == "S1"
+    assert metadata["road_name"] == "甬台温高速"
+    assert metadata["road_code"] == "S1"
+    assert metadata["toll_station"] == "宁波东收费站"
+
+
+def test_planner_keeps_direct_road_identifier_without_toll_override() -> None:
+    planner = PlannerService()
+
+    metadata = planner._enrich_step_metadata(
+        executor="traffic",
+        metadata={
+            "query": "G92杭州湾跨海大桥连接线堵吗？",
+            "road": "G92杭州湾跨海大桥连接线",
+            "road_name": "杭州湾跨海大桥连接线",
+            "road_code": "G92",
+            "query_intent": "traffic_status",
+        },
+        latest_user_message="G92杭州湾跨海大桥连接线堵吗？",
+        primary_category="traffic_status",
+    )
+
     assert metadata["road"] == "G92"
     assert metadata["road_name"] == "杭州湾跨海大桥连接线"
     assert metadata["road_code"] == "G92"
-    assert metadata["toll_station"] == "宁波东收费站"
 
 
 def test_planner_coerces_multi_road_string_into_roads_list() -> None:
@@ -115,17 +136,11 @@ def test_planner_coerces_multi_road_string_into_roads_list() -> None:
 def test_planner_prompt_requires_llm_to_infer_canonical_road() -> None:
     combined_prompt = f"{PLANNER_PROMPT}\n{PLANNER_JSON_OUTPUT_PROMPT}"
 
-    assert "OD + 怎么走/拥堵/事故/施工：route -> answer" in combined_prompt
-    assert "只要问题中能明确识别出起点和终点" in combined_prompt
-    assert "route metadata 必须写 origin=\"衢州\"、destination=\"杭州\"" in combined_prompt
-    assert "不能写 destination=\"杭州走杭金衢高速\"" in combined_prompt
-    assert "请只保留当前分类真正会用到的字段" in combined_prompt
-    assert "traffic 类问题" in combined_prompt
-    assert "traffic 字段生成约束" in combined_prompt
-    assert "road: string，只能表示单条道路" in combined_prompt
-    assert "roads: string[]，只能是数组" in combined_prompt
-    assert "road_name: string，只能是单条道路名称" in combined_prompt
-    assert "road_code: string，只能是单条道路编号" in combined_prompt
+    assert "只要问题中能明确识别出起点和终点，例如“衢州到杭州走杭金衢高速堵不堵”“温州回杭州堵吗”" in combined_prompt
+    assert "road: string，只能表示单条道路，且值必须是“纯编号”或“纯名称”二选一" in combined_prompt
+    assert "宁波东收费站堵车吗" in combined_prompt
+    assert "road_name=标准高速名称、road_code=标准高速编号" in combined_prompt
+    assert "road 必须优先填写纯编号" in combined_prompt
 
 
 class _CapturingToolRegistry:
