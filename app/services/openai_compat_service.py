@@ -14,7 +14,6 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessageChunk
 
-from app.agent.history_utils import limit_messages_to_recent_turns
 from app.clients.llm_client import (
     LlmClient,
     LlmInputMessage,
@@ -372,7 +371,7 @@ class OpenAICompatService:
                 )
             )
 
-        return limit_messages_to_recent_turns(input_messages)
+        return input_messages
 
     def extract_requested_tool_names(
         self,
