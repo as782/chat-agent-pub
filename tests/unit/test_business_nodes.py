@@ -494,6 +494,175 @@ class _MultiRouteToolRegistry:
         raise AssertionError(f"unexpected tool: {tool_name}")
 
 
+class _DirectionalFilterToolRegistry:
+    async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+        if tool_name == "live_driving_query":
+            return dumps(
+                {
+                    "routesCount": 1,
+                    "routes": [
+                        {
+                            "distance": 120000,
+                            "duration": 95,
+                            "toll": 42,
+                            "sections": [
+                                {
+                                    "roadName": "沪昆高速",
+                                    "trafficCongestions": [
+                                        {
+                                            "id": "cg-hz",
+                                            "directionType": "02",
+                                            "des": "G60沪昆高速-杭州方向，过直埠枢纽5.4公里缓行",
+                                            "beginMilestone": 212711,
+                                            "endMilestone": 212900,
+                                            "beginTime": "2026-04-23 10:07:48",
+                                        },
+                                        {
+                                            "id": "cg-jx",
+                                            "directionType": "01",
+                                            "des": "G60沪昆高速-江西方向，过后宅枢纽1.9公里缓行",
+                                            "beginMilestone": 272600,
+                                            "endMilestone": 272900,
+                                            "beginTime": "2026-04-23 10:08:00",
+                                        },
+                                        {
+                                            "id": "cg-bi",
+                                            "directionType": "00",
+                                            "des": "G60沪昆高速-双向，张家畈枢纽附近养护占道",
+                                            "beginMilestone": 185728,
+                                            "endMilestone": 203780,
+                                            "beginTime": "2026-04-23 10:03:12",
+                                        },
+                                    ],
+                                    "trafficControls": [
+                                        {
+                                            "id": "tc-hz",
+                                            "directionType": "02",
+                                            "des": (
+                                                "G60沪昆高速-杭州方向，"
+                                                "过直埠枢纽5.4公里抛锚占道"
+                                            ),
+                                            "beginMilestone": 212711,
+                                            "endMilestone": 212711,
+                                            "beginTime": "2026-04-23 10:07:48",
+                                        },
+                                        {
+                                            "id": "tc-jx",
+                                            "directionType": "01",
+                                            "des": (
+                                                "G60沪昆高速-江西方向，"
+                                                "过后宅枢纽0.9公里事故占道"
+                                            ),
+                                            "beginMilestone": 271600,
+                                            "endMilestone": 271600,
+                                            "beginTime": "2026-04-23 10:20:38",
+                                        },
+                                        {
+                                            "id": "tc-bi",
+                                            "directionType": "00",
+                                            "des": "G60沪昆高速-双向，次坞收费站到直埠枢纽之间施工",
+                                            "beginMilestone": 209500,
+                                            "endMilestone": 256800,
+                                            "beginTime": "2026-04-23 09:04:24",
+                                        },
+                                    ],
+                                    "serviceAreas": [{"serviceName": "诸暨服务区"}],
+                                    "exitInfos": [
+                                        {
+                                            "tollName": "次坞收费站",
+                                            "entranceStatus": 0,
+                                            "exportStatus": 0,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        if tool_name == "live_road_event_query":
+            return dumps(
+                [
+                    {
+                        "roadName": "沪昆高速",
+                        "roadGbCode": "G60",
+                        "congestionInfoList": [
+                            {
+                                "id": "cg-hz",
+                                "directionType": "02",
+                                "des": (
+                                    "G60沪昆高速（杭金衢）-杭州方向，"
+                                    "过直埠枢纽5.4公里发生车辆故障（抛锚）"
+                                ),
+                                "beginTime": "2026-04-23 10:07:48",
+                                "beginMilestone": 212711,
+                                "endMilestone": 212711,
+                            },
+                            {
+                                "id": "cg-jx",
+                                "directionType": "01",
+                                "des": "G60沪昆高速（杭金衢）-江西方向，过后宅枢纽1.9公里发生缓行",
+                                "beginTime": "2026-04-23 10:08:00",
+                                "beginMilestone": 272600,
+                                "endMilestone": 272900,
+                            },
+                            {
+                                "id": "cg-bi",
+                                "directionType": "00",
+                                "des": "G60沪昆高速（杭金衢）-双向，张家畈枢纽附近养护占道",
+                                "beginTime": "2026-04-23 10:03:12",
+                                "beginMilestone": 185728,
+                                "endMilestone": 203780,
+                            },
+                        ],
+                        "trafficControlList": [
+                            {
+                                "id": "tc-hz",
+                                "directionType": "02",
+                                "des": (
+                                    "G60沪昆高速（杭金衢）-杭州方向，"
+                                    "过直埠枢纽5.4公里发生车辆故障（抛锚）"
+                                ),
+                                "beginTime": "2026-04-23 10:07:48",
+                                "beginMilestone": 212711,
+                                "endMilestone": 212711,
+                                "eventType": "control",
+                            },
+                            {
+                                "id": "tc-jx",
+                                "directionType": "01",
+                                "des": (
+                                    "G60沪昆高速（杭金衢）-江西方向，"
+                                    "过后宅枢纽0.9公里发生交通事故（追尾）"
+                                ),
+                                "beginTime": "2026-04-23 10:20:38",
+                                "beginMilestone": 271600,
+                                "endMilestone": 271600,
+                                "eventType": "control",
+                            },
+                            {
+                                "id": "tc-bi",
+                                "directionType": "00",
+                                "des": (
+                                    "G60沪昆高速（杭金衢）-双向，"
+                                    "在次坞收费站和直埠枢纽之间发生道路施工"
+                                ),
+                                "beginTime": "2026-04-23 09:04:24",
+                                "beginMilestone": 209500,
+                                "endMilestone": 256800,
+                                "eventType": "construction",
+                            },
+                        ],
+                        "serviceAreaList": [],
+                        "exitInfoList": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+
 @pytest.mark.asyncio
 async def test_route_node_keeps_all_routes_for_od_queries() -> None:
     node = RouteNode(tool_registry=_MultiRouteToolRegistry())
@@ -615,3 +784,112 @@ async def test_traffic_node_builds_route_level_event_and_control_details() -> No
     assert second_route["road_details"][1]["traffic_control_items"][0]["description"] == "入口限流"
     assert second_route["road_details"][1]["traffic_control_items"][0]["control_measures"] == "货车分批放行"
     assert second_route["road_details"][1]["event_items"][0]["event_label"] == "管制"
+
+
+@pytest.mark.asyncio
+async def test_route_node_filters_opposite_direction_events_for_od_queries() -> None:
+    node = RouteNode(tool_registry=_DirectionalFilterToolRegistry())
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="single_step",
+                recommended_route="route",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="route_planning",
+                arguments={"origin": "杭州", "destination": "义乌", "travel_mode": "auto"},
+            ),
+        }
+    )
+
+    normalized_result = result["step_results"]["route_1"].normalized_result
+    congestion_descriptions = [
+        item["description"] for item in normalized_result["congestion_items"]
+    ]
+    control_descriptions = [
+        item["description"] for item in normalized_result["traffic_controls"]
+    ]
+
+    assert "G60沪昆高速-杭州方向，过直埠枢纽5.4公里缓行" not in congestion_descriptions
+    assert "G60沪昆高速-江西方向，过后宅枢纽1.9公里缓行" in congestion_descriptions
+    assert "G60沪昆高速-双向，张家畈枢纽附近养护占道" in congestion_descriptions
+
+    assert "G60沪昆高速-杭州方向，过直埠枢纽5.4公里抛锚占道" not in control_descriptions
+    assert "G60沪昆高速-江西方向，过后宅枢纽0.9公里事故占道" in control_descriptions
+    assert "G60沪昆高速-双向，次坞收费站到直埠枢纽之间施工" in control_descriptions
+    assert "直埠枢纽5.4公里抛锚占道" not in result["route_context"]
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_filters_opposite_direction_events_for_od_queries() -> None:
+    node = TrafficNode(tool_registry=_DirectionalFilterToolRegistry())
+
+    result = await node.run(
+        {
+            "current_step_id": "traffic_1",
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="multi_step",
+                recommended_route="traffic",
+                steps=[
+                    ExecutionStep(step_id="route_1", executor="route", goal="查询路线"),
+                    ExecutionStep(
+                        step_id="traffic_1",
+                        executor="traffic",
+                        goal="查询路线相关路况",
+                        depends_on=["route_1"],
+                    ),
+                ],
+            ),
+            "step_results": {
+                "route_1": ExecutorResult(
+                    step_id="route_1",
+                    executor="route",
+                    is_success=True,
+                    normalized_result={
+                        "origin": "杭州",
+                        "destination": "义乌",
+                        "road_names": ["沪昆高速"],
+                        "route_summaries": [{"route_index": 1, "road_names": ["沪昆高速"]}],
+                    },
+                )
+            },
+            "step_arguments": {
+                "traffic_1": ResolvedArguments(
+                    category="traffic_status",
+                    arguments={"query": "杭州到义乌堵不堵"},
+                )
+            },
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={"query": "杭州到义乌堵不堵"},
+            ),
+        }
+    )
+
+    normalized_result = result["step_results"]["traffic_1"].normalized_result
+    congestion_descriptions = [
+        item["description"] for item in normalized_result["congestion_items"]
+    ]
+    control_descriptions = [
+        item["description"] for item in normalized_result["traffic_control_items"]
+    ]
+
+    assert (
+        "G60沪昆高速（杭金衢）-杭州方向，过直埠枢纽5.4公里发生车辆故障（抛锚）"
+        not in congestion_descriptions
+    )
+    assert "G60沪昆高速（杭金衢）-江西方向，过后宅枢纽1.9公里发生缓行" in congestion_descriptions
+    assert "G60沪昆高速（杭金衢）-双向，张家畈枢纽附近养护占道" in congestion_descriptions
+
+    assert (
+        "G60沪昆高速（杭金衢）-杭州方向，过直埠枢纽5.4公里发生车辆故障（抛锚）"
+        not in control_descriptions
+    )
+    assert (
+        "G60沪昆高速（杭金衢）-江西方向，过后宅枢纽0.9公里发生交通事故（追尾）"
+        in control_descriptions
+    )
+    assert "G60沪昆高速（杭金衢）-双向，在次坞收费站和直埠枢纽之间发生道路施工" in control_descriptions

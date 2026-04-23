@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from json import loads
 
+from app.agent.direction_filter import filter_section_events_for_travel_direction
 from app.agent.prompts import ROUTE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
@@ -105,7 +106,11 @@ class RouteNode:
             else []
         )
         first_route = normalized_routes[0] if normalized_routes else {}
-        route_summaries = RouteNode._build_route_summaries(normalized_routes)
+        route_summaries = RouteNode._build_route_summaries(
+            normalized_routes,
+            origin=resolved_arguments.arguments.get("origin"),
+            destination=resolved_arguments.arguments.get("destination"),
+        )
         traffic_controls = [
             item
             for route_summary in route_summaries
@@ -162,14 +167,27 @@ class RouteNode:
         }
 
     @staticmethod
-    def _build_route_summaries(routes: list[dict[str, object]]) -> list[dict[str, object]]:
+    def _build_route_summaries(
+        routes: list[dict[str, object]],
+        *,
+        origin: object,
+        destination: object,
+    ) -> list[dict[str, object]]:
         route_summaries: list[dict[str, object]] = []
         for route_index, route in enumerate(routes, start=1):
             sections = RouteNode._extract_sections(route)
-            traffic_controls = RouteNode._extract_traffic_controls(sections)
+            directional_sections = [
+                filter_section_events_for_travel_direction(
+                    section=section,
+                    origin=origin,
+                    destination=destination,
+                )
+                for section in sections
+            ]
+            traffic_controls = RouteNode._extract_traffic_controls(directional_sections)
             service_areas = RouteNode._extract_service_areas(sections)
             exit_items = RouteNode._extract_exit_items(sections)
-            congestion_items = RouteNode._extract_congestion_items(sections)
+            congestion_items = RouteNode._extract_congestion_items(directional_sections)
             road_names = RouteNode._extract_road_names(sections)
             route_summaries.append(
                 {
@@ -224,11 +242,15 @@ class RouteNode:
                         "road_name": road_name,
                         "control_id": control.get("id"),
                         "control_name": control.get("name") or control.get("controlName"),
-                        "control_type": control.get("eventType")  or control.get("type") ,
-                        "start_time":  control.get("beginTime") or control.get("startTime"),
-                        "end_time":control.get("expectEndTime") or control.get("endTime"),
+                        "control_type": control.get("eventType") or control.get("type"),
+                        "start_time": control.get("beginTime") or control.get("startTime"),
+                        "end_time": control.get("expectEndTime") or control.get("endTime"),
                         "description": control.get("des") or control.get("description"),
-                        
+                        "direction_type": control.get("directionType"),
+                        "direction_label": RouteNode._normalize_route_direction(
+                            control.get("directionType"),
+                            control.get("directionName"),
+                        ),
                     }
                 )
         return traffic_controls
@@ -488,7 +510,13 @@ class RouteNode:
         return control_items
 
     @staticmethod
-    def _build_compact_route_block(*, route: dict[str, object], route_index: int) -> str:
+    def _build_compact_route_block(
+        *,
+        route: dict[str, object],
+        route_index: int,
+        origin: object,
+        destination: object,
+    ) -> str:
         tags = RouteNode._deduplicate_strings(route.get("tags", []))
         tag_text = "、".join(tags) if tags else "未标注"
         distance_km = RouteNode._format_distance_km(route.get("distance"))
@@ -496,11 +524,19 @@ class RouteNode:
         toll_text = RouteNode._format_toll(route.get("toll"))
 
         sections = RouteNode._extract_sections(route)
+        directional_sections = [
+            filter_section_events_for_travel_direction(
+                section=section,
+                origin=origin,
+                destination=destination,
+            )
+            for section in sections
+        ]
         road_names = RouteNode._extract_road_names(sections)
         service_items = RouteNode._extract_route_service_items(sections)
-        control_items = RouteNode._extract_route_control_items(sections)
+        control_items = RouteNode._extract_route_control_items(directional_sections)
         exit_items = RouteNode._extract_exit_items(sections)
-        congestion_items = RouteNode._extract_congestion_items(sections)
+        congestion_items = RouteNode._extract_congestion_items(directional_sections)
 
         lines = [
             f"方案 {route_index} [{tag_text}]：路线共{distance_km}km | 预计耗时{duration_hm} | 费用过路费{toll_text}元",
@@ -583,7 +619,14 @@ class RouteNode:
         ]
 
         for route_index, route in enumerate(normalized_routes, start=1):
-            lines.append(RouteNode._build_compact_route_block(route=route, route_index=route_index))
+            lines.append(
+                RouteNode._build_compact_route_block(
+                    route=route,
+                    route_index=route_index,
+                    origin=resolved_arguments.arguments.get("origin"),
+                    destination=resolved_arguments.arguments.get("destination"),
+                )
+            )
 
         return "\n".join(lines)
 

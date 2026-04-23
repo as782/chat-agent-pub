@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from json import dumps, loads
 
+from app.agent.direction_filter import filter_road_payload_events_for_travel_direction
 from app.agent.prompts import TRAFFIC_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
@@ -96,6 +97,11 @@ class TrafficNode:
         """把结构化参数转换为路况查询工具参数。"""
 
         route_summaries = self._resolve_route_summaries(state=state, step_id=step_id)
+        origin, destination = self._resolve_travel_endpoints(
+            state=state,
+            step_id=step_id,
+            resolved_arguments=resolved_arguments,
+        )
         queried_roads = self._resolve_queried_roads(
             state=state,
             step_id=step_id,
@@ -106,6 +112,8 @@ class TrafficNode:
             "road": road,
             "queried_roads": queried_roads,
             "route_summaries": route_summaries,
+            "origin": origin,
+            "destination": destination,
         }
         for key in ("target", "direction", "toll_station", "road_name", "road_code", "query"):
             value = resolved_arguments.arguments.get(key)
@@ -125,6 +133,34 @@ class TrafficNode:
                 query_arguments.get("query"),
             )
         return query_arguments
+
+    def _resolve_travel_endpoints(
+        self,
+        *,
+        state: AgentState,
+        step_id: str,
+        resolved_arguments: ResolvedArguments,
+    ) -> tuple[str | None, str | None]:
+        current_step = get_execution_step(state, step_id=step_id)
+        if current_step is not None:
+            step_results = state.get("step_results", {})
+            if isinstance(step_results, dict):
+                for dependency in current_step.depends_on:
+                    dependency_result = step_results.get(dependency)
+                    if not isinstance(dependency_result, ExecutorResult):
+                        continue
+                    if dependency_result.executor != "route":
+                        continue
+                    origin = str(dependency_result.normalized_result.get("origin") or "").strip()
+                    destination = (
+                        str(dependency_result.normalized_result.get("destination") or "").strip()
+                    )
+                    if origin or destination:
+                        return (origin or None, destination or None)
+
+        origin = str(resolved_arguments.arguments.get("origin") or "").strip()
+        destination = str(resolved_arguments.arguments.get("destination") or "").strip()
+        return (origin or None, destination or None)
 
     def _resolve_route_summaries(
         self,
@@ -163,15 +199,27 @@ class TrafficNode:
         )
 
         road_results: list[dict[str, object]] = []
+        origin = query_arguments.get("origin")
+        destination = query_arguments.get("destination")
+        explicit_direction = query_arguments.get("direction")
         for road in normalized_roads:
             tool_output = await self._tool_registry.execute_named_tool(
                 tool_name="live_road_event_query",
                 arguments={"road": road},
             )
+            api_result = [
+                filter_road_payload_events_for_travel_direction(
+                    road_payload=item,
+                    origin=origin,
+                    destination=destination,
+                    explicit_direction=explicit_direction,
+                )
+                for item in self._parse_tool_output(tool_output)
+            ]
             road_results.append(
                 {
                     "query_road": road,
-                    "api_result": self._parse_tool_output(tool_output),
+                    "api_result": api_result,
                 }
             )
         return road_results
@@ -293,6 +341,8 @@ class TrafficNode:
             "road": query_arguments.get("road"),
             "road_name": query_arguments.get("road_name") or first_road.get("roadName"),
             "road_code": query_arguments.get("road_code"),
+            "origin": query_arguments.get("origin"),
+            "destination": query_arguments.get("destination"),
             "target": query_arguments.get("target"),
             "direction": query_arguments.get("direction"),
             "toll_station": query_arguments.get("toll_station"),
