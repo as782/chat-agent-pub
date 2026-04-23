@@ -102,3 +102,9 @@ def test_toll_station_match_resolves_road_code_for_canonical_station() -> None:
     assert match is not None
     assert match.canonical_name == "嘉善收费主站"
     assert match.road_code == "G60"
+
+
+def test_service_area_match_prefers_more_specific_prefix_name() -> None:
+    catalog = FacilityCatalog.load_default()
+
+    assert catalog.best_service_keyword("神仙居服务区状况如何", source="test") == "神仙居服务区"

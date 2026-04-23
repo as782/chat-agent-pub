@@ -318,6 +318,7 @@ class MatchResult:
 
     record_type: RecordType
     score: int
+    specificity: int
     reasons: tuple[str, ...]
     query_term: str
     record: ServiceAreaRecord | TollStationRecord
@@ -326,6 +327,7 @@ class MatchResult:
         return {
             "record_type": self.record_type,
             "score": self.score,
+            "specificity": self.specificity,
             "reasons": list(self.reasons),
             "query_term": self.query_term,
             "record": self.record.to_dict(),
@@ -653,7 +655,7 @@ class FacilityCatalog:
         ranked: list[MatchResult] = []
         for idx in candidate_ids:
             record = pool.records[idx]
-            score, reasons = self._score_record(record, normalized_query, record_type=record_type)
+            score, specificity, reasons = self._score_record(record, normalized_query, record_type=record_type)
             if score <= 0:
                 continue
             query_term = record.preferred_query_terms[0] if record.preferred_query_terms else record.group_name
@@ -661,6 +663,7 @@ class FacilityCatalog:
                 MatchResult(
                     record_type=record_type,
                     score=score,
+                    specificity=specificity,
                     reasons=reasons,
                     query_term=query_term,
                     record=record,
@@ -670,6 +673,7 @@ class FacilityCatalog:
         ranked.sort(
             key=lambda item: (
                 -item.score,
+                -item.specificity,
                 len(item.record.group_name),
                 item.record.group_name,
                 item.record.group_key,
@@ -683,19 +687,22 @@ class FacilityCatalog:
         query_norm: str,
         *,
         record_type: RecordType,
-    ) -> tuple[int, tuple[str, ...]]:
+    ) -> tuple[int, int, tuple[str, ...]]:
         score = 0
+        specificity = 0
         reasons: list[str] = []
 
-        def add(points: int, reason: str) -> None:
-            nonlocal score
+        def add(points: int, reason: str, *, term_length: int | None = None) -> None:
+            nonlocal score, specificity
             score += points
             reasons.append(reason)
+            if term_length is not None:
+                specificity = max(specificity, term_length)
 
         if query_norm == _normalize_text(record.canonical_name):
-            add(1000, f"exact_name:{record.canonical_name}")
+            add(1000, f"exact_name:{record.canonical_name}", term_length=len(_normalize_text(record.canonical_name)))
         if query_norm == _normalize_text(record.group_name):
-            add(980, f"exact_group:{record.group_name}")
+            add(980, f"exact_group:{record.group_name}", term_length=len(_normalize_text(record.group_name)))
 
         alias_score, alias_reasons = _score_keyword_hits(
             query_norm,
@@ -705,27 +712,29 @@ class FacilityCatalog:
         if alias_score:
             score = max(score, alias_score)
             reasons.extend(alias_reasons)
+            alias_specificity = max((_reason_specificity(reason) for reason in alias_reasons), default=0)
+            specificity = max(specificity, alias_specificity)
 
         for term in record.search_terms:
             if not term:
                 continue
             if term in query_norm:
-                add(850, f"contains_term:{term}")
+                add(850, f"contains_term:{term}", term_length=len(term))
             elif query_norm in term:
-                add(700, f"within_term:{term}")
+                add(700, f"within_term:{term}", term_length=len(term))
 
         if record.road_code:
             road_code_norm = _normalize_text(record.road_code)
             if road_code_norm and road_code_norm in query_norm:
-                add(400, f"road_code:{record.road_code}")
+                add(400, f"road_code:{record.road_code}", term_length=len(road_code_norm))
         if record.road_name_core:
             road_name_core_norm = _normalize_text(record.road_name_core)
             if road_name_core_norm and road_name_core_norm in query_norm:
-                add(300, f"road_name_core:{record.road_name_core}")
+                add(300, f"road_name_core:{record.road_name_core}", term_length=len(road_name_core_norm))
         if getattr(record, "road_name_raw", ""):
             road_name_raw_norm = _normalize_text(record.road_name_raw)
             if road_name_raw_norm and road_name_raw_norm in query_norm:
-                add(250, f"road_name_raw:{record.road_name_raw}")
+                add(250, f"road_name_raw:{record.road_name_raw}", term_length=len(road_name_raw_norm))
 
         if record_type == "service_area" and isinstance(record, ServiceAreaRecord):
             for field_name, value in (
@@ -739,19 +748,24 @@ class FacilityCatalog:
             ):
                 normalized_value = _normalize_text(value)
                 if normalized_value and normalized_value in query_norm:
-                    add(200, f"{field_name}:{value}")
+                    add(200, f"{field_name}:{value}", term_length=len(normalized_value))
         if record_type == "toll_station" and isinstance(record, TollStationRecord):
             normalized_kind = _normalize_text(record.station_kind)
             if normalized_kind and normalized_kind in query_norm:
-                add(150, f"station_kind:{record.station_kind}")
+                add(150, f"station_kind:{record.station_kind}", term_length=len(normalized_kind))
 
         if score == 0:
             fallback_terms = tuple(_normalize_text(term) for term in record.search_terms[:5])
             for term in fallback_terms:
                 if term and any(token in query_norm for token in term.split() if token):
-                    add(100, f"fallback:{term}")
+                    add(100, f"fallback:{term}", term_length=len(term))
 
-        return score, tuple(_unique_strings(reasons))
+        return score, specificity, tuple(_unique_strings(reasons))
+
+
+def _reason_specificity(reason: str) -> int:
+    _, _, value = reason.partition(":")
+    return len(value.strip())
 
 
 @lru_cache(maxsize=1)
