@@ -619,6 +619,72 @@ async def test_planner_fallback_routes_direct_traffic_question_to_traffic() -> N
     assert [step.executor for step in plan.steps] == ["traffic", "answer"]
 
 
+async def test_planner_fallback_recognizes_toll_station_road_attribution_query() -> None:
+    """收费站属于哪条高速这类问法应走 traffic，并补齐标准道路字段。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="佛堂收费站在哪条高速"))
+
+    assert plan.primary_category == "traffic_status"
+    assert plan.recommended_route == "traffic"
+    assert [step.executor for step in plan.steps] == ["traffic", "answer"]
+    traffic_step = plan.steps[0]
+    assert traffic_step.metadata["toll_station"] == "佛堂收费站"
+    assert traffic_step.metadata["road"] == "G1512"
+    assert traffic_step.metadata["road_code"] == "G1512"
+    assert traffic_step.metadata["road_name"] == "甬金高速"
+    assert traffic_step.metadata["target"] == "佛堂收费站"
+    assert traffic_step.metadata["focus"] == "road_attribution"
+
+
+async def test_planner_fallback_keeps_toll_station_status_query_on_traffic_status() -> None:
+    """收费站堵吗仍应保持 traffic 查询，且焦点应是通行状态而不是归属。"""
+
+    planner = PlannerService(llm_client=_FakePlannerLlmClient("error"))
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="佛堂收费站堵吗"))
+
+    assert plan.primary_category == "traffic_status"
+    assert plan.recommended_route == "traffic"
+    traffic_step = plan.steps[0]
+    assert traffic_step.metadata["toll_station"] == "佛堂收费站"
+    assert traffic_step.metadata["road"] == "G1512"
+    assert traffic_step.metadata["road_code"] == "G1512"
+    assert traffic_step.metadata["road_name"] == "甬金高速"
+    assert traffic_step.metadata["focus"] == "congestion"
+
+
+def test_planner_does_not_treat_toll_station_attribution_phrase_as_explicit_road() -> None:
+    """收费站归属问法里的关系短语不应被识别成真实道路。"""
+
+    assert PlannerService._extract_explicit_road_targets("佛堂收费站在哪条高速") == []
+    assert PlannerService._extract_explicit_road_targets("佛堂收费站所属高速公路") == []
+    assert PlannerService._extract_explicit_road_targets("佛堂收费站 位置 所属高速") == []
+
+
+def test_planner_normalizes_wrong_llm_road_hint_for_toll_station_attribution() -> None:
+    """当 LLM 给出错误道路提示时，收费站归属问法仍应优先回归收费站目录映射。"""
+
+    normalized = PlannerService._normalize_traffic_metadata(
+        metadata={
+            "toll_station": "佛堂收费站",
+            "query": "佛堂收费站所属高速公路",
+            "query_intent": "traffic_status",
+            "target": "佛堂收费站",
+            "focus": "road_attribution",
+            "road": "G60",
+            "road_name": "沪昆高速",
+            "road_code": "G60",
+        },
+        latest_user_message="佛堂收费站在哪条高速",
+    )
+
+    assert normalized["road"] == "G1512"
+    assert normalized["road_code"] == "G1512"
+    assert normalized["road_name"] == "甬金高速"
+
+
 async def test_planner_fallback_routes_policy_question_to_rag() -> None:
     """政策问题应直接走 rag -> answer。"""
 

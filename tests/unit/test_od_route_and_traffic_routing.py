@@ -127,6 +127,6 @@ def test_answer_node_prefers_composite_route_and_traffic_prompt_structure() -> N
     instruction = AnswerNode._resolve_answer_instruction(state)
     assert AnswerNode._resolve_answer_prompt_name(state) == "COMPOSITE_ANSWER_PROMPT"
     assert "推荐路线" in instruction
-    assert "预计时长" in COMPOSITE_ANSWER_PROMPT
     assert "综合回答器" in COMPOSITE_ANSWER_PROMPT
+    assert "本轮已完成能力：route、traffic" in instruction
     assert "整体路况判断" in TRAFFIC_SUMMARY_PROMPT
