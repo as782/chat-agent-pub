@@ -31,7 +31,7 @@ def test_filter_section_events_prefers_destination_direction() -> None:
     assert [item["id"] for item in filtered["trafficControls"]] == ["tc-jx", "tc-bi"]
 
 
-def test_filter_road_payload_keeps_all_items_without_semantic_direction() -> None:
+def test_filter_road_payload_drops_one_way_items_without_semantic_direction_for_od_query() -> None:
     payload = {
         "roadName": "杭州绕城高速",
         "congestionInfoList": [
@@ -47,7 +47,67 @@ def test_filter_road_payload_keeps_all_items_without_semantic_direction() -> Non
         destination="义乌",
     )
 
-    assert [item["id"] for item in filtered["congestionInfoList"]] == ["up", "down"]
+    assert filtered["congestionInfoList"] == []
+
+
+def test_filter_section_events_drops_single_direction_controls_when_only_direction_type_is_available() -> None:
+    section = {
+        "roadName": "诸永高速",
+        "trafficCongestions": [],
+        "trafficControls": [
+            {"id": "up", "directionType": "01"},
+            {"id": "down", "directionType": "02"},
+            {"id": "bi", "directionType": "00"},
+        ],
+    }
+
+    filtered = filter_section_events_for_travel_direction(
+        section=section,
+        origin="温州",
+        destination="磐安",
+    )
+
+    assert [item["id"] for item in filtered["trafficControls"]] == ["bi"]
+
+
+def test_filter_section_events_keeps_single_remaining_direction_type_when_not_ambiguous() -> None:
+    section = {
+        "roadName": "杭金衢高速",
+        "trafficCongestions": [],
+        "trafficControls": [
+            {"id": "up", "directionType": "01"},
+            {"id": "bi", "directionType": "00"},
+        ],
+    }
+
+    filtered = filter_section_events_for_travel_direction(
+        section=section,
+        origin="杭州",
+        destination="金华",
+    )
+
+    assert [item["id"] for item in filtered["trafficControls"]] == ["up", "bi"]
+
+
+def test_filter_road_payload_still_supports_explicit_up_down_direction_without_semantic_labels() -> None:
+    payload = {
+        "roadName": "杭州绕城高速",
+        "congestionInfoList": [
+            {"id": "up", "directionType": "01"},
+            {"id": "down", "directionType": "02"},
+            {"id": "bi", "directionType": "00"},
+        ],
+        "trafficControlList": [],
+    }
+
+    filtered = filter_road_payload_events_for_travel_direction(
+        road_payload=payload,
+        origin="杭州",
+        destination="义乌",
+        explicit_direction="上行",
+    )
+
+    assert [item["id"] for item in filtered["congestionInfoList"]] == ["up", "bi"]
 
 
 def test_filter_road_payload_prefers_explicit_direction_over_od() -> None:
@@ -69,3 +129,22 @@ def test_filter_road_payload_prefers_explicit_direction_over_od() -> None:
     )
 
     assert [item["id"] for item in filtered["congestionInfoList"]] == ["hz", "bi"]
+
+
+def test_filter_section_events_drops_origin_only_semantic_direction_label() -> None:
+    section = {
+        "roadName": "杭州绕城高速",
+        "trafficCongestions": [],
+        "trafficControls": [
+            {"id": "hz-only", "directionType": "02", "des": "G2504杭州绕城高速-杭州方向，主线管制"},
+            {"id": "bi", "directionType": "00", "des": "G2504杭州绕城高速-双向，施工"},
+        ],
+    }
+
+    filtered = filter_section_events_for_travel_direction(
+        section=section,
+        origin="杭州",
+        destination="温州",
+    )
+
+    assert [item["id"] for item in filtered["trafficControls"]] == ["bi"]

@@ -99,14 +99,54 @@ def _build_directional_context(
 ) -> dict[str, object] | None:
     semantic_labels = _collect_semantic_labels(items)
     if not semantic_labels:
+        explicit_direction_type = _normalize_direction_type(explicit_direction)
+        if explicit_direction_type and explicit_direction_type != "00":
+            return {
+                "allowed_labels": set(),
+                "allowed_types": {explicit_direction_type},
+                "drop_unmatched_directional": False,
+            }
+
+        non_bidirectional_types = _collect_non_bidirectional_direction_types(items)
+        if len(non_bidirectional_types) == 1:
+            return {
+                "allowed_labels": set(),
+                "allowed_types": set(non_bidirectional_types),
+                "drop_unmatched_directional": False,
+            }
+        if non_bidirectional_types and _has_directional_query_context(
+            origin=origin,
+            destination=destination,
+            explicit_direction=explicit_direction,
+        ):
+            return {
+                "allowed_labels": set(),
+                "allowed_types": set(),
+                "drop_unmatched_directional": True,
+            }
         return None
 
-    allowed_labels = _resolve_allowed_labels(
-        semantic_labels=semantic_labels,
-        origin=origin,
-        destination=destination,
-        explicit_direction=explicit_direction,
-    )
+    explicit_matches = _match_semantic_labels(explicit_direction, semantic_labels)
+    destination_matches = _match_semantic_labels(destination, semantic_labels)
+    origin_matches = _match_semantic_labels(origin, semantic_labels)
+
+    if explicit_matches:
+        allowed_labels = explicit_matches
+    elif destination_matches:
+        allowed_labels = destination_matches
+    elif origin_matches:
+        opposite_labels = semantic_labels - origin_matches
+        if opposite_labels:
+            allowed_labels = opposite_labels
+        else:
+            return {
+                "allowed_labels": set(),
+                "allowed_types": set(),
+                "drop_unmatched_directional": True,
+            }
+    else:
+        allowed_labels = set()
+
     if not allowed_labels:
         return None
 
@@ -114,6 +154,7 @@ def _build_directional_context(
     return {
         "allowed_labels": allowed_labels,
         "allowed_types": allowed_types,
+        "drop_unmatched_directional": False,
     }
 
 
@@ -127,28 +168,23 @@ def _collect_semantic_labels(items: Iterable[dict[str, object]]) -> set[str]:
     return semantic_labels
 
 
-def _resolve_allowed_labels(
+def _collect_non_bidirectional_direction_types(items: Iterable[dict[str, object]]) -> set[str]:
+    direction_types: set[str] = set()
+    for item in items:
+        direction_type = _normalize_direction_type(item.get("directionType"))
+        if direction_type in {None, "00"}:
+            continue
+        direction_types.add(direction_type)
+    return direction_types
+
+
+def _has_directional_query_context(
     *,
-    semantic_labels: set[str],
     origin: object,
     destination: object,
     explicit_direction: object,
-) -> set[str]:
-    explicit_matches = _match_semantic_labels(explicit_direction, semantic_labels)
-    if explicit_matches:
-        return explicit_matches
-
-    destination_matches = _match_semantic_labels(destination, semantic_labels)
-    if destination_matches:
-        return destination_matches
-
-    origin_matches = _match_semantic_labels(origin, semantic_labels)
-    if origin_matches and len(semantic_labels) == 2:
-        opposite_labels = semantic_labels - origin_matches
-        if opposite_labels:
-            return opposite_labels
-
-    return set()
+) -> bool:
+    return any(str(value or "").strip() for value in (origin, destination, explicit_direction))
 
 
 def _resolve_allowed_direction_types(
@@ -183,6 +219,10 @@ def _should_keep_directional_item(
     allowed_types = directional_context.get("allowed_types")
     if isinstance(allowed_types, set) and direction_type in allowed_types:
         return True
+
+    drop_unmatched_directional = directional_context.get("drop_unmatched_directional")
+    if drop_unmatched_directional is True:
+        return False
 
     if direction_hint in {None, "上行", "下行"} and not allowed_types:
         return True
@@ -234,6 +274,10 @@ def _normalize_direction_type(value: object) -> str | None:
 
     if raw_text in {"双向", "0", "00"}:
         return "00"
+    if raw_text == "上行":
+        return "01"
+    if raw_text == "下行":
+        return "02"
 
     stripped = raw_text.lstrip("0")
     if stripped == "1":
