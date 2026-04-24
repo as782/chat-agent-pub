@@ -369,6 +369,7 @@ class LlmClient:
         tool_choice: str | dict[str, Any] | None = None,
         is_stream: bool = False,
         enable_thinking: bool | None = None,
+        log_format: str = "default",
     ) -> Any:
         """创建一个可直接执行的 LangChain Runnable 对象。"""
 
@@ -387,6 +388,7 @@ class LlmClient:
             tool_choice=tool_choice,
             is_stream=is_stream,
             enable_thinking=enable_thinking,
+            log_format=log_format,
         )
 
         chat_model = self._create_chat_model(
@@ -430,6 +432,7 @@ class LlmClient:
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
+        log_format: str = "default",
     ) -> AIMessage:
         """使用统一消息结构创建一次聊天补全。"""
 
@@ -450,6 +453,7 @@ class LlmClient:
             tool_choice=tool_choice,
             is_stream=False,
             enable_thinking=enable_thinking,
+            log_format=log_format,
         )
         llm_messages = self._build_langchain_messages(
             normalized_messages,
@@ -578,6 +582,7 @@ class LlmClient:
         tools: Sequence[LlmBindableTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         enable_thinking: bool | None = None,
+        log_format: str = "default",
     ) -> AsyncIterator[AIMessageChunk]:
         """以真实流式方式输出聊天补全增量。"""
 
@@ -597,6 +602,7 @@ class LlmClient:
             tool_choice=tool_choice,
             is_stream=True,
             enable_thinking=enable_thinking,
+            log_format=log_format,
         )
         llm_messages = self._build_langchain_messages(
             normalized_messages,
@@ -621,6 +627,7 @@ class LlmClient:
         tool_choice: str | dict[str, Any] | None,
         is_stream: bool,
         enable_thinking: bool | None,
+        log_format: str,
     ) -> None:
         """记录发往大模型的完整输入，便于后续调试上下文构造。"""
 
@@ -641,6 +648,34 @@ class LlmClient:
         else:
             full_url = "(default base_url)/v1" + endpoint_path
 
+        serialized_tool_names = []
+        for tool in tools or []:
+            if isinstance(tool, dict):
+                function_payload = tool.get("function", {})
+                tool_name = (
+                    function_payload.get("name") if isinstance(function_payload, dict) else None
+                )
+                serialized_tool_names.append(str(tool_name or "anonymous_tool"))
+            else:
+                serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
+
+        if log_format == "curl":
+            LOGGER.info(
+                self._format_chat_request_log_as_curl(
+                    full_url=full_url,
+                    mode="stream" if is_stream else "non_stream",
+                    model_name=resolved_model_name,
+                    base_url=base_url or "default",
+                    timeout_seconds=timeout_seconds,
+                    tool_choice=tool_choice,
+                    enable_thinking=enable_thinking,
+                    extra_body=provider_extra_body or None,
+                    tools=serialized_tool_names,
+                    messages=messages,
+                )
+            )
+            return
+
         serialized_messages = [
             {
                 "index": index,
@@ -659,31 +694,148 @@ class LlmClient:
             }
             for index, message in enumerate(messages)
         ]
-        serialized_tool_names = []
-        for tool in tools or []:
-            if isinstance(tool, dict):
-                function_payload = tool.get("function", {})
-                tool_name = (
-                    function_payload.get("name") if isinstance(function_payload, dict) else None
-                )
-                serialized_tool_names.append(str(tool_name or "anonymous_tool"))
-            else:
-                serialized_tool_names.append(str(getattr(tool, "name", tool.__class__.__name__)))
-
-        LOGGER.info("向 LLM 发起请求：\n完整URL: %s\n参数: %s",
+        LOGGER.info(
+            "向 LLM 发起请求：\n完整URL: %s\n参数: %s",
             full_url,
-            dumps({
-                "mode": "stream" if is_stream else "non_stream",
-                "model": resolved_model_name,
-                "base_url": base_url or "default",
-                "connect_timeout_seconds": timeout_seconds,
-                "tool_choice": tool_choice,
-                "enable_thinking": enable_thinking,
-                "extra_body": provider_extra_body or None,
-                "tools": serialized_tool_names,
-                "messages": serialized_messages,
-            }, ensure_ascii=False)
+            dumps(
+                {
+                    "mode": "stream" if is_stream else "non_stream",
+                    "model": resolved_model_name,
+                    "base_url": base_url or "default",
+                    "connect_timeout_seconds": timeout_seconds,
+                    "tool_choice": tool_choice,
+                    "enable_thinking": enable_thinking,
+                    "extra_body": provider_extra_body or None,
+                    "tools": serialized_tool_names,
+                    "messages": serialized_messages,
+                },
+                ensure_ascii=False,
+            ),
         )
+
+    @staticmethod
+    def _format_chat_request_log_as_curl(
+        *,
+        full_url: str,
+        mode: str,
+        model_name: str,
+        base_url: str,
+        timeout_seconds: float,
+        tool_choice: str | dict[str, Any] | None,
+        enable_thinking: bool | None,
+        extra_body: dict[str, Any] | None,
+        tools: Sequence[str],
+        messages: Sequence[LlmInputMessage],
+    ) -> str:
+        """构造可直接复制执行的 curl 风格 LLM 请求日志。"""
+
+        request_payload = LlmClient._build_log_request_payload(
+            mode=mode,
+            model_name=model_name,
+            tool_choice=tool_choice,
+            enable_thinking=enable_thinking,
+            extra_body=extra_body,
+            tools=tools,
+            messages=messages,
+        )
+        pretty_payload = dumps(request_payload, ensure_ascii=False, indent=2)
+        curl_command = LlmClient._build_curl_command(
+            full_url=full_url,
+            pretty_payload=pretty_payload,
+        )
+        return "\n".join(
+            [
+                "向 LLM 发起请求：",
+                f"模式: {mode}",
+                f"模型: {model_name}",
+                f"base_url: {base_url}",
+                f"connect_timeout_seconds: {timeout_seconds}",
+                "curl 复现命令:",
+                curl_command,
+            ]
+        )
+
+    @staticmethod
+    def _build_log_request_payload(
+        *,
+        mode: str,
+        model_name: str,
+        tool_choice: str | dict[str, Any] | None,
+        enable_thinking: bool | None,
+        extra_body: dict[str, Any] | None,
+        tools: Sequence[str],
+        messages: Sequence[LlmInputMessage],
+    ) -> dict[str, Any]:
+        """构造贴近真实上游请求体的日志 payload。"""
+
+        payload: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                LlmClient._serialize_message_for_log(message)
+                for message in messages
+            ],
+            "stream": mode == "stream",
+        }
+        if enable_thinking is not None:
+            payload["enable_thinking"] = enable_thinking
+        if extra_body:
+            payload.update(extra_body)
+        if tools:
+            payload["tools"] = list(tools)
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        return payload
+
+    @staticmethod
+    def _serialize_message_for_log(message: LlmInputMessage) -> dict[str, Any]:
+        """把内部消息模型转换为更贴近 OpenAI 接口的日志格式。"""
+
+        serialized_message: dict[str, Any] = {
+            "role": message.role,
+            "content": message.content,
+        }
+        if message.name:
+            serialized_message["name"] = message.name
+        if message.tool_call_id:
+            serialized_message["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            serialized_message["tool_calls"] = [
+                {
+                    "id": tool_call.tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.tool_name,
+                        "arguments": dumps(tool_call.arguments, ensure_ascii=False),
+                    },
+                }
+                for tool_call in message.tool_calls
+            ]
+        return serialized_message
+
+    @staticmethod
+    def _build_curl_command(*, full_url: str, pretty_payload: str) -> str:
+        """构造 bash 兼容的 curl 命令，便于复制复现。"""
+
+        return "\n".join(
+            [
+                f"curl --location --request POST {LlmClient._shell_single_quote(full_url)} \\",
+                "  --header 'Content-Type: application/json' \\",
+                f"  --data-raw {LlmClient._shell_single_quote(pretty_payload)}",
+            ]
+        )
+
+    def _format_log_value(value: object) -> str:
+        """稳定格式化复杂值，避免日志里出现难读的 Python 表示。"""
+
+        if isinstance(value, str):
+            return value
+        return dumps(value, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def _shell_single_quote(text: str) -> str:
+        """用单引号安全包裹 shell 文本，允许内容中包含单引号。"""
+
+        return "'" + text.replace("'", "'\"'\"'") + "'"
 
     def _convert_openai_exception(self, exception: Exception) -> UpstreamServiceException:
         """将 OpenAI 客户端异常映射为统一业务异常。"""

@@ -122,6 +122,7 @@ async def test_planner_prefers_dedicated_base_url(monkeypatch) -> None:
     assert fake_llm_client.last_kwargs is not None
     assert fake_llm_client.last_kwargs["model_name"] == "planner-model"
     assert fake_llm_client.last_kwargs["base_url"] == "https://planner.example.com/v1"
+    assert fake_llm_client.last_kwargs["log_format"] == "curl"
 
 
 async def test_planner_prefers_dedicated_api_key(monkeypatch) -> None:
@@ -554,8 +555,8 @@ async def test_planner_routes_expression_with_chinese_symbols_to_builtin_tool() 
     assert [step.executor for step in plan.steps] == ["answer"]
 
 
-async def test_planner_logs_llm_response_content(caplog) -> None:
-    """Planner should log the raw LLM response content for debugging."""
+async def test_planner_logs_formatted_execution_plan_once(caplog) -> None:
+    """Planner 应只输出一条格式化后的执行计划日志。"""
 
     caplog.set_level(logging.INFO, logger="app.agent.planner")
     planner = PlannerService(
@@ -582,7 +583,13 @@ async def test_planner_logs_llm_response_content(caplog) -> None:
 
     await planner.build_plan_async(AgentState(latest_user_message="hello"))
 
-    assert "Planner LLM response received:" in caplog.text
+    planner_log_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.agent.planner"
+    ]
+    assert len(planner_log_messages) == 1
+    assert planner_log_messages[0].startswith("Planner execution plan:\n")
     assert '"primary_category": "general"' in caplog.text
 
 
@@ -594,7 +601,7 @@ async def test_planner_logs_final_execution_plan(caplog) -> None:
 
     await planner.build_plan_async(AgentState(latest_user_message="杭州到金华堵不堵"))
 
-    assert "Planner final execution plan:" in caplog.text
+    assert "Planner execution plan:" in caplog.text
     assert '"primary_category": "route_planning"' in caplog.text
     assert '"executor": "route"' in caplog.text
     assert '"executor": "traffic"' not in caplog.text

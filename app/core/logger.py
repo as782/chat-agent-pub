@@ -80,6 +80,24 @@ def _build_formatter() -> logging.Formatter:
     return logging.Formatter(DEFAULT_LOG_FORMAT)
 
 
+class ConsoleColorFormatter(logging.Formatter):
+    """仅用于控制台输出的彩色日志格式化器。"""
+
+    _PLANNER_PLAN_PREFIX = "Planner execution plan:"
+    _PLANNER_PLAN_COLOR = "\033[96m"
+    _RESET_COLOR = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        """仅对特定日志做控制台着色，避免影响文件日志。"""
+
+        formatted_message = super().format(record)
+        if record.name == "app.agent.planner" and record.getMessage().startswith(
+            self._PLANNER_PLAN_PREFIX
+        ):
+            return f"{self._PLANNER_PLAN_COLOR}{formatted_message}{self._RESET_COLOR}"
+        return formatted_message
+
+
 def _create_console_handler(formatter: logging.Formatter) -> logging.Handler:
     """创建控制台日志处理器。"""
 
@@ -130,7 +148,9 @@ def configure_logging(settings: Settings) -> None:
     root_logger.setLevel(resolve_log_level(is_debug=settings.is_debug))
 
     formatter = _build_formatter()
-    root_logger.addHandler(_create_console_handler(formatter))
+    root_logger.addHandler(
+        _create_console_handler(ConsoleColorFormatter(DEFAULT_LOG_FORMAT))
+    )
     if settings.enable_file_logging:
         try:
             root_logger.addHandler(_create_file_handler(settings, formatter))
