@@ -151,11 +151,13 @@ def test_network_report_prompt_requires_strict_table_column_rules() -> None:
         "收费站管控情况：只写“收费站管制”汇总里的内容"
         in NETWORK_REPORT_SUMMARY_PROMPT
     )
+    assert "写表前先按“收费站名称 + 道路方向”分组" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "每条记录必须包含“收费站名称 + 道路方向 + 出入口 + 管控结果”" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "同一收费站、同一道路方向下如果有多个出入口或多个管控结果，要合并成一行" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "不要把主线管制里的任何管制类型/措施写进这一列" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "路况：只写非收费站管控的情况，来源仅限主线管制和拥堵汇总" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "如果同一高速下存在多条独立的拥堵/缓行记录，必须逐条拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "写表前先按“道路方向 + 具体路段”分组" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "多个独立拥堵/缓行点位仍然要逐条拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "禁止把多个路段或多个缓行距离用分号、顿号合并到同一格里" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "返回的结果包含：查询时间、拥堵汇总、主线管制、收费站管制" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "拥堵汇总：每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
@@ -171,6 +173,7 @@ def test_network_report_prompt_requires_strict_table_column_rules() -> None:
     assert "没有明确路况时固定写“无”" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "当同一高速下存在多个收费站时，要优先按收费站拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "多个独立拥堵/缓行点位仍然要逐条拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "写表前先分组：收费站按“收费站名称 + 道路方向”分组" in NETWORK_REPORT_SUMMARY_PROMPT
 
 
 def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
