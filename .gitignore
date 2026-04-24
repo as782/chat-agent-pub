@@ -16,3 +16,4 @@ tests_output.log
 server.log
 test_prompt.py
 repaired_tests.py
+.idea/
