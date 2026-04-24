@@ -86,6 +86,8 @@ class ChatExecutionRequest:
     model_name: str | None
     requested_tool_names: list[str] | None
     tool_choice: str | dict[str, object] | None
+    forced_route: AgentRoute | None = None
+    scheduled_route: AgentRoute | None = None
     enable_thinking: bool | None = None
     user_id: str | None = None
     message_metadata: dict[str, object] = field(default_factory=dict)
@@ -138,6 +140,7 @@ class AgentState(TypedDict, total=False):
     requested_tool_names: list[str] | None
     tool_choice: str | dict[str, object] | None
     enable_thinking: bool | None
+    forced_route: AgentRoute | None
     route: AgentRoute
     scheduled_route: AgentRoute
     current_step_id: str | None

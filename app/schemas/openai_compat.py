@@ -110,6 +110,19 @@ class OpenAIChatCompletionRequest(BaseModel):
         default=None,
         description="Tool selection strategy.",
     )
+    scheduled_route: Literal[
+        "answer",
+        "tool",
+        "ragflow",
+        "route",
+        "mcp",
+        "traffic",
+        "service",
+        "report",
+    ] | None = Field(
+        default=None,
+        description="Optional execution route override for scheduled requests.",
+    )
     enable_thinking: bool | None = Field(
         default=None,
         description="Top-level thinking toggle for compatible Qwen-style models.",

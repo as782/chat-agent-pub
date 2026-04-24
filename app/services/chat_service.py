@@ -443,6 +443,7 @@ class ChatService:
             model_name=chat_request.model,
             requested_tool_names=requested_tool_names,
             tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
+            scheduled_route=chat_request.scheduled_route,
             enable_thinking=chat_request.resolved_enable_thinking,
             user_id=chat_request.user,
         )
@@ -565,10 +566,11 @@ class ChatService:
         )
 
         LOGGER.info(
-            "聊天流式请求开始：request_id=%s session_id=%s prepare_ms=%.2f",
+            "聊天流式请求开始：request_id=%s session_id=%s prepare_ms=%.2f scheduled_route=%s",
             prepared_execution.request_id,
             prepared_execution.resolved_session_id,
             prepared_execution.prepare_duration_ms,
+            prepared_execution.execution_request.scheduled_route,
         )
         return (
             prepared_execution.resolved_session_id,

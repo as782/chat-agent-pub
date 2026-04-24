@@ -88,6 +88,21 @@ def test_router_prefers_scheduled_route_over_explicit_tools() -> None:
     assert route == "answer"
 
 
+def test_router_prefers_scheduled_route_report_over_explicit_tools() -> None:
+    """scheduled_route=report should force the report route even when tools are present."""
+
+    route = resolve_agent_route(
+        {
+            "latest_user_message": "请提供省内整体实时路况总结。",
+            "requested_tool_names": ["calculator"],
+            "forced_route": "report",
+            "scheduled_route": "answer",
+        }
+    )
+
+    assert route == "report"
+
+
 def test_router_still_prefers_explicit_tools_over_planner_route() -> None:
     """验证显式传入 tools 时，仍保持最高优先级。"""
 

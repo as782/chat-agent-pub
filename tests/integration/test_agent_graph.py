@@ -8,13 +8,151 @@ from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.agent.graph import ConversationGraph
-from app.agent.state import ChatExecutionRequest
+from app.agent.state import ChatExecutionRequest, ChatTurnResult, ExecutionPlan, ExecutionStep, ResolvedArguments
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
 from app.persistence.memory_repo import MemoryRepository
 from app.persistence.message_repo import MessageRepository
 from app.persistence.session_repo import SessionRepository
 from app.schemas.knowledge import KnowledgeSearchResult
+
+
+def test_conversation_graph_initial_state_keeps_forced_route() -> None:
+    """scheduled_route request value should become a force-route override in graph state."""
+
+    execution_request = ChatExecutionRequest(
+        session_id="session-001",
+        need_session_memory=False,
+        latest_user_message="请提供省内整体实时路况总结。",
+        input_messages=[],
+        model_name="test-model",
+        requested_tool_names=None,
+        tool_choice=None,
+        scheduled_route="report",
+    )
+
+    initial_state = ConversationGraph._build_initial_state(execution_request)
+
+    assert initial_state["forced_route"] == "report"
+    assert "scheduled_route" not in initial_state
+
+
+@pytest.mark.asyncio
+async def test_conversation_graph_forced_report_route_overrides_planner_answer(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A request-level report override should hit report_node even when the planner says answer."""
+
+    async def fake_planner_run(self, state):
+        del self, state
+        execution_plan = ExecutionPlan(
+            primary_category="general",
+            execution_mode="direct",
+            recommended_route="answer",
+            steps=[
+                ExecutionStep(
+                    step_id="answer_1",
+                    executor="answer",
+                    goal="直接回答",
+                )
+            ],
+        )
+        return {
+            "primary_category": execution_plan.primary_category,
+            "execution_plan": execution_plan,
+            "need_clarification": False,
+            "clarification_question": None,
+            "steps": execution_plan.steps,
+        }
+
+    async def fake_argument_run(self, state):
+        del self, state
+        return {
+            "resolved_arguments": ResolvedArguments(category="general"),
+            "step_arguments": {},
+            "need_clarification": False,
+            "clarification_question": None,
+        }
+
+    async def fake_report_run(self, state):
+        del self, state
+        return {"report_context": "forced report"}
+
+    async def fake_answer_run(self, state):
+        del self, state
+        return {
+            "final_result": ChatTurnResult(
+                session_id="session-report-001",
+                content="测试模型回答：报表完成",
+                model_name="test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                finish_reason="stop",
+                route="answer",
+            )
+        }
+
+    async def fake_memory_run(self, state):
+        del self, state
+        return {}
+
+    async def fake_load_checkpoint(self: object, session_id: str) -> dict[str, object] | None:
+        del self, session_id
+        return None
+
+    async def fake_save_checkpoint(
+        self: object,
+        *,
+        session_id: str,
+        payload: dict[str, object],
+        ttl_seconds: int = 3600,
+    ) -> None:
+        del self, session_id, payload, ttl_seconds
+
+    monkeypatch.setattr("app.agent.nodes.planner_node.PlannerNode.run", fake_planner_run)
+    monkeypatch.setattr("app.agent.nodes.argument_node.ArgumentNode.run", fake_argument_run)
+    monkeypatch.setattr("app.agent.nodes.report_node.ReportNode.run", fake_report_run)
+    monkeypatch.setattr("app.agent.nodes.answer_node.AnswerNode.run", fake_answer_run)
+    monkeypatch.setattr("app.agent.nodes.memory_node.MemoryNode.run", fake_memory_run)
+    monkeypatch.setattr("app.memory.checkpoint_store.CheckpointStore.load", fake_load_checkpoint)
+    monkeypatch.setattr("app.memory.checkpoint_store.CheckpointStore.save", fake_save_checkpoint)
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{(tmp_path / 'agent-graph-forced-report.db').as_posix()}"
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with session_factory() as db_session:
+        session_repository = SessionRepository(db_session)
+        await session_repository.create(session_id="session-report-001")
+        conversation_graph = ConversationGraph(db_session)
+
+        execution_request = ChatExecutionRequest(
+            session_id="session-report-001",
+            need_session_memory=False,
+            latest_user_message="你好",
+            input_messages=[LlmInputMessage(role="user", content="你好")],
+            model_name="test-model",
+            requested_tool_names=None,
+            tool_choice=None,
+            scheduled_route="report",
+        )
+
+        started_nodes: list[str] = []
+        async for event in conversation_graph.stream_events(execution_request):
+            if event["event"] == "on_chain_start" and isinstance(event.get("name"), str):
+                started_nodes.append(str(event["name"]))
+
+        report_index = started_nodes.index("report_node")
+        answer_index = started_nodes.index("answer_node")
+
+        assert report_index < answer_index
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

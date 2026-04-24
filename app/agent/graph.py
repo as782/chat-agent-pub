@@ -192,6 +192,7 @@ class ConversationGraph:
             "model_name": execution_request.model_name,
             "requested_tool_names": execution_request.requested_tool_names,
             "tool_choice": execution_request.tool_choice,
+            "forced_route": execution_request.scheduled_route,
             "enable_thinking": execution_request.enable_thinking,
         }
 

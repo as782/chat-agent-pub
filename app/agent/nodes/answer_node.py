@@ -411,6 +411,7 @@ class AnswerNode:
             model_name=model_name,
             requested_tool_names=state.get("requested_tool_names"),
             tool_choice=state.get("tool_choice"),
+            scheduled_route=state.get("scheduled_route"),
             enable_thinking=state.get("enable_thinking"),
         )
 

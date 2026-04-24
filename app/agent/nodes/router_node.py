@@ -15,4 +15,7 @@ class RouterNode:
     async def run(self, state: AgentState) -> dict[str, object]:
         """执行路由判断。"""
 
-        return {"route": resolve_agent_route(state)}
+        return {
+            "route": resolve_agent_route(state),
+            "forced_route": None,
+        }
