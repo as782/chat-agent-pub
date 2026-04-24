@@ -1914,6 +1914,8 @@ class PlannerService:
             for keyword in ("全路网", "路网", "日报", "周报", "月报", "表格", "对比")
         ):
             return "network_report"
+        if PlannerService._looks_like_generic_highway_report_query(latest_user_message):
+            return "network_report"
         if any(
             keyword in latest_user_message
             for keyword in ("路况", "拥堵", "堵不堵", "堵吗", "堵", "封闭", "施工", "事故", "缓行", "通行情况", "通畅吗")
@@ -1936,6 +1938,8 @@ class PlannerService:
     ) -> ProblemCategory:
         """对全省/整体类路况问题做兜底纠偏。"""
 
+        if PlannerService._should_force_network_report(latest_user_message):
+            return "network_report"
         if primary_category == "route_planning" and PlannerService._looks_like_od_toll_query(
             latest_user_message
         ):
@@ -1978,7 +1982,25 @@ class PlannerService:
 
         return any(keyword in latest_user_message for keyword in _NETWORK_SCOPE_KEYWORDS) and any(
             keyword in latest_user_message for keyword in _NETWORK_TRAFFIC_KEYWORDS
-        )
+        ) or PlannerService._looks_like_generic_highway_report_query(latest_user_message)
+
+    @staticmethod
+    def _looks_like_generic_highway_report_query(latest_user_message: str) -> bool:
+        """识别没有具体道路对象的高速整体路况问法。"""
+
+        if PlannerService._looks_like_od_query(latest_user_message):
+            return False
+        if PlannerService._extract_explicit_road_targets(latest_user_message):
+            return False
+        if any(keyword in latest_user_message for keyword in _DIRECT_TRAFFIC_TARGET_KEYWORDS):
+            return False
+        if any(keyword in latest_user_message for keyword in ("收费站", "收费口", "进口", "出口")):
+            return False
+        if "高速" not in latest_user_message or "路况" not in latest_user_message:
+            return False
+        if any(keyword in latest_user_message for keyword in ("实时", "当前", "现在", "目前", "今天")):
+            return True
+        return "整体" in latest_user_message or "汇总" in latest_user_message or "概况" in latest_user_message
 
     @staticmethod
     def _resolve_general_tool_name(latest_user_message: str) -> str | None:
@@ -2142,6 +2164,8 @@ class PlannerService:
             return True
         alias_match = _DIRECT_TRAFFIC_ALIAS_PATTERN.search(normalized_target)
         if alias_match is None:
+            return False
+        if PlannerService._looks_like_generic_highway_report_query(latest_user_message):
             return False
         return PlannerService._normalize_traffic_road_candidate(alias_match.group(0)) is not None
 
