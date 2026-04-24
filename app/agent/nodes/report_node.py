@@ -1,11 +1,12 @@
-"""路网报告业务节点模块。
+"""Network report node.
 
-负责把路网汇总和报表类问题的结构化参数整理为可注入回答节点的业务上下文。
-当前阶段只做报表任务规范化，不直接访问外部数据接口。
+This node normalizes the live-agent `topN` response into a prompt-friendly
+`report_context` string and a compact executor result payload.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from json import loads
 
 from app.agent.prompts import REPORT_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
@@ -22,13 +23,13 @@ from app.tools.registry import ToolRegistry
 
 
 class ReportNode:
-    """LangGraph 路网报告业务节点。"""
+    """LangGraph network report node."""
 
     def __init__(self, *, tool_registry: ToolRegistry | None = None) -> None:
         self._tool_registry = tool_registry or ToolRegistry()
 
     async def run(self, state: AgentState) -> dict[str, object]:
-        """执行整体路网查询工具并生成路网报告上下文。"""
+        """Execute the network overview tool and build report context."""
 
         step_id = resolve_active_execution_step_id(
             state,
@@ -38,20 +39,22 @@ class ReportNode:
         resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="report")
         if not isinstance(resolved_arguments, ResolvedArguments):
             return {"report_context": None}
+
         query_arguments = self._build_tool_arguments(resolved_arguments)
         try:
             tool_output = await self._tool_registry.execute_named_tool(
                 tool_name="live_network_overview_query",
                 arguments=query_arguments,
             )
-            response_payload = self._parse_tool_output(tool_output)
+            parsed_payload = self._parse_tool_output(tool_output)
+            response_payload = self._unwrap_network_overview_payload(parsed_payload)
             executor_result = ExecutorResult(
                 step_id=step_id,
                 executor="report",
                 is_success=True,
                 raw_result={
                     "query_arguments": dict(query_arguments),
-                    "api_result": response_payload,
+                    "api_result": parsed_payload,
                 },
                 normalized_result=self._build_normalized_result(
                     response_payload=response_payload,
@@ -75,14 +78,14 @@ class ReportNode:
 
     @staticmethod
     def _build_tool_arguments(resolved_arguments: ResolvedArguments) -> dict[str, object]:
-        """把结构化参数转换为整体路网查询工具参数。"""
+        """The live network overview endpoint currently takes no arguments."""
 
         del resolved_arguments
         return {}
 
     @staticmethod
     def _parse_tool_output(tool_output: str) -> dict[str, object] | list[dict[str, object]]:
-        """解析整体路网工具返回的 JSON 字符串。"""
+        """Parse the tool JSON output."""
 
         response_payload = loads(tool_output)
         if isinstance(response_payload, dict):
@@ -92,69 +95,58 @@ class ReportNode:
         return {}
 
     @staticmethod
+    def _unwrap_network_overview_payload(
+        response_payload: dict[str, object] | list[dict[str, object]],
+    ) -> dict[str, object] | list[dict[str, object]]:
+        """Unwrap the standard `{code, data, message}` envelope when needed."""
+
+        if not isinstance(response_payload, dict):
+            return response_payload
+
+        data = response_payload.get("data")
+        if isinstance(data, dict):
+            topn_keys = {"queryTime", "congestionTopN", "controlTopN", "exitTopN"}
+            if any(key in data for key in topn_keys):
+                return data
+        return response_payload
+
+    @staticmethod
     def _build_normalized_result(
         *,
         response_payload: dict[str, object] | list[dict[str, object]],
     ) -> dict[str, object]:
-        """提取整体路网查询结果中的完整业务字段。"""
+        """Extract the key report fields for downstream consumers."""
 
         if isinstance(response_payload, list):
-            record_count = len(response_payload)
-            congestion_total_mile = None
-            query_time = None
-            congestion_top_count = 0
-            accident_top_count = 0
-            control_top_count = 0
-            exit_top_count = 0
-            congestion_top_items: list[dict[str, object]] = []
-            accident_top_items: list[dict[str, object]] = []
-            control_top_items: list[dict[str, object]] = []
-            exit_top_items: list[dict[str, object]] = []
-        else:
-            congestion_payload = response_payload.get("congestion", {})
-            congestion_total_mile = (
-                congestion_payload.get("totalMile")
-                if isinstance(congestion_payload, dict)
-                else None
-            )
-            query_time = response_payload.get("queryTime")
-            congestion_top = response_payload.get("congestionTopN", [])
-            accident_top = response_payload.get("accidentTopN", [])
-            control_top = response_payload.get("controlTopN", [])
-            exit_top = response_payload.get("exitTopN", [])
-            congestion_top_count = len(congestion_top) if isinstance(congestion_top, list) else 0
-            accident_top_count = len(accident_top) if isinstance(accident_top, list) else 0
-            control_top_count = len(control_top) if isinstance(control_top, list) else 0
-            exit_top_count = len(exit_top) if isinstance(exit_top, list) else 0
-            congestion_top_items = (
-                [item for item in congestion_top if isinstance(item, dict)]
-                if isinstance(congestion_top, list)
-                else []
-            )
-            accident_top_items = (
-                [item for item in accident_top if isinstance(item, dict)]
-                if isinstance(accident_top, list)
-                else []
-            )
-            control_top_items = (
-                [item for item in control_top if isinstance(item, dict)]
-                if isinstance(control_top, list)
-                else []
-            )
-            exit_top_items = (
-                [item for item in exit_top if isinstance(item, dict)]
-                if isinstance(exit_top, list)
-                else []
-            )
-            record_count = 1
+            return {
+                "record_count": len(response_payload),
+                "query_time": None,
+                "congestion_total_mile": None,
+                "congestion_top_count": 0,
+                "accident_top_count": 0,
+                "control_top_count": 0,
+                "exit_top_count": 0,
+                "congestion_top_items": [],
+                "accident_top_items": [],
+                "control_top_items": [],
+                "exit_top_items": [],
+            }
+
+        query_time = ReportNode._string_or_placeholder(response_payload.get("queryTime"))
+        congestion_total_mile = ReportNode._extract_congestion_total_mile(response_payload)
+        congestion_top_items = ReportNode._extract_payload_items(response_payload, "congestionTopN")
+        accident_top_items = ReportNode._extract_payload_items(response_payload, "accidentTopN")
+        control_top_items = ReportNode._extract_payload_items(response_payload, "controlTopN")
+        exit_top_items = ReportNode._extract_payload_items(response_payload, "exitTopN")
+
         return {
-            "record_count": record_count,
+            "record_count": 1,
             "query_time": query_time,
             "congestion_total_mile": congestion_total_mile,
-            "congestion_top_count": congestion_top_count,
-            "accident_top_count": accident_top_count,
-            "control_top_count": control_top_count,
-            "exit_top_count": exit_top_count,
+            "congestion_top_count": len(congestion_top_items),
+            "accident_top_count": len(accident_top_items),
+            "control_top_count": len(control_top_items),
+            "exit_top_count": len(exit_top_items),
             "congestion_top_items": congestion_top_items,
             "accident_top_items": accident_top_items,
             "control_top_items": control_top_items,
@@ -163,39 +155,16 @@ class ReportNode:
 
     @staticmethod
     def _string_or_placeholder(value: object | None) -> str:
-        """把任意值转成可读字符串，缺失时返回占位符。"""
-
-        if value is None:
-            return "无"
-        text = str(value).strip()
-        return text if text else "无"
-
-    @classmethod
-    def _format_direction(cls, direction_type: object | None) -> str:
-        """把方向编码转成自然语言。"""
-
-        normalized = cls._string_or_placeholder(direction_type)
-        direction_map = {
-            "0": "双向",
-            "1": "上行",
-            "2": "下行",
-        }
-        return direction_map.get(normalized, normalized)
-
-    @staticmethod
-    def _format_milestone(value: object | None) -> str:
-        """格式化桩号。"""
+        """Normalize any value to a readable string."""
 
         if value is None:
             return "未知"
-        if isinstance(value, str):
-            text = value.strip()
-            return text if text else "未知"
-        return str(value)
+        text = str(value).strip()
+        return text if text else "未知"
 
     @staticmethod
     def _format_number(value: object | None) -> str:
-        """格式化数值。"""
+        """Normalize a numeric value for display."""
 
         if value is None:
             return "未知"
@@ -205,48 +174,110 @@ class ReportNode:
         return str(value)
 
     @classmethod
-    def _build_report_event_line(cls, item: dict[str, object]) -> str:
-        """把单条 topN 事件整理成一行模板文本。"""
+    def _format_direction(cls, *candidates: object | None) -> str:
+        """Normalize direction codes and labels into Chinese text."""
 
-        road_code = cls._string_or_placeholder(item.get("roadGBCode") or item.get("roadGbCode"))
-        road_name = cls._string_or_placeholder(item.get("roadName"))
-        direction = cls._format_direction(item.get("directionType"))
-        begin = cls._format_milestone(item.get("beginMilestone"))
-        end = cls._format_milestone(item.get("endMilestone"))
-        road_amble_mile = cls._format_number(item.get("roadAmbleMile"))
-        control_measures = cls._string_or_placeholder(item.get("controlMeasures"))
-        situation_remark = cls._string_or_placeholder(item.get("situationRemark"))
-        jeeves = cls._string_or_placeholder(item.get("jeeves"))
-        begin_time = cls._string_or_placeholder(item.get("beginTime"))
-        expected_end_time = cls._string_or_placeholder(
-            item.get("expectedEndTime") or item.get("expectedTime") or item.get("endTime")
-        )
-        des = cls._string_or_placeholder(item.get("des"))
-        return (
-            f"- {road_code}，{road_name}，方向：{direction}，K{begin}~K{end}，"
-            f"缓行约 {road_amble_mile} 公里，管制措施：{control_measures}，"
-            f"现场情况备注：{situation_remark}，占道情况：{jeeves}，"
-            f"开始时间：{begin_time}-预期结束时间：{expected_end_time}，事件描述：{des}"
-        )
-
-    @classmethod
-    def _build_report_section(cls, title: str, items: list[dict[str, object]]) -> str:
-        """把一类 topN 事件整理成分组文本。"""
-
-        lines = [f"{title}："]
-        if not items:
-            lines.append("- 暂无")
-            return "\n".join(lines)
-        for item in items:
-            lines.append(cls._build_report_event_line(item))
-        return "\n".join(lines)
+        mapping = {
+            "0": "双向",
+            "00": "双向",
+            "双向": "双向",
+            "1": "上行",
+            "01": "上行",
+            "100700": "上行",
+            "上行": "上行",
+            "2": "下行",
+            "02": "下行",
+            "100701": "下行",
+            "下行": "下行",
+        }
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            text = str(candidate).strip()
+            if not text:
+                continue
+            if text in mapping:
+                return mapping[text]
+            if any("\u4e00" <= char <= "\u9fff" for char in text):
+                return text
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            text = str(candidate).strip()
+            if text:
+                return text
+        return "未知"
 
     @staticmethod
+    def _format_milestone(value: object | None) -> str:
+        """Normalize milestone values."""
+
+        if value is None:
+            return "未知"
+        if isinstance(value, str):
+            text = value.strip()
+            return text if text else "未知"
+        return str(value)
+
+    @staticmethod
+    def _format_entrance_label(value: object | None) -> str:
+        """Normalize entrance/exit codes."""
+
+        mapping = {
+            "0": "出口",
+            "1": "入口",
+            "出口": "出口",
+            "入口": "入口",
+        }
+        if value is None:
+            return "未知"
+        text = str(value).strip()
+        if not text:
+            return "未知"
+        return mapping.get(text, text)
+
+    @classmethod
+    def _format_event_category(
+        cls,
+        event_class: object | None,
+        event_type: object | None,
+    ) -> str:
+        """Format the event classification using the provided code mapping."""
+
+        event_category_map = {
+            "01": "交通事件",
+            "02": "交通灾害",
+            "03": "交通气象",
+            "04": "路面状况",
+            "05": "路面施工",
+            "06": "活动",
+            "07": "重大事件",
+            "09": "其他",
+            "97": "车辆故障",
+            "98": "服务区事件",
+            "99": "收费站入口关闭",
+            "100": "收费站入口限流",
+            "101": "收费站出口关闭",
+            "103": "主线管制",
+            "104": "收费站出口分流",
+            "105": "道路缓行",
+        }
+        class_label = cls._string_or_placeholder(event_class)
+        type_label = cls._string_or_placeholder(event_type)
+
+        resolved_class_label = event_category_map.get(class_label, class_label)
+        resolved_type_label = event_category_map.get(type_label, type_label)
+        if resolved_type_label == "未知" or resolved_type_label == resolved_class_label:
+            return resolved_class_label
+        return f"{resolved_class_label}（{resolved_type_label}）"
+
+    @classmethod
     def _extract_payload_items(
+        cls,
         response_payload: dict[str, object] | list[dict[str, object]],
         key: str,
     ) -> list[dict[str, object]]:
-        """从响应中提取某类 topN 列表。"""
+        """Extract a topN list from the normalized payload."""
 
         if not isinstance(response_payload, dict):
             return []
@@ -256,23 +287,163 @@ class ReportNode:
         return [item for item in items if isinstance(item, dict)]
 
     @staticmethod
-    def _resolve_station_status_label(status_code: object) -> str:
-        """把收费站状态码转换成可读中文。"""
+    def _extract_congestion_total_mile(response_payload: dict[str, object]) -> object | None:
+        congestion_payload = response_payload.get("congestion")
+        if isinstance(congestion_payload, dict):
+            total_mile = congestion_payload.get("totalMile")
+            if total_mile is not None:
+                return total_mile
+        if "congestionTotalMile" in response_payload:
+            return response_payload.get("congestionTotalMile")
+        return None
 
-        if status_code is None:
+    @classmethod
+    def _build_identity(cls, road_code: object | None, road_name: object | None) -> str:
+        """Combine road code and road name into one label."""
+
+        code_text = cls._string_or_placeholder(road_code)
+        name_text = cls._string_or_placeholder(road_name)
+        if code_text == "未知" and name_text == "未知":
             return "未知"
-        normalized_status = str(status_code).strip()
-        if not normalized_status:
-            return "未知"
-        if normalized_status == "0":
-            return "开启"
-        if normalized_status == "10202":
-            return "关闭"
-        if normalized_status == "10203":
-            return "限流"
-        if normalized_status == "10204":
-            return "分流"
-        return normalized_status
+        if code_text == "未知":
+            return name_text
+        if name_text == "未知":
+            return code_text
+        return f"{code_text} / {name_text}"
+
+    @classmethod
+    def _build_item_section(
+        cls,
+        title: str,
+        items: list[dict[str, object]],
+        formatter: Callable[[dict[str, object]], str],
+    ) -> str:
+        """Render one topN section."""
+
+        lines = [f"{title}（{len(items)}条）："]
+        if not items:
+            lines.append("- 暂无")
+            return "\n".join(lines)
+        for item in items:
+            lines.append(formatter(item))
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_congestion_line(cls, item: dict[str, object]) -> str:
+        """Render one congestion topN record."""
+
+        road_identity = cls._build_identity(
+            item.get("roadGBCode") or item.get("roadGbCode") or item.get("roadCode"),
+            item.get("roadName"),
+        )
+        direction = cls._format_direction(
+            item.get("directionName"),
+            item.get("directionType"),
+            item.get("direction"),
+        )
+        location = (
+            f"K{cls._format_milestone(item.get('beginMilestone'))}"
+            f"-K{cls._format_milestone(item.get('endMilestone'))}"
+        )
+        expected_end_time = cls._string_or_placeholder(
+            item.get("expectedTime")
+            or item.get("expectedEndTime")
+            or item.get("endTime")
+        )
+        parts = [
+            f"- {road_identity}",
+            f"方向 {direction}",
+            f"区间 {location}",
+            f"缓行里程 {cls._format_number(item.get('roadAmbleMile'))} 公里",
+            f"开始 {cls._string_or_placeholder(item.get('beginTime'))}",
+            f"预计结束 {expected_end_time}",
+            f"事件分类 {cls._format_event_category(item.get('eventClass'), item.get('eventType'))}",
+            f"管制措施 {cls._string_or_placeholder(item.get('controlMeasures'))}",
+            f"现场情况 {cls._string_or_placeholder(item.get('situationRemark'))}",
+            f"占道情况 {cls._string_or_placeholder(item.get('jeeves'))}",
+            f"描述 {cls._string_or_placeholder(item.get('des'))}",
+        ]
+        return " | ".join(parts)
+
+    @classmethod
+    def _build_control_line(cls, item: dict[str, object]) -> str:
+        """Render one mainline control topN record."""
+
+        road_identity = cls._build_identity(
+            item.get("roadGBCode") or item.get("roadGbCode") or item.get("roadCode"),
+            item.get("roadName"),
+        )
+        direction = cls._format_direction(
+            item.get("directionName"),
+            item.get("directionType"),
+            item.get("direction"),
+        )
+        station_name = cls._string_or_placeholder(
+            item.get("tollName") or item.get("entranceName") or item.get("controlName")
+        )
+        entrance_label = cls._format_entrance_label(item.get("entrance"))
+        control_type = cls._string_or_placeholder(
+            item.get("controlTypeName") or item.get("controlType")
+        )
+        limit_measure = cls._string_or_placeholder(
+            item.get("limitMeasureTypeName") or item.get("controlMeasures")
+        )
+        end_time = cls._string_or_placeholder(
+            item.get("endTime") or item.get("expectedTime") or item.get("expectedEndTime")
+        )
+        description = cls._string_or_placeholder(item.get("des") or item.get("description"))
+        parts = [
+            f"- {road_identity}",
+            f"方向 {direction}",
+            f"收费站 {station_name}",
+            f"出入口 {entrance_label}",
+            f"管制类型 {control_type}",
+            f"措施 {limit_measure}",
+            f"开始 {cls._string_or_placeholder(item.get('startTime') or item.get('beginTime'))}",
+            f"结束 {end_time}",
+            f"描述 {description}",
+        ]
+        return " | ".join(parts)
+
+    @classmethod
+    def _build_exit_line(cls, item: dict[str, object]) -> str:
+        """Render one toll-station control topN record."""
+
+        road_identity = cls._build_identity(
+            item.get("roadGBCode") or item.get("roadGbCode") or item.get("roadCode"),
+            item.get("roadName"),
+        )
+        direction = cls._format_direction(
+            item.get("directionName"),
+            item.get("directionType"),
+            item.get("direction"),
+        )
+        station_name = cls._string_or_placeholder(
+            item.get("tollName") or item.get("exitName") or item.get("entranceName")
+        )
+        entrance_label = cls._format_entrance_label(item.get("entrance"))
+        control_type = cls._string_or_placeholder(
+            item.get("controlTypeName") or item.get("controlType")
+        )
+        limit_measure = cls._string_or_placeholder(
+            item.get("limitMeasureTypeName") or item.get("controlMeasures")
+        )
+        end_time = cls._string_or_placeholder(
+            item.get("endTime") or item.get("expectedTime") or item.get("expectedEndTime")
+        )
+        description = cls._string_or_placeholder(item.get("des") or item.get("description"))
+        parts = [
+            f"- {road_identity}",
+            f"方向 {direction}",
+            f"收费站 {station_name}",
+            f"出入口 {entrance_label}",
+            f"管制状态 {control_type}",
+            f"措施 {limit_measure}",
+            f"开始 {cls._string_or_placeholder(item.get('startTime') or item.get('beginTime'))}",
+            f"结束 {end_time}",
+            f"描述 {description}",
+        ]
+        return " | ".join(parts)
 
     @classmethod
     def _build_compact_report_context(
@@ -280,55 +451,51 @@ class ReportNode:
         *,
         response_payload: dict[str, object] | list[dict[str, object]],
     ) -> str:
-        """把整体路网结果整理成模板化报表上下文。"""
+        """Build the report content used by the answer prompt."""
 
-        query_time = "-"
-        congestion_total_mile = None
-        if isinstance(response_payload, dict):
-            query_time = cls._string_or_placeholder(response_payload.get("queryTime"))
-            congestion_payload = response_payload.get("congestion", {})
-            if isinstance(congestion_payload, dict):
-                congestion_total_mile = congestion_payload.get("totalMile")
+        if not isinstance(response_payload, dict):
+            lines = [
+                "查询时间：未知",
+                "拥堵汇总（0条）：",
+                "- 暂无",
+                "",
+                "主线管制（0条）：",
+                "- 暂无",
+                "",
+                "收费站管制（0条）：",
+                "- 暂无",
+            ]
+            return "\n".join(lines)
+
+        query_time = cls._string_or_placeholder(response_payload.get("queryTime"))
+        congestion_total_mile = cls._extract_congestion_total_mile(response_payload)
         congestion_items = cls._extract_payload_items(response_payload, "congestionTopN")
-        # accident_items = cls._extract_payload_items(response_payload, "accidentTopN")
         control_items = cls._extract_payload_items(response_payload, "controlTopN")
         exit_items = cls._extract_payload_items(response_payload, "exitTopN")
+        congestion_section = cls._build_item_section(
+            "拥堵汇总",
+            congestion_items,
+            cls._build_congestion_line,
+        )
+        control_section = cls._build_item_section(
+            "主线管制",
+            control_items,
+            cls._build_control_line,
+        )
+        exit_section = cls._build_item_section(
+            "收费站管制",
+            exit_items,
+            cls._build_exit_line,
+        )
 
         lines = [f"查询时间：{query_time}"]
         if congestion_total_mile is not None:
             lines.append(f"拥堵总里程：{cls._format_number(congestion_total_mile)} 公里")
-        lines.append(cls._build_report_section("拥堵列表", congestion_items))
+        lines.append(congestion_section)
         lines.append("")
-        # lines.append(cls._build_report_section("事故列表", accident_items))
-        # lines.append("")
-        lines.append(cls._build_report_section("管制列表", control_items))
+        lines.append(control_section)
         lines.append("")
-        lines.append(cls._build_exit_section("收费站列表", exit_items))
-        return "\n".join(lines)
-
-    @classmethod
-    def _build_exit_station_line(cls, item: dict[str, object]) -> str:
-        """把单条收费站 topN 记录整理成一行模板文本。"""
-
-        toll_name = cls._string_or_placeholder(item.get("tollName"))
-        toll_id = cls._string_or_placeholder(item.get("tollId"))
-        entrance_status = cls._resolve_station_status_label(item.get("entranceStatus"))
-        export_status = cls._resolve_station_status_label(item.get("exportStatus"))
-        toll_id_suffix = f"（ID {toll_id}）" if toll_id != "无" else ""
-        return (
-            f"- {toll_name}{toll_id_suffix}，入口：{entrance_status}，出口：{export_status}"
-        )
-
-    @classmethod
-    def _build_exit_section(cls, title: str, items: list[dict[str, object]]) -> str:
-        """把收费站 topN 记录整理成分组文本。"""
-
-        lines = [f"{title}："]
-        if not items:
-            lines.append("- 暂无")
-            return "\n".join(lines)
-        for item in items:
-            lines.append(cls._build_exit_station_line(item))
+        lines.append(exit_section)
         return "\n".join(lines)
 
     @staticmethod
@@ -337,7 +504,7 @@ class ReportNode:
         resolved_arguments: ResolvedArguments,
         response_payload: dict[str, object] | list[dict[str, object]],
     ) -> str:
-        """把结构化参数和接口返回转为报表类 system 上下文。"""
+        """Build the final system prompt snippet for network reports."""
 
         del resolved_arguments
         return "\n".join(

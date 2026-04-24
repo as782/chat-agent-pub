@@ -92,9 +92,27 @@ class _FakeToolRegistry:
                 {
                     "queryTime": "2026-03-31 09:00:00",
                     "congestion": {"totalMile": 12.5},
-                    "congestionTopN": [{"id": "cg-1", "roadName": "沪昆高速"}],
-                    "accidentTopN": [{"id": "ac-1", "roadName": "杭州绕城高速"}],
-                    "controlTopN": [{"id": "ct-1", "roadName": "长深高速"}],
+                    "congestionTopN": [
+                        {
+                            "id": "cg-1",
+                            "roadGBCode": "G60",
+                            "roadName": "沪昆高速",
+                            "directionType": "1",
+                            "beginMilestone": 120,
+                            "endMilestone": 128,
+                            "roadAmbleMile": 8.0,
+                        }
+                    ],
+                    "controlTopN": [
+                        {
+                            "id": "ct-1",
+                            "roadGBCode": "G25",
+                            "roadName": "长深高速",
+                            "direction": "0",
+                            "tollName": "诸暨北收费站",
+                            "startTime": "2026-03-31 08:10:00",
+                        }
+                    ],
                     "exitTopN": [
                         {
                             "tollId": 1029,
@@ -363,13 +381,13 @@ async def test_report_node_builds_business_context() -> None:
 
     assert result["report_context"] is not None
     assert "查询时间" in result["report_context"]
+    report_result = result["step_results"]["report_1"].normalized_result
     assert result["step_results"]["report_1"].executor == "report"
-    assert result["step_results"]["report_1"].normalized_result["congestion_total_mile"] == 12.5
-    assert result["step_results"]["report_1"].normalized_result["congestion_top_items"][0]["roadName"] == "沪昆高速"
-    assert result["step_results"]["report_1"].normalized_result["accident_top_items"][0]["roadName"] == "杭州绕城高速"
-    assert result["step_results"]["report_1"].normalized_result["control_top_items"][0]["roadName"] == "长深高速"
-    assert result["step_results"]["report_1"].normalized_result["exit_top_count"] == 1
-    assert result["step_results"]["report_1"].normalized_result["exit_top_items"][0]["tollName"] == "萧山收费站"
+    assert report_result["congestion_total_mile"] == 12.5
+    assert report_result["congestion_top_items"][0]["roadName"] == "沪昆高速"
+    assert report_result["control_top_items"][0]["roadName"] == "长深高速"
+    assert report_result["exit_top_count"] == 1
+    assert report_result["exit_top_items"][0]["tollName"] == "萧山收费站"
 class _MultiRouteToolRegistry:
     async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
         if tool_name == "live_driving_query":
