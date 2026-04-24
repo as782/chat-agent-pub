@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import subprocess
 import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
@@ -348,46 +349,44 @@ class LiveAgentClient:
         try:
             tmp_file.write(dumps(payload, ensure_ascii=False, separators=(",", ":")))
             tmp_file.close()
-            process = await asyncio.create_subprocess_exec(
-                self._settings.live_agent_terminal_exec_curl_binary,
-                "-k",
-                "-sS",
-                "-X",
-                "POST",
-                self._settings.live_agent_terminal_exec_url,
-                "-H",
-                "Content-Type: application/json; charset=utf-8",
-                "--data-binary",
-                f"@{tmp_file_path}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
             outer_timeout_seconds = (
                 self._settings.live_agent_terminal_exec_timeout_seconds
                 + self._settings.live_agent_timeout_seconds
             )
             try:
-                output_bytes, _ = await asyncio.wait_for(
-                    process.communicate(),
+                completed_process = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        self._settings.live_agent_terminal_exec_curl_binary,
+                        "-k",
+                        "-sS",
+                        "-X",
+                        "POST",
+                        self._settings.live_agent_terminal_exec_url,
+                        "-H",
+                        "Content-Type: application/json; charset=utf-8",
+                        "--data-binary",
+                        f"@{tmp_file_path}",
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     timeout=outer_timeout_seconds,
                 )
-            except TimeoutError as exception:
-                with suppress(ProcessLookupError):
-                    process.kill()
-                await process.communicate()
+            except subprocess.TimeoutExpired as exception:
                 raise UpstreamServiceException(
                     "terminal_exec curl request timed out.",
                     error_code="live_agent_terminal_exec_timeout",
                     details={"timeout_seconds": outer_timeout_seconds},
                 ) from exception
 
-            output = (output_bytes or b"").decode("utf-8", errors="replace")
-            if process.returncode != 0:
+            output = (completed_process.stdout or b"").decode("utf-8", errors="replace")
+            if completed_process.returncode != 0:
                 raise UpstreamServiceException(
                     "terminal_exec curl request failed.",
                     error_code="live_agent_terminal_exec_curl_error",
                     details={
-                        "exit_code": process.returncode,
+                        "exit_code": completed_process.returncode,
                         "output": output,
                     },
                 )
