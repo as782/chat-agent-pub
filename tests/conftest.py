@@ -95,10 +95,11 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         tools: list[object] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
+        **kwargs: object,
     ) -> AIMessage:
         """为集成测试返回稳定的假模型结果。"""
 
-        del self, api_key, base_url, timeout_seconds, tool_choice, enable_thinking
+        del self, api_key, base_url, timeout_seconds, tool_choice, enable_thinking, kwargs
         latest_user_message = ""
         latest_tool_output = ""
         all_message_contents: list[str] = []
@@ -507,6 +508,7 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
     def fake_create_runnable(
         self: Any,
         *,
+        messages: list[object],
         model_name: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
@@ -515,9 +517,10 @@ def app_client(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[TestClient]
         tool_choice: str | dict[str, object] | None = None,
         enable_thinking: bool | None = None,
         is_stream: bool = False,
+        **kwargs: object,
     ) -> Any:
         """为集成测试返回假 Runnable，并确保它调用实例上的补全方法以便支持测试特定的 monkeypatch。"""
-        del api_key, base_url, timeout_seconds, is_stream
+        del messages, api_key, base_url, timeout_seconds, is_stream, kwargs
         llm_instance = self
 
         class FakeLLM(BaseChatModel):

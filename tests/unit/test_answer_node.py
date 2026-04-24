@@ -551,3 +551,124 @@ async def test_answer_node_regenerates_summary_for_multi_step_answer(
         assert persisted_messages[0].content == "测试模型回答：根据政策和路线结果生成统一总结。"
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_answer_node_renders_network_report_with_llm_summary_and_stable_table(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """非对比类路网报表应直接走确定性渲染，不再依赖 LLM 拆表。"""
+
+    def fail_create_runnable(*args, **kwargs) -> None:
+        del args, kwargs
+        raise AssertionError("network_report 直出路径不应调用 LLM")
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_runnable",
+        fail_create_runnable,
+    )
+
+    captured_messages: dict[str, object] = {}
+
+    async def fake_create_chat_completion(self: object, **kwargs: object) -> AIMessage:
+        del self
+        captured_messages.update(kwargs)
+        return AIMessage(
+            content="当前全网以局部管控为主，甬金高速金华段需重点关注。",
+            response_metadata={"finish_reason": "stop", "model_name": "test-model"},
+            usage_metadata={"input_tokens": 21, "output_tokens": 12, "total_tokens": 33},
+        )
+
+    monkeypatch.setattr(
+        "app.clients.llm_client.LlmClient.create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{(tmp_path / 'answer-node-report.db').as_posix()}"
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with session_factory() as db_session:
+        answer_node = AnswerNode(db_session)
+        result = await answer_node.run(
+            {
+                "session_id": "session-report-001",
+                "prepared_context": PreparedContext(
+                    messages=[],
+                    used_session_memory=False,
+                    report_context=(
+                        "以下是完整 report_content\n"
+                        "查询时间：2026-03-31 09:00:00\n"
+                        "主线管制：G1512 宁波方向单向封道\n"
+                        "收费站管制：佛堂收费站、徐村收费站"
+                    ),
+                ),
+                "execution_plan": ExecutionPlan(
+                    primary_category="network_report",
+                    execution_mode="single_step",
+                    recommended_route="report",
+                ),
+                "step_results": {
+                    "report_1": ExecutorResult(
+                        step_id="report_1",
+                        executor="report",
+                        is_success=True,
+                        normalized_result={
+                            "congestion_total_mile": 0,
+                            "congestion_top_items": [],
+                            "control_top_items": [
+                                {
+                                    "roadId": "33171",
+                                    "roadGBCode": "G1512",
+                                    "roadName": "G1512甬金金华段",
+                                    "direction": 100701,
+                                    "directionName": "宁波方向",
+                                    "controlType": 10102,
+                                    "controlTypeName": "单向封道",
+                                    "des": "因协助地方双江湖湖底隧道施工需要，甬向佛堂分流开始",
+                                }
+                            ],
+                            "exit_top_items": [
+                                {
+                                    "roadId": "33171",
+                                    "roadName": "G1512甬金高速（金华段）",
+                                    "direction": 100701,
+                                    "directionName": "宁波方向",
+                                    "tollName": "佛堂收费站",
+                                    "entrance": 1,
+                                    "controlType": 10202,
+                                    "controlTypeName": "关闭",
+                                },
+                                {
+                                    "roadId": "33171",
+                                    "roadName": "G1512甬金高速（金华段）",
+                                    "direction": 100701,
+                                    "directionName": "宁波方向",
+                                    "tollName": "佛堂收费站",
+                                    "entrance": 0,
+                                    "entranceName": "出口",
+                                    "controlType": 10204,
+                                    "controlTypeName": "分流",
+                                },
+                            ],
+                        },
+                    )
+                },
+            }
+        )
+
+        assert result["final_result"].content.startswith("当前全网以局部管控为主，甬金高速金华段需重点关注。")
+        assert (
+            "| G1512 | 甬金高速 | 金华段 | 佛堂收费站，宁波方向入口关闭、出口分流 | 无 |"
+            in result["final_result"].content
+        )
+        assert (
+            "| G1512 | 甬金高速 | 金华段 | 无 | 宁波方向，单向封道，因协助地方双江湖湖底隧道施工需要 |"
+            in result["final_result"].content
+        )
+
+    await engine.dispose()

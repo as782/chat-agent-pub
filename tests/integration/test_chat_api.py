@@ -422,9 +422,8 @@ def test_chat_api_executes_report_query_via_live_tools(app_client: TestClient) -
     history_payload = history_response.json()
 
     assert response.status_code == 200
-    assert response_payload["choices"][0]["message"]["content"] == (
-        "测试模型回答：全路网整体运行平稳，北向略有缓行。"
-    )
+    content = response_payload["choices"][0]["message"]["content"]
+    assert "| roadCode | highwayName | roadSection | controls | traffic |" in content
     assert [message["role"] for message in history_payload["items"]] == ["user", "assistant"]
 
 

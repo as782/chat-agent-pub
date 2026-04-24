@@ -335,6 +335,282 @@ async def test_consume_graph_events_saves_checkpoint_after_stream_success() -> N
 
 
 @pytest.mark.asyncio
+async def test_consume_graph_events_emits_final_result_when_no_stream_chunks() -> None:
+    """如果图执行成功但没有任何增量 chunk，仍应把 final_result 内容通过 SSE 发出。"""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    service._session_repository = AsyncMock()
+    service._save_checkpoint_safely = AsyncMock()  # type: ignore[method-assign]
+
+    class _FakeGraph:
+        def stream_events(self, execution_request: object) -> AsyncIterator[dict[str, object]]:
+            del execution_request
+
+            async def _iterator() -> AsyncIterator[dict[str, object]]:
+                yield {"event": "on_chain_start", "name": "answer_node", "data": {}}
+                yield {"event": "on_chain_end", "name": "answer_node", "data": {}}
+                yield {
+                    "event": "on_chain_end",
+                    "name": "LangGraph",
+                    "data": {
+                        "output": {
+                            "final_result": _build_turn_result(),
+                            "checkpoint_payload": {"checkpoint_id": "cp-final-only"},
+                        }
+                    },
+                }
+
+            return _iterator()
+
+    service._conversation_graph = _FakeGraph()  # type: ignore[assignment]
+
+    payloads = [
+        payload
+        async for payload in service._consume_graph_events(
+            execution_request=SimpleNamespace(session_id="session-001", model_name="test-model"),
+            request_id="req-final-only",
+            request_start_time=0.0,
+            prepare_duration_ms=1.0,
+        )
+    ]
+    response_body = "".join(payloads)
+
+    assert '"content": "测试模型回答：你好"' in response_body
+    assert '"finish_reason": "stop"' in response_body
+    assert response_body.endswith("data: [DONE]\n\n")
+    service._session_repository.update_timestamp.assert_awaited_once_with("session-001")
+    db_session.commit.assert_awaited_once()
+    service._save_checkpoint_safely.assert_awaited_once_with({"checkpoint_id": "cp-final-only"})
+
+
+@pytest.mark.asyncio
+async def test_consume_graph_events_emits_table_suffix_after_streamed_summary() -> None:
+    """前面已经流出总结时，final_result 中额外的表格尾巴仍应在 DONE 前补发。"""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    service._session_repository = AsyncMock()
+    service._save_checkpoint_safely = AsyncMock()  # type: ignore[method-assign]
+
+    summary_text = "当前全路网监测到12处收费站管控、11处主线管制、3处缓行事件，整体以局部异常为主。"
+    table_markdown = (
+        "\n\n| roadCode | highwayName | roadSection | controls | traffic |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| G1512 | 甬金高速 | 金华段 | 佛堂收费站，宁波方向入口关闭、出口分流 | 无 |"
+    )
+    final_text = f"{summary_text}{table_markdown}"
+
+    class _FakeGraph:
+        def stream_events(self, execution_request: object) -> AsyncIterator[dict[str, object]]:
+            del execution_request
+
+            async def _iterator() -> AsyncIterator[dict[str, object]]:
+                yield {"event": "on_chain_start", "name": "answer_node", "data": {}}
+                yield {
+                    "event": "on_chat_model_stream",
+                    "name": "FakeLLM",
+                    "data": {
+                        "chunk": AIMessageChunk(
+                            content=summary_text,
+                            response_metadata={"model_name": "test-model"},
+                        )
+                    },
+                }
+                yield {"event": "on_chain_end", "name": "answer_node", "data": {}}
+                yield {
+                    "event": "on_chain_end",
+                    "name": "LangGraph",
+                    "data": {
+                        "output": {
+                            "final_result": ChatTurnResult(
+                                session_id="session-001",
+                                content=final_text,
+                                model_name="test-model",
+                                prompt_tokens=12,
+                                completion_tokens=8,
+                                total_tokens=20,
+                                finish_reason="stop",
+                                route="answer",
+                            ),
+                            "checkpoint_payload": {"checkpoint_id": "cp-report-tail"},
+                        }
+                    },
+                }
+
+            return _iterator()
+
+    service._conversation_graph = _FakeGraph()  # type: ignore[assignment]
+
+    payloads = [
+        payload
+        async for payload in service._consume_graph_events(
+            execution_request=SimpleNamespace(session_id="session-001", model_name="test-model"),
+            request_id="req-report-tail",
+            request_start_time=0.0,
+            prepare_duration_ms=1.0,
+        )
+    ]
+    response_body = "".join(payloads)
+
+    assert response_body.count(summary_text) == 1
+    assert "| roadCode | highwayName | roadSection | controls | traffic |" in response_body
+    assert response_body.index("| roadCode | highwayName | roadSection | controls | traffic |") > response_body.index(summary_text)
+    assert response_body.rfind("| roadCode | highwayName | roadSection | controls | traffic |") < response_body.rfind('"finish_reason": "stop"')
+    assert response_body.endswith("data: [DONE]\n\n")
+    service._session_repository.update_timestamp.assert_awaited_once_with("session-001")
+    db_session.commit.assert_awaited_once()
+    service._save_checkpoint_safely.assert_awaited_once_with({"checkpoint_id": "cp-report-tail"})
+
+
+@pytest.mark.asyncio
+async def test_consume_graph_events_emits_table_suffix_when_streamed_summary_is_unprefixed() -> None:
+    """如果流里只发了原始摘要，而 final_result 加了播报前缀，也应补发表格尾巴。"""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    service._session_repository = AsyncMock()
+    service._save_checkpoint_safely = AsyncMock()  # type: ignore[method-assign]
+
+    streamed_summary = "当前全路网监测到12处收费站管控、11处主线管制、3处缓行事件，整体以局部异常为主。"
+    final_text = (
+        f"{streamed_summary}\n\n"
+        "| roadCode | highwayName | roadSection | controls | traffic |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| G1512 | 甬金高速 | 金华段 | 佛堂收费站，宁波方向入口关闭、出口分流 | 无 |"
+    )
+
+    class _FakeGraph:
+        def stream_events(self, execution_request: object) -> AsyncIterator[dict[str, object]]:
+            del execution_request
+
+            async def _iterator() -> AsyncIterator[dict[str, object]]:
+                yield {"event": "on_chain_start", "name": "answer_node", "data": {}}
+                yield {
+                    "event": "on_chat_model_stream",
+                    "name": "FakeLLM",
+                    "data": {
+                        "chunk": AIMessageChunk(
+                            content=streamed_summary,
+                            response_metadata={"model_name": "test-model"},
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "LangGraph",
+                    "data": {
+                        "output": {
+                            "final_result": ChatTurnResult(
+                                session_id="session-001",
+                                content=final_text,
+                                model_name="test-model",
+                                prompt_tokens=12,
+                                completion_tokens=8,
+                                total_tokens=20,
+                                finish_reason="stop",
+                                route="answer",
+                            ),
+                            "checkpoint_payload": {"checkpoint_id": "cp-report-tail-prefix"},
+                        }
+                    },
+                }
+
+            return _iterator()
+
+    service._conversation_graph = _FakeGraph()  # type: ignore[assignment]
+
+    payloads = [
+        payload
+        async for payload in service._consume_graph_events(
+            execution_request=SimpleNamespace(session_id="session-001", model_name="test-model"),
+            request_id="req-report-tail-prefix",
+            request_start_time=0.0,
+            prepare_duration_ms=1.0,
+        )
+    ]
+    response_body = "".join(payloads)
+
+    assert response_body.count(streamed_summary) == 1
+    assert "| roadCode | highwayName | roadSection | controls | traffic |" in response_body
+    assert response_body.endswith("data: [DONE]\n\n")
+    service._session_repository.update_timestamp.assert_awaited_once_with("session-001")
+    db_session.commit.assert_awaited_once()
+    service._save_checkpoint_safely.assert_awaited_once_with({"checkpoint_id": "cp-report-tail-prefix"})
+
+
+@pytest.mark.asyncio
+async def test_consume_graph_events_accepts_serialized_final_result() -> None:
+    """如果 root output 里的 final_result 被序列化成 dict，流式补表也应继续工作。"""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    service._session_repository = AsyncMock()
+    service._save_checkpoint_safely = AsyncMock()  # type: ignore[method-assign]
+
+    summary_text = "当前全路网监测到1处收费站管控，整体以局部异常为主。"
+    final_text = f"{summary_text}\n\n| roadCode | highwayName | roadSection | controls | traffic |\n| --- | --- | --- | --- | --- |\n| G1512 | 甬金高速 | 金华段 | 佛堂收费站，宁波方向入口关闭、出口分流 | 无 |"
+
+    class _FakeGraph:
+        def stream_events(self, execution_request: object) -> AsyncIterator[dict[str, object]]:
+            del execution_request
+
+            async def _iterator() -> AsyncIterator[dict[str, object]]:
+                yield {"event": "on_chain_start", "name": "answer_node", "data": {}}
+                yield {
+                    "event": "on_chat_model_stream",
+                    "name": "FakeLLM",
+                    "data": {
+                        "chunk": AIMessageChunk(
+                            content=summary_text,
+                            response_metadata={"model_name": "test-model"},
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "LangGraph",
+                    "data": {
+                        "output": {
+                            "final_result": {
+                                "session_id": "session-001",
+                                "content": final_text,
+                                "model_name": "test-model",
+                                "prompt_tokens": 12,
+                                "completion_tokens": 8,
+                                "total_tokens": 20,
+                                "finish_reason": "stop",
+                                "route": "answer",
+                            },
+                            "checkpoint_payload": {"checkpoint_id": "cp-serialized-final"},
+                        }
+                    },
+                }
+
+            return _iterator()
+
+    service._conversation_graph = _FakeGraph()  # type: ignore[assignment]
+
+    payloads = [
+        payload
+        async for payload in service._consume_graph_events(
+            execution_request=SimpleNamespace(session_id="session-001", model_name="test-model"),
+            request_id="req-serialized-final",
+            request_start_time=0.0,
+            prepare_duration_ms=1.0,
+        )
+    ]
+    response_body = "".join(payloads)
+
+    assert summary_text in response_body
+    assert "| roadCode | highwayName | roadSection | controls | traffic |" in response_body
+    assert response_body.endswith("data: [DONE]\n\n")
+    service._session_repository.update_timestamp.assert_awaited_once_with("session-001")
+    db_session.commit.assert_awaited_once()
+    service._save_checkpoint_safely.assert_awaited_once_with({"checkpoint_id": "cp-serialized-final"})
+
+
+@pytest.mark.asyncio
 async def test_consume_graph_events_streams_error_after_first_payload() -> None:
     """首个 payload 之后异常时应输出流式错误并补 DONE。"""
 

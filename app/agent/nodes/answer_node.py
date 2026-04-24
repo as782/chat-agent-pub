@@ -12,6 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context_builder import ContextBuilder
 from app.agent.history_utils import MAX_CONTEXT_MESSAGES
+from app.agent.network_report_renderer import (
+    RenderedNetworkReport,
+    build_network_report_render_result,
+    coerce_executor_result,
+)
 from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     GENERAL_ANSWER_PROMPT,
@@ -41,6 +46,19 @@ from app.agent.tool_traffic_intent import  looks_like_traffic_query_v1
 LOGGER = get_logger(__name__)
 
 RECENT_CONTEXT_WINDOW_SIZE = MAX_CONTEXT_MESSAGES
+NETWORK_REPORT_BROADCAST_PROMPT = """你是高速路网播报总结助手。
+
+你会收到完整的 report_content 上下文，它已经包含查询时间、拥堵汇总、主线管制和收费站管制的结构化文本。
+
+你的任务只有一个：基于整个 report_content 做 1-2 句中文播报总结。
+
+输出要求：
+1. 只输出播报正文，不要输出 Markdown 表格，不要重复字段名。
+2. 不要输出“AI播报总结：”“总结如下”等前缀。
+3. 优先概括全网整体态势，再点出最需要关注的异常类型或重点路段。
+4. 不要编造上下文里没有的信息，不要输出内部字段名或分析过程。
+5. 如果上下文显示整体平稳，也要直接给出自然中文播报。
+"""
 _PROMPT_NAME_BY_CATEGORY = {
     "composite": "COMPOSITE_ANSWER_PROMPT",
     "policy": "POLICY_SUMMARY_PROMPT",
@@ -143,110 +161,150 @@ class AnswerNode:
     ) -> dict[str, object]:
         """执行普通回答节点主逻辑。"""
 
-        prepared_context = state.get("prepared_context")
-        if isinstance(prepared_context, PreparedContext):
-            prepared_context_state: dict[str, PreparedContext] = {
-                "prepared_context": prepared_context
-            }
-        else:
-            prepared_context_state = await self.prepare_context_state(state)
-            prepared_context = prepared_context_state["prepared_context"]
-
-        completion_result = state.get("tool_completion_result")
-        executed_tool_calls = self._extract_executed_tool_calls(state)
-        existing_tool_completion_result = completion_result
-        should_reuse_existing_completion = isinstance(
-            completion_result,
-            AIMessage,
-        ) and not self.should_generate_summary(state)
-
-        if not should_reuse_existing_completion:
-            execution_request = self.build_execution_request_from_state(state)
-            llm_messages = self._llm_client._build_langchain_messages(
-                prepared_context.messages,
-                model_name=execution_request.model_name,
-            )
-            runnable = self._llm_client.create_runnable(
-                messages=prepared_context.messages,
-                model_name=execution_request.model_name,
-                api_key=(
-                    self._settings.openai_api_key.get_secret_value()
-                    if self._settings.openai_api_key
-                    else None
+        network_report_render = self._build_network_report_render_result(state)
+        if AnswerNode._resolve_answer_topic(state) == "network_report":
+            step_results = state.get("step_results")
+            if isinstance(step_results, dict):
+                step_result_keys = ",".join(sorted(str(step_id) for step_id in step_results))
+            else:
+                step_result_keys = type(step_results).__name__
+            LOGGER.info(
+                (
+                    "Network report probe: scheduled_route=%s route=%s current_step_id=%s "
+                    "step_result_keys=%s prepared_context_present=%s render_ready=%s"
                 ),
-                base_url=self._settings.openai_base_url,
-                timeout_seconds=self._settings.openai_timeout_seconds,
-                enable_thinking=execution_request.enable_thinking,
-                is_stream=True,
+                state.get("scheduled_route"),
+                state.get("route"),
+                state.get("current_step_id"),
+                step_result_keys,
+                isinstance(state.get("prepared_context"), PreparedContext),
+                network_report_render is not None,
             )
-
-            completion_result: AIMessageChunk | None = None
-            received_any_chunk = False
-            accumulated_content = ""
-            accumulated_reasoning = ""
-            has_reasoning_field = False
-            
-            async for chunk in runnable.astream(llm_messages, config=config):
-                received_any_chunk = True
-                if completion_result is None:
-                    completion_result = chunk
-                else:
-                    completion_result = completion_result + chunk
-                
-                # 累积内容用于检查
-                if hasattr(chunk, 'content') and chunk.content:
-                    accumulated_content += chunk.content
-                if hasattr(chunk, 'additional_kwargs') and chunk.additional_kwargs:
-                    if 'reasoning_content' in chunk.additional_kwargs:
-                        has_reasoning_field = True
-                        reasoning = chunk.additional_kwargs['reasoning_content']
-                        if reasoning:  # 只有非空时才累积
-                            accumulated_reasoning += reasoning
-
-            # 检查是否有实际内容或reasoning字段
-            has_content_or_reasoning = bool(accumulated_content or accumulated_reasoning or has_reasoning_field)
-
-            # 区分 "没收到任何chunk" 和 "只收到thinking chunks的情况"
-            if completion_result is None:
-                if received_any_chunk:
-                    # 收到了 chunks 但都被过滤/为空（可能是纯 thinking 模式）
-                    LOGGER.warning(
-                        "大模型返回了 chunks 但无法构建 completion_result。"
-                        "这可能是因为启用了 thinking 模式且模型只返回了思考内容。"
-                    )
-                    raise AppException(
-                        "大模型返回了响应但无法处理（可能是纯思考内容）。",
-                        error_code="invalid_llm_response",
-                    )
-                else:
-                    # 完全没收到任何 chunk
-                    raise AppException(
-                        "大模型未返回任何响应内容。",
-                        error_code="invalid_llm_response",
-                    )
-            
-            # 如果只有 reasoning_content 没有 content，也认为是有效的响应
-            if not has_content_or_reasoning and completion_result:
-                # 再次检查最终结果（以防万一）
-                if hasattr(completion_result, 'additional_kwargs') and completion_result.additional_kwargs:
-                    if 'reasoning_content' in completion_result.additional_kwargs and completion_result.additional_kwargs['reasoning_content']:
-                        has_content_or_reasoning = True
-                
-                if not has_content_or_reasoning:
-                    LOGGER.warning(
-                        "大模型返回的响应不包含有效内容（content 或 reasoning_content 都为空，且没有 reasoning_content 字段）。"
-                        "累积内容: content='%s', reasoning='%s', has_reasoning_field=%s",
-                        accumulated_content[:100],
-                        accumulated_reasoning[:100],
-                        has_reasoning_field
-                    )
-                    raise AppException(
-                        "大模型返回的响应不包含有效内容。",
-                        error_code="invalid_llm_response",
-                    )
+            if network_report_render is None:
+                LOGGER.warning(
+                    "Network report renderer returned None; falling back to generic answer path."
+                )
+        if network_report_render is not None:
+            prepared_context_state = self._prepare_network_report_context_state(state)
+            prepared_context = prepared_context_state["prepared_context"]
+            completion_result = state.get("tool_completion_result")
+            executed_tool_calls = self._extract_executed_tool_calls(state)
+            include_table = self._should_include_network_report_table(state)
+            completion_result = await self._build_network_report_completion_result(
+                state=state,
+                prepared_context=prepared_context,
+                render_result=network_report_render,
+                include_table=include_table,
+            )
         else:
-            # 当复用现有完成结果时，仍然需要处理已执行的工具调用
-            completion_result = existing_tool_completion_result
+            prepared_context = state.get("prepared_context")
+            if isinstance(prepared_context, PreparedContext):
+                prepared_context_state = {"prepared_context": prepared_context}
+            else:
+                prepared_context_state = await self.prepare_context_state(state)
+                prepared_context = prepared_context_state["prepared_context"]
+
+            completion_result = state.get("tool_completion_result")
+            executed_tool_calls = self._extract_executed_tool_calls(state)
+            existing_tool_completion_result = completion_result
+            should_reuse_existing_completion = isinstance(
+                completion_result,
+                AIMessage,
+            ) and not self.should_generate_summary(state)
+
+            if not should_reuse_existing_completion:
+                execution_request = self.build_execution_request_from_state(state)
+                llm_messages = self._llm_client._build_langchain_messages(
+                    prepared_context.messages,
+                    model_name=execution_request.model_name,
+                )
+                runnable = self._llm_client.create_runnable(
+                    messages=prepared_context.messages,
+                    model_name=execution_request.model_name,
+                    api_key=(
+                        self._settings.openai_api_key.get_secret_value()
+                        if self._settings.openai_api_key
+                        else None
+                    ),
+                    base_url=self._settings.openai_base_url,
+                    timeout_seconds=self._settings.openai_timeout_seconds,
+                    enable_thinking=execution_request.enable_thinking,
+                    is_stream=True,
+                )
+
+                completion_result = None
+                received_any_chunk = False
+                accumulated_content = ""
+                accumulated_reasoning = ""
+                has_reasoning_field = False
+
+                async for chunk in runnable.astream(llm_messages, config=config):
+                    received_any_chunk = True
+                    if completion_result is None:
+                        completion_result = chunk
+                    else:
+                        completion_result = completion_result + chunk
+
+                    # 累积内容用于检查
+                    if hasattr(chunk, "content") and chunk.content:
+                        accumulated_content += chunk.content
+                    if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
+                        if "reasoning_content" in chunk.additional_kwargs:
+                            has_reasoning_field = True
+                            reasoning = chunk.additional_kwargs["reasoning_content"]
+                            if reasoning:  # 只有非空时才累积
+                                accumulated_reasoning += reasoning
+
+                # 检查是否有实际内容或reasoning字段
+                has_content_or_reasoning = bool(
+                    accumulated_content or accumulated_reasoning or has_reasoning_field
+                )
+
+                # 区分 "没收到任何chunk" 和 "只收到thinking chunks的情况"
+                if completion_result is None:
+                    if received_any_chunk:
+                        # 收到了 chunks 但都被过滤/为空（可能是纯 thinking 模式）
+                        LOGGER.warning(
+                            "大模型返回了 chunks 但无法构建 completion_result。"
+                            "这可能是因为启用了 thinking 模式且模型只返回了思考内容。"
+                        )
+                        raise AppException(
+                            "大模型返回了响应但无法处理（可能是纯思考内容）。",
+                            error_code="invalid_llm_response",
+                        )
+                    else:
+                        # 完全没收到任何 chunk
+                        raise AppException(
+                            "大模型未返回任何响应内容。",
+                            error_code="invalid_llm_response",
+                        )
+
+                # 如果只有 reasoning_content 没有 content，也认为是有效的响应
+                if not has_content_or_reasoning and completion_result:
+                    # 再次检查最终结果（以防万一）
+                    if (
+                        hasattr(completion_result, "additional_kwargs")
+                        and completion_result.additional_kwargs
+                        and "reasoning_content" in completion_result.additional_kwargs
+                        and completion_result.additional_kwargs["reasoning_content"]
+                    ):
+                        has_content_or_reasoning = True
+
+                    if not has_content_or_reasoning:
+                        LOGGER.warning(
+                            "大模型返回的响应不包含有效内容（content 或 reasoning_content 都为空，且没有 reasoning_content 字段）。"
+                            "累积内容: content='%s', reasoning='%s', has_reasoning_field=%s",
+                            accumulated_content[:100],
+                            accumulated_reasoning[:100],
+                            has_reasoning_field,
+                        )
+                        raise AppException(
+                            "大模型返回的响应不包含有效内容。",
+                            error_code="invalid_llm_response",
+                        )
+            else:
+                # 当复用现有完成结果时，仍然需要处理已执行的工具调用
+                completion_result = existing_tool_completion_result
 
         final_result = await self.persist_completion_result(
             session_id=str(state["session_id"]),
@@ -257,6 +315,21 @@ class AnswerNode:
         return {
             **prepared_context_state,
             "final_result": final_result,
+        }
+
+    @staticmethod
+    def _prepare_network_report_context_state(state: AgentState) -> dict[str, PreparedContext]:
+        prepared_context = state.get("prepared_context")
+        if isinstance(prepared_context, PreparedContext):
+            return {"prepared_context": prepared_context}
+
+        report_context = state.get("report_context")
+        return {
+            "prepared_context": PreparedContext(
+                messages=[],
+                used_session_memory=False,
+                report_context=report_context if isinstance(report_context, str) else None,
+            )
         }
 
     async def _prepare_context(
@@ -301,7 +374,7 @@ class AnswerNode:
 
         execution_request = self._build_execution_request_from_state(state)
         answer_instruction = self._resolve_answer_instruction(state)
-        max_turns = 2 if state.get("primary_category") == "network_report" else 1
+        max_turns = 1
         LOGGER.info(
             "Answer prompt selected: category=%s prompt=%s current_step_id=%s",
             state.get("primary_category", "general"),
@@ -572,6 +645,156 @@ class AnswerNode:
         )
 
     @staticmethod
+    def _build_network_report_render_result(state: AgentState) -> RenderedNetworkReport | None:
+        answer_topic = AnswerNode._resolve_answer_topic(state)
+        if answer_topic != "network_report":
+            LOGGER.info(
+                "Network report renderer skipped: answer_topic=%s scheduled_route=%s current_step_id=%s",
+                answer_topic,
+                state.get("scheduled_route"),
+                state.get("current_step_id"),
+            )
+            return None
+
+        step_results = state.get("step_results", {})
+        if not isinstance(step_results, dict):
+            LOGGER.warning(
+                "Network report renderer skipped: step_results is not a dict, actual_type=%s",
+                type(step_results).__name__,
+            )
+            return None
+        typed_step_results = {}
+        for step_id, result in step_results.items():
+            if not isinstance(step_id, str):
+                continue
+            normalized_result = coerce_executor_result(step_id, result)
+            if normalized_result is not None:
+                typed_step_results[step_id] = normalized_result
+        if not typed_step_results:
+            LOGGER.warning(
+                "Network report renderer skipped: no usable executor results, step_result_keys=%s",
+                ",".join(sorted(str(step_id) for step_id in step_results)),
+            )
+            return None
+        render_result = build_network_report_render_result(typed_step_results)
+        if render_result is None:
+            LOGGER.warning(
+                "Network report renderer returned None after coercion, step_result_keys=%s",
+                ",".join(sorted(str(step_id) for step_id in typed_step_results)),
+            )
+            return None
+        LOGGER.info(
+            "Network report renderer ready: rows=%s summary_chars=%s step_result_keys=%s",
+            len(render_result.rows),
+            len(render_result.summary),
+            ",".join(sorted(str(step_id) for step_id in typed_step_results)),
+        )
+        return render_result
+
+    async def _build_network_report_completion_result(
+        self,
+        *,
+        state: AgentState,
+        prepared_context: PreparedContext,
+        render_result: RenderedNetworkReport,
+        include_table: bool,
+    ) -> AIMessage:
+        summary_message = await self._generate_network_report_broadcast_summary(
+            state=state,
+            prepared_context=prepared_context,
+        )
+        if summary_message is None:
+            if include_table:
+                return AIMessage(
+                    content=render_result.to_markdown(),
+                    response_metadata={
+                        "finish_reason": "stop",
+                        "model_name": "network-report-renderer",
+                    },
+                    usage_metadata={
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                )
+            return AIMessage(
+                content=render_result.summary,
+                response_metadata={
+                    "finish_reason": "stop",
+                    "model_name": "network-report-renderer",
+                },
+                usage_metadata={
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+
+        summary_text = self._normalize_network_report_summary_text(
+            self._extract_message_text(summary_message)
+        ) or render_result.summary
+        summary_text = AnswerNode._strip_network_report_summary_prefix(summary_text)
+        if not include_table:
+            return AIMessage(
+                content=summary_text,
+                response_metadata={
+                    **(summary_message.response_metadata or {}),
+                    "finish_reason": str(
+                        (summary_message.response_metadata or {}).get("finish_reason") or "stop"
+                    ),
+                },
+                usage_metadata=summary_message.usage_metadata,
+                additional_kwargs=getattr(summary_message, "additional_kwargs", None) or {},
+            )
+        return AIMessage(
+            content=f"{summary_text}\n\n{render_result.table_markdown}",
+            response_metadata={
+                **(summary_message.response_metadata or {}),
+                "finish_reason": str(
+                    (summary_message.response_metadata or {}).get("finish_reason") or "stop"
+                ),
+            },
+            usage_metadata=summary_message.usage_metadata,
+            additional_kwargs=getattr(summary_message, "additional_kwargs", None) or {},
+        )
+
+    async def _generate_network_report_broadcast_summary(
+        self,
+        *,
+        state: AgentState,
+        prepared_context: PreparedContext,
+    ) -> AIMessage | None:
+        report_context = prepared_context.report_context or state.get("report_context")
+        if not isinstance(report_context, str) or not report_context.strip():
+            return None
+
+        execution_request = self.build_execution_request_from_state(state)
+        return await self._llm_client.create_chat_completion(
+            messages=[
+                LlmInputMessage(role="system", content=NETWORK_REPORT_BROADCAST_PROMPT),
+                LlmInputMessage(role="system", content=report_context),
+                LlmInputMessage(
+                    role="user",
+                    content="请基于完整报表上下文输出1-2句路网播报总结。",
+                ),
+            ],
+            model_name=execution_request.model_name,
+            api_key=(
+                self._settings.openai_api_key.get_secret_value()
+                if self._settings.openai_api_key
+                else None
+            ),
+            base_url=self._settings.openai_base_url,
+            timeout_seconds=self._settings.openai_timeout_seconds,
+            enable_thinking=execution_request.enable_thinking,
+        )
+
+    @staticmethod
+    def _should_include_network_report_table(state: AgentState) -> bool:
+        del state
+        return True
+
+    @staticmethod
     def _extract_message_text(message: AIMessage) -> str:
         """将 AIMessage 的内容稳定归一化为纯文本。"""
 
@@ -586,6 +809,47 @@ class AnswerNode:
                     text_parts.append(str(part))
             return "".join(text_parts)
         return str(message.content)
+
+    @staticmethod
+    def _normalize_network_report_summary_text(text: str) -> str:
+        normalized_text = text.strip()
+        for prefix in (
+            "AI播报总结：",
+            "AI播报总结:",
+            "播报总结：",
+            "播报总结:",
+            "总结：",
+            "总结:",
+        ):
+            if normalized_text.startswith(prefix):
+                normalized_text = normalized_text[len(prefix) :].strip()
+
+        normalized_lines: list[str] = []
+        for line in normalized_text.splitlines():
+            stripped_line = line.strip()
+            if not stripped_line:
+                if normalized_lines:
+                    break
+                continue
+            if stripped_line.startswith("|") or stripped_line.startswith("```"):
+                break
+            normalized_lines.append(stripped_line)
+        return " ".join(normalized_lines).strip()
+
+    @staticmethod
+    def _strip_network_report_summary_prefix(text: str) -> str:
+        normalized_text = text.strip()
+        for prefix in (
+            "AI播报总结：",
+            "AI播报总结:",
+            "播报总结：",
+            "播报总结:",
+            "总结：",
+            "总结:",
+        ):
+            if normalized_text.startswith(prefix):
+                normalized_text = normalized_text[len(prefix) :].strip()
+        return normalized_text
 
     @staticmethod
     def _extract_reasoning_text(message: AIMessage) -> str | None:
@@ -654,9 +918,11 @@ class AnswerNode:
         step_results = state.get("step_results", {})
         executed_executors: set[str] = set()
         if isinstance(step_results, dict):
-            for result in step_results.values():
-                if isinstance(result, ExecutorResult):
-                    executed_executors.add(result.executor)
+            for step_id, result in step_results.items():
+                if isinstance(step_id, str):
+                    normalized_result = coerce_executor_result(step_id, result)
+                    if normalized_result is not None:
+                        executed_executors.add(normalized_result.executor)
 
         if "report" in executed_executors or AnswerNode._looks_like_report_query(normalized_message):
             return "network_report"
@@ -699,9 +965,12 @@ class AnswerNode:
         step_results = state.get("step_results", {})
         executed_executors: set[str] = set()
         if isinstance(step_results, dict):
-            for result in step_results.values():
-                if isinstance(result, ExecutorResult) and result.executor != "answer":
-                    executed_executors.add(result.executor)
+            for step_id, result in step_results.items():
+                if not isinstance(step_id, str):
+                    continue
+                normalized_result = coerce_executor_result(step_id, result)
+                if normalized_result is not None and normalized_result.executor != "answer":
+                    executed_executors.add(normalized_result.executor)
         return executed_executors
 
     @staticmethod

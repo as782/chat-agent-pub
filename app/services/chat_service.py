@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field, replace
 from time import perf_counter
 from typing import Any
@@ -71,6 +71,7 @@ class _GraphStreamState:
     final_result: ChatTurnResult | None = None
     checkpoint_payload: dict[str, object] | None = None
     has_emitted_payload: bool = False
+    emitted_content: str = ""
     active_node_stack: list[str] = field(default_factory=list)
     visited_nodes: list[str] = field(default_factory=list)
     tool_round_chunks: list[AIMessageChunk] = field(default_factory=list) 
@@ -216,6 +217,22 @@ class ChatService:
 
         return _STREAM_NODE_ROLE_MAPPING.get(current_node or "", "assistant")
 
+    @staticmethod
+    def _extract_chunk_text(chunk: AIMessageChunk) -> str:
+        """把流式 chunk 的内容归一化为纯文本。"""
+
+        if isinstance(chunk.content, str):
+            return chunk.content
+        if isinstance(chunk.content, list):
+            text_parts: list[str] = []
+            for part in chunk.content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                else:
+                    text_parts.append(str(part))
+            return "".join(text_parts)
+        return str(chunk.content or "")
+
     async def _emit_stream_payloads(
         self,
         *,
@@ -224,11 +241,19 @@ class ChatService:
         chunk_builder: Any,
         chunks: list[AIMessageChunk],
         role: str,
+        track_emitted_content: bool = False,
+        include_finish_reason: bool = True,
     ) -> AsyncIterator[str]:
         """把 chunk 列表统一转换为 OpenAI 兼容 SSE。"""
 
         for emit_chunk in chunks:
-            for payload in chunk_builder.consume_chunk(emit_chunk, role=role):
+            if track_emitted_content:
+                stream_state.emitted_content += self._extract_chunk_text(emit_chunk)
+            for payload in chunk_builder.consume_chunk(
+                emit_chunk,
+                role=role,
+                include_finish_reason=include_finish_reason,
+            ):
                 if stream_state.first_payload_duration_ms is None:
                     stream_state.first_payload_duration_ms = (
                         perf_counter() - request_start_time
@@ -244,16 +269,61 @@ class ChatService:
     ) -> None:
         """从根图输出中提取最终结果与 checkpoint。"""
 
-        if not isinstance(output, dict):
+        if not isinstance(output, Mapping):
             return
 
         final_result = output.get("final_result")
-        if isinstance(final_result, ChatTurnResult):
-            stream_state.final_result = final_result
+        normalized_final_result = ChatService._coerce_chat_turn_result(final_result)
+        if normalized_final_result is not None:
+            stream_state.final_result = normalized_final_result
 
         checkpoint_payload = output.get("checkpoint_payload")
         if isinstance(checkpoint_payload, dict):
             stream_state.checkpoint_payload = checkpoint_payload
+
+    @staticmethod
+    def _coerce_chat_turn_result(value: object) -> ChatTurnResult | None:
+        """Normalize graph outputs that may serialize `ChatTurnResult` into a plain dict."""
+
+        if isinstance(value, ChatTurnResult):
+            return replace(
+                value,
+                content=ChatService._sanitize_network_report_content(value.content),
+            )
+        if not isinstance(value, Mapping):
+            return None
+
+        content = value.get("content")
+        model_name = value.get("model_name")
+        finish_reason = value.get("finish_reason")
+        if not isinstance(content, str) or not content.strip():
+            return None
+
+        try:
+            prompt_tokens = int(value.get("prompt_tokens") or 0)
+            completion_tokens = int(value.get("completion_tokens") or 0)
+            total_tokens = int(value.get("total_tokens") or (prompt_tokens + completion_tokens))
+        except (TypeError, ValueError):
+            return None
+
+        return ChatTurnResult(
+            session_id=str(value.get("session_id") or ""),
+            content=ChatService._sanitize_network_report_content(content),
+            model_name=str(model_name or ""),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            finish_reason=str(finish_reason or "stop"),
+            route=str(value.get("route") or "answer"),
+            reasoning_content=(
+                str(value["reasoning_content"])
+                if isinstance(value.get("reasoning_content"), str)
+                and str(value.get("reasoning_content")).strip()
+                else None
+            ),
+            tool_calls=[],
+            used_session_memory=bool(value.get("used_session_memory")),
+        )
 
     async def _prepare_chat_execution(
         self,
@@ -334,6 +404,8 @@ class ChatService:
                         chunk_builder=chunk_builder,
                         chunks=chunks_to_emit,
                         role=self._resolve_stream_chunk_role(runnable_name),
+                        track_emitted_content=False,
+                        include_finish_reason=True,
                     ):
                         yield payload
 
@@ -349,6 +421,8 @@ class ChatService:
                     chunk_builder=chunk_builder,
                     chunks=chunks_to_emit,
                     role=self._resolve_stream_chunk_role(current_node),
+                    track_emitted_content=current_node in _USER_VISIBLE_STREAM_NODES,
+                    include_finish_reason=current_node not in _USER_VISIBLE_STREAM_NODES,
                 ):
                     yield payload
 
@@ -357,6 +431,13 @@ class ChatService:
                         stream_state,
                         output=event["data"]["output"],
                     )
+
+            async for payload in self._emit_final_result_payload_if_needed(
+                stream_state=stream_state,
+                request_start_time=request_start_time,
+                chunk_builder=chunk_builder,
+            ):
+                yield payload
 
             for payload in chunk_builder.finalize():
                 stream_state.has_emitted_payload = True
@@ -412,9 +493,85 @@ class ChatService:
                 AppException(
                     "流式输出过程中发生内部异常。",
                     error_code="stream_error",
-                )
             )
-            yield "data: [DONE]\n\n"
+        )
+
+    @staticmethod
+    def _sanitize_network_report_content(content: str) -> str:
+        normalized_content = content.strip()
+        for prefix in (
+            "AI播报总结：",
+            "AI播报总结:",
+            "播报总结：",
+            "播报总结:",
+            "总结：",
+            "总结:",
+        ):
+            if normalized_content.startswith(prefix):
+                normalized_content = normalized_content[len(prefix) :].lstrip()
+        return normalized_content
+    async def _emit_final_result_payload_if_needed(
+        self,
+        *,
+        stream_state: _GraphStreamState,
+        request_start_time: float,
+        chunk_builder: object,
+    ) -> AsyncIterator[str]:
+        """在流结束时，把 final_result 中尚未发出的尾部内容补发出来。"""
+
+        final_result = stream_state.final_result
+        if final_result is None:
+            return
+
+        final_content = str(final_result.content or "")
+        if not final_content:
+            return
+
+        emitted_content = stream_state.emitted_content
+        if emitted_content and final_content.startswith(emitted_content):
+            payload_content = final_content[len(emitted_content) :]
+        elif emitted_content:
+            payload_content = self._extract_final_result_suffix_for_stream(
+                final_content=final_content,
+                emitted_content=emitted_content,
+            )
+            if payload_content is None:
+                return
+        elif not stream_state.has_emitted_payload:
+            payload_content = final_content
+        else:
+            return
+
+        if not payload_content:
+            return
+
+        if stream_state.first_payload_duration_ms is None:
+            stream_state.first_payload_duration_ms = (
+                perf_counter() - request_start_time
+            ) * 1000
+        stream_state.has_emitted_payload = True
+        yield chunk_builder._build_content_payload(payload_content)
+
+    @staticmethod
+    def _extract_final_result_suffix_for_stream(
+        *,
+        final_content: str,
+        emitted_content: str,
+    ) -> str | None:
+        """Handle report summaries whose final_result adds a fixed prefix after streaming raw summary text."""
+
+        for prefix in (
+            "AI播报总结：",
+            "AI播报总结:",
+            "播报总结：",
+            "播报总结:",
+        ):
+            if not final_content.startswith(prefix):
+                continue
+            stripped_content = final_content[len(prefix) :].lstrip("\n")
+            if stripped_content.startswith(emitted_content):
+                return stripped_content[len(emitted_content) :]
+        return None
 
     def _build_execution_request(
         self,
