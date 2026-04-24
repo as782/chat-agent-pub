@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from json import loads
 
+from app.agent.facility_catalog import load_default_facility_catalog
 from app.agent.prompts import SERVICE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
@@ -42,6 +43,14 @@ class ServiceNode:
             step_id=step_id,
             resolved_arguments=resolved_arguments,
         )
+        skipped_result = self._build_skipped_lookup_result(
+            state=state,
+            step_id=step_id,
+            resolved_arguments=resolved_arguments,
+            query_arguments=query_arguments,
+        )
+        if skipped_result is not None:
+            return skipped_result
         try:
             tool_output = await self._tool_registry.execute_named_tool(
                 tool_name="live_service_query",
@@ -95,6 +104,58 @@ class ServiceNode:
         return {
             "keyword": keyword,
             "service_area_names": service_area_names,
+        }
+
+    def _build_skipped_lookup_result(
+        self,
+        *,
+        state: AgentState,
+        step_id: str,
+        resolved_arguments: ResolvedArguments,
+        query_arguments: dict[str, object],
+    ) -> dict[str, object] | None:
+        """对明确点名但目录未命中的服务区，直接短路，避免误查附近站点。"""
+
+        arguments = resolved_arguments.arguments
+        service_name = str(arguments.get("service_name") or "").strip()
+        catalog_service_match = arguments.get("catalog_service_match")
+        if not service_name or catalog_service_match is not False:
+            return None
+
+        catalog = load_default_facility_catalog()
+        if catalog.best_service_keyword(service_name, source="service_node") is not None:
+            return None
+
+        executor_result = ExecutorResult(
+            step_id=step_id,
+            executor="service",
+            is_success=True,
+            raw_result={
+                "query_arguments": dict(query_arguments),
+                "api_result": [],
+                "lookup_skipped": True,
+            },
+            normalized_result={
+                "keyword": query_arguments.get("keyword"),
+                "query_service_name": service_name,
+                "result_count": 0,
+                "service_name": None,
+                "has_charging": False,
+                "charge_summary_count": 0,
+                "charge_brand_count": 0,
+                "charge_items": [],
+                "commercial_count": 0,
+                "commercial_items": [],
+                "tag_count": 0,
+                "tags": [],
+                "catalog_service_match": False,
+                "group_scope_miss": True,
+            },
+            summary="未命中集团服务区目录，已跳过服务区接口查询。",
+        )
+        return {
+            "service_context": self._build_service_scope_miss_context(service_name=service_name),
+            **merge_step_result(state, result=executor_result),
         }
 
     @staticmethod
@@ -195,6 +256,17 @@ class ServiceNode:
             )
 
         return "\n\n".join([SERVICE_CONTEXT_PROMPT_PREFIX.rstrip(), *service_blocks])
+
+    @staticmethod
+    def _build_service_scope_miss_context(*, service_name: str) -> str:
+        return "\n".join(
+            [
+                SERVICE_CONTEXT_PROMPT_PREFIX.rstrip(),
+                f"目录匹配结果：未查询到与“{service_name}”语义一致的集团服务区。",
+                "请直接回答：查询不到相关服务区，可能该服务区不在集团管辖范围内。",
+                "不要推荐附近服务区，不要做地理位置上的替代推断。",
+            ]
+        )
 
     @staticmethod
     def _build_service_context_blocks(response_payload: list[dict[str, object]]) -> list[str]:

@@ -129,6 +129,50 @@ async def test_argument_node_extracts_service_keywords() -> None:
 
 
 @pytest.mark.asyncio
+async def test_argument_node_normalizes_named_service_area_for_catalog_match() -> None:
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "衢州服务区状态",
+            "primary_category": "service_area",
+            "execution_plan": ExecutionPlan(
+                primary_category="service_area",
+                execution_mode="single_step",
+                recommended_route="service",
+            ),
+        }
+    )
+
+    resolved_arguments = result["resolved_arguments"]
+    assert resolved_arguments.arguments["service_name"] == "衢州服务区"
+    assert resolved_arguments.arguments["keyword"] == "衢州服务区"
+    assert resolved_arguments.arguments["catalog_service_match"] is True
+
+
+@pytest.mark.asyncio
+async def test_argument_node_marks_unknown_named_service_area_catalog_miss() -> None:
+    node = ArgumentNode()
+
+    result = await node.run(
+        {
+            "latest_user_message": "龙游服务区状态",
+            "primary_category": "service_area",
+            "execution_plan": ExecutionPlan(
+                primary_category="service_area",
+                execution_mode="single_step",
+                recommended_route="service",
+            ),
+        }
+    )
+
+    resolved_arguments = result["resolved_arguments"]
+    assert resolved_arguments.arguments["service_name"] == "龙游服务区"
+    assert resolved_arguments.arguments["keyword"] == "龙游服务区"
+    assert resolved_arguments.arguments["catalog_service_match"] is False
+
+
+@pytest.mark.asyncio
 async def test_argument_node_normalizes_traffic_road_from_restriction_phrase() -> None:
     """路况限制类表达应把 road 压缩成路段名，把限行对象留在 target。"""
 

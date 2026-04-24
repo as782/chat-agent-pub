@@ -12,6 +12,7 @@ from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
     ROUTE_SUMMARY_PROMPT,
+    SERVICE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
@@ -136,6 +137,11 @@ def test_traffic_prompts_require_detailed_event_breakdown() -> None:
     assert "核心要求" in COMPOSITE_ANSWER_PROMPT
     assert "综合回答器" in COMPOSITE_ANSWER_PROMPT
     assert "用户最关心的结论" in COMPOSITE_ANSWER_PROMPT
+
+
+def test_service_prompt_blocks_nearby_service_area_substitution_on_catalog_miss() -> None:
+    assert "不在集团管辖范围内" in SERVICE_SUMMARY_PROMPT
+    assert "不要推荐附近服务区" in SERVICE_SUMMARY_PROMPT
 
 
 def test_network_report_prompt_requires_strict_table_column_rules() -> None:

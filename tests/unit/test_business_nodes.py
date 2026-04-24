@@ -360,6 +360,46 @@ async def test_service_node_prefers_structured_service_name_over_raw_query() -> 
 
 
 @pytest.mark.asyncio
+async def test_service_node_skips_tool_for_unknown_named_service_area() -> None:
+    class _CapturingServiceToolRegistry(_FakeToolRegistry):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+            self.calls.append({"tool_name": tool_name, "arguments": dict(arguments)})
+            return await super().execute_named_tool(tool_name=tool_name, arguments=arguments)
+
+    tool_registry = _CapturingServiceToolRegistry()
+    node = ServiceNode(tool_registry=tool_registry)
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="service_area",
+                execution_mode="single_step",
+                recommended_route="service",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="service_area",
+                arguments={
+                    "query": "龙游服务区状态",
+                    "keyword": "龙游服务区",
+                    "service_name": "龙游服务区",
+                    "catalog_service_match": False,
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls == []
+    assert "不在集团管辖范围内" in result["service_context"]
+    normalized_result = result["step_results"]["service_1"].normalized_result
+    assert normalized_result["result_count"] == 0
+    assert normalized_result["group_scope_miss"] is True
+    assert normalized_result["catalog_service_match"] is False
+
+
+@pytest.mark.asyncio
 async def test_report_node_builds_business_context() -> None:
     """报表节点应把结构化参数整理为上下文文本。"""
 

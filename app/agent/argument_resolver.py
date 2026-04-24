@@ -199,19 +199,91 @@ class ArgumentResolver:
 
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("service:",))
         catalog = load_default_facility_catalog()
-        keyword = catalog.best_service_keyword(normalized_query, source="resolver")
+        named_service_area = self._extract_named_service_area_candidate(normalized_query)
+        catalog_lookup_query = named_service_area or normalized_query
+        keyword = catalog.best_service_keyword(catalog_lookup_query, source="resolver")
+        service_terms = catalog.resolve_service_query_terms(catalog_lookup_query)
+
+        arguments: dict[str, object] = {"query": normalized_query}
+        if named_service_area is not None:
+            arguments["service_name"] = named_service_area
+            arguments["catalog_service_match"] = keyword is not None
+
+        if keyword is None and named_service_area is not None:
+            keyword = named_service_area
         if keyword is None:
             keyword = self._infer_service_keyword(normalized_query)
         if keyword is None:
             keyword = normalized_query.strip()
-        service_terms = catalog.resolve_service_query_terms(normalized_query)
-        arguments: dict[str, object] = {"query": normalized_query, "keyword": keyword}
+
+        arguments["keyword"] = keyword
         if service_terms:
             arguments["service_query_terms"] = service_terms
         return ResolvedArguments(
             category=category,
             arguments=arguments,
         )
+
+    @classmethod
+    def _extract_named_service_area_candidate(cls, message: str) -> str | None:
+        """提取用户明确指名的服务区/停车区名称，供目录强匹配使用。"""
+
+        if cls._extract_od_pair(message) is not None:
+            return None
+
+        cleaned_message = message.strip()
+        for token in (
+            "有没有充电桩",
+            "有没有快充",
+            "有没有慢充",
+            "充电桩多吗",
+            "充电桩够吗",
+            "充电方便吗",
+            "充电情况",
+            "充电状态",
+            "充电站",
+            "充电桩",
+            "加油站",
+            "商业配套",
+            "配套服务",
+            "配套",
+            "有什么",
+            "有哪些",
+            "状态",
+            "情况",
+            "信息",
+            "繁忙吗",
+            "拥堵吗",
+            "堵吗",
+            "空吗",
+            "多吗",
+            "如何",
+            "怎么样",
+            "是否正常",
+            "正常吗",
+            "吗",
+            "呢",
+            "？",
+            "?",
+        ):
+            cleaned_message = cleaned_message.replace(token, " ")
+        cleaned_message = " ".join(cleaned_message.split()).strip()
+
+        matches = re.findall(
+            r"([A-Za-z0-9\u4e00-\u9fff·\-\(\)（）]{2,20}(?:服务区|停车区))",
+            cleaned_message,
+        )
+        if not matches:
+            return None
+
+        candidate = max((match.strip() for match in matches if match.strip()), key=len, default="")
+        if not candidate:
+            return None
+        if any(token in candidate for token in ("哪些", "什么", "附近", "沿线", "沿途")):
+            return None
+        if re.match(r"^[GS]\d{1,4}", candidate, re.IGNORECASE):
+            return None
+        return candidate
 
     def _resolve_report_arguments(
         self,
