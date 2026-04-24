@@ -1,8 +1,21 @@
 """配置模块单元测试。"""
 
+import pytest
 from pytest import MonkeyPatch
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_cache() -> None:
+    """确保每个测试都重新从环境变量加载配置，且不受仓库 .env 干扰。"""
+
+    original_env_file = Settings.model_config.get("env_file")
+    Settings.model_config["env_file"] = None
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+    Settings.model_config["env_file"] = original_env_file
 
 
 def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> None:
@@ -35,12 +48,6 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
     monkeypatch.setenv("LIVE_AGENT_TIMEOUT_SECONDS", "18")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_ENABLED", "true")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_URL", "https://proxy.example/terminal_exec")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_TARGET_BASE_URL", "http://10.0.0.8:8081")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_TIMEOUT_SECONDS", "181")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_RETRIES", "4")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_CURL_BINARY", "curl.exe")
     monkeypatch.setenv("RAGFLOW_TIMEOUT_SECONDS", "22")
     monkeypatch.setenv("MCP_HTTP_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("MCP_SSE_TIMEOUT_SECONDS", "11")
@@ -75,12 +82,6 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.live_agent_base_url == "http://localhost:8081"
     assert settings.live_agent_timeout_seconds == 18.0
-    assert settings.live_agent_terminal_exec_enabled is True
-    assert settings.live_agent_terminal_exec_url == "https://proxy.example/terminal_exec"
-    assert settings.live_agent_terminal_target_base_url == "http://10.0.0.8:8081"
-    assert settings.live_agent_terminal_exec_timeout_seconds == 181
-    assert settings.live_agent_terminal_exec_retries == 4
-    assert settings.live_agent_terminal_exec_curl_binary == "curl.exe"
     assert settings.ragflow_timeout_seconds == 22.0
     assert settings.mcp_http_timeout_seconds == 9.0
     assert settings.mcp_sse_timeout_seconds == 11.0
@@ -121,6 +122,7 @@ def test_get_settings_disables_file_logging_by_default_in_test_env(
     """验证 test 环境默认不会启用日志文件落盘。"""
 
     monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("LOG_TO_FILE", raising=False)
 
     settings = get_settings()
 

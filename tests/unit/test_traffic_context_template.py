@@ -81,11 +81,11 @@ async def test_traffic_node_builds_template_style_traffic_context() -> None:
     traffic_context = result["traffic_context"]
     assert traffic_context is not None
     assert "道路名称：杭金衢高速 编号：G60，路况如下：" in traffic_context
-    assert "整体判断： 当前状态：拥堵/缓行与交通管制并存" in traffic_context
-    assert "拥堵/缓行：" in traffic_context
-    assert "K120~K128（上行）：金华方向缓行 | 缓行8公里 | 2026-04-15 08:00:00~2026-04-15 10:30:00" in traffic_context
+    assert "整体统计：拥堵/缓行事件：1条 ,交通管制事件：1条 , 异常收费站：1个 ,状态异常服务区 ：1个" in traffic_context
+    assert "拥堵/缓行列表：" in traffic_context
+    assert "K120-K128（上行）：金华方向缓行 | 缓行8公里 | 2026-04-15 08:00:00-2026-04-15 10:30:00" in traffic_context
     assert "交通管制列表：" in traffic_context
-    assert "K122~K124（上行）：施工占道 | 2026-04-15 07:30:00~2026-04-15 18:00:00 | 管制措施：封闭第一车道" in traffic_context
+    assert "K122-K124（上行）：施工占道 | 2026-04-15 07:30:00-2026-04-15 18:00:00 | 管制措施：封闭第一车道" in traffic_context
     assert "收费站列表：" in traffic_context
     assert "杭州北：入口关闭 / 出口限流" in traffic_context
     assert "服务区列表：" in traffic_context
@@ -102,3 +102,60 @@ def test_station_status_label_normalizes_int_and_string_codes() -> None:
     assert TrafficNode._normalize_status_code(1233) == "1233"
     assert TrafficNode._is_abnormal_station_status("0") is False
     assert TrafficNode._is_abnormal_station_status("10202") is True
+
+
+def test_focus_query_block_includes_matched_toll_station_status_and_related_controls() -> None:
+    response_payload = [
+        {
+            "roadName": "G1512甬金高速（金华段）",
+            "roadGbCode": "G1512",
+            "trafficControlList": [
+                {
+                    "des": "G1512甬金高速（金华段）发生协助处理，佛堂收费站宁波方向出口分流",
+                    "directionType": "02",
+                    "beginTime": "2026-04-24 10:00:00",
+                }
+            ],
+            "exitInfoList": [
+                {
+                    "tollName": "蔡宅收费站",
+                    "entranceStatus": 0,
+                    "exportStatus": 0,
+                },
+                {
+                    "tollName": "佛堂收费站",
+                    "entranceStatus": 0,
+                    "exportStatus": 10204,
+                },
+            ],
+        }
+    ]
+
+    focus_block = TrafficNode._build_focus_query_block(
+        query_arguments={
+            "toll_station": "佛堂收费站",
+            "direction": "宁波方向",
+        },
+        response_payload=response_payload,
+    )
+
+    assert focus_block is not None
+    assert "收费站：佛堂收费站" in focus_block
+    assert "用户关注方向/部位：宁波方向" in focus_block
+    assert "佛堂收费站（G1512甬金高速（金华段））：入口开启 / 出口分流" in focus_block
+    assert "佛堂收费站宁波方向出口分流" in focus_block
+
+
+def test_prioritize_exit_items_moves_target_station_to_front() -> None:
+    exit_items = [
+        {"toll_name": "蔡宅收费站", "entrance_status": 0, "export_status": 0},
+        {"toll_name": "佛堂收费站", "entrance_status": 0, "export_status": 10204},
+        {"toll_name": "东阳收费站", "entrance_status": 0, "export_status": 0},
+    ]
+
+    prioritized_items = TrafficNode._prioritize_exit_items(
+        exit_items,
+        query_arguments={"toll_station": "佛堂站口"},
+    )
+
+    assert prioritized_items[0]["toll_name"] == "佛堂收费站"

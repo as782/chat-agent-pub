@@ -159,21 +159,9 @@ OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 PLANNER_MODEL=qwen-plus
 
 LIVE_AGENT_BASE_URL=http://xxx:8081
-LIVE_AGENT_TERMINAL_EXEC_ENABLED=false
 
 MCP_SERVERS_JSON=[{"mcpServers":{"amap-maps-sse":{"url":"https://mcp.amap.com/sse?key=xxx"}}}]
 
-```
-
-开发环境如果不能直连监控网四个 live-agent 接口，可以打开
-`LIVE_AGENT_TERMINAL_EXEC_ENABLED=true`，并配置：
-
-```env
-LIVE_AGENT_TERMINAL_EXEC_URL=https://frp-sea.com:28965/api/v1/mcp/terminal_exec
-LIVE_AGENT_TERMINAL_TARGET_BASE_URL=http://33.69.9.33:8081
-LIVE_AGENT_TERMINAL_EXEC_TIMEOUT_SECONDS=180
-LIVE_AGENT_TERMINAL_EXEC_RETRIES=3
-LIVE_AGENT_TERMINAL_EXEC_CURL_BINARY=curl
 ```
 
 如果使用 Qwen3 一类兼容模型，项目会在非流式场景下自动补 `enable_thinking=false`，避免常见兼容网关报错。

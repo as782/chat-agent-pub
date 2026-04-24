@@ -12,6 +12,7 @@ from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
     ROUTE_SUMMARY_PROMPT,
+    SERVICE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
@@ -138,42 +139,44 @@ def test_traffic_prompts_require_detailed_event_breakdown() -> None:
     assert "用户最关心的结论" in COMPOSITE_ANSWER_PROMPT
 
 
+def test_service_prompt_blocks_nearby_service_area_substitution_on_catalog_miss() -> None:
+    assert "不在集团管辖范围内" in SERVICE_SUMMARY_PROMPT
+    assert "不要推荐附近服务区" in SERVICE_SUMMARY_PROMPT
+
+
 def test_network_report_prompt_requires_strict_table_column_rules() -> None:
     assert (
         "| 序号 | 道路编号 | 高速名称 | 高速路段 | 收费站管控情况 | 路况 |"
         in NETWORK_REPORT_SUMMARY_PROMPT
     )
-    assert "序号：只能输出阿拉伯数字" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "道路编号：只能输出类似 G25、G60 这种道路编号" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "高速名称：只输出高速名称本身，不带前置编号" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "高速路段：只输出具体路段信息" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert (
-        "收费站管控情况：只写“收费站管制”汇总里的内容"
-        in NETWORK_REPORT_SUMMARY_PROMPT
-    )
+    assert "序号只能使用阿拉伯数字，从 1 开始连续递增。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "只输出道路编号，例如 G25、G60。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "只输出高速名称本身，不带道路编号。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "优先从道路名称括号中提取路段。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "数据来源仅限“收费站管制”" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "写表前先按“收费站名称 + 道路方向”分组" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "每条记录必须包含“收费站名称 + 道路方向 + 出入口 + 管控结果”" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "同一收费站、同一道路方向下如果有多个出入口或多个管控结果，要合并成一行" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "不要把主线管制里的任何管制类型/措施写进这一列" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "路况：只写非收费站管控的情况，来源仅限主线管制和拥堵汇总" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "每条记录必须包含：" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "同一收费站、同一道路方向下，多个出入口或多个管控结果必须合并为一行。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "不得写拥堵、缓行、施工、事故或主线管制措施。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "数据来源仅限“主线管制”和“拥堵汇总”" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "写表前先按“道路方向 + 具体路段”分组" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "多个独立拥堵/缓行点位仍然要逐条拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "禁止把多个路段或多个缓行距离用分号、顿号合并到同一格里" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "返回的结果包含：查询时间、拥堵汇总、主线管制、收费站管制" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "拥堵汇总：每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "同一具体路段上的多条独立拥堵/缓行记录也必须逐条拆成多行。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "不得为了减少行数，把多个收费站、多个方向、多个路段或多个缓行点塞进同一个单元格。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "最新结果包含三类数据：" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "【拥堵汇总】" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "事件分类, 管制措施, 现场情况, 占道情况, 开始时间, 预期结束时间, 事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "主线管制：每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "【主线管制】" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "收费站名称, 出入口" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "管制类型, 措施, 开始时间, 结束时间, 事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "收费站管制：每一行内容组成" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "【收费站管制】" in NETWORK_REPORT_SUMMARY_PROMPT
     assert "管制状态, 措施, 开始时间, 结束时间, 事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "如果两者都没有，固定写“无”" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "主线管制写法必须包含“道路方向”" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "拥堵汇总写法组织为“道路方向 + 具体路段 + 事件描述 + 缓行距离”" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "没有明确路况时固定写“无”" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "当同一高速下存在多个收费站时，要优先按收费站拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "多个独立拥堵/缓行点位仍然要逐条拆成多行" in NETWORK_REPORT_SUMMARY_PROMPT
-    assert "写表前先分组：收费站按“收费站名称 + 道路方向”分组" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "如果某行没有对应内容，固定写“无”。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "主线管制写法：" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "道路方向，管制类型/管制措施，事件描述" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "拥堵汇总写法：" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "道路方向，具体路段，事件描述，缓行X公里。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "没有明确路况时写“无”。" in NETWORK_REPORT_SUMMARY_PROMPT
+    assert "同一道路不同收费站必须拆成多行。" in NETWORK_REPORT_SUMMARY_PROMPT
 
 
 def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:

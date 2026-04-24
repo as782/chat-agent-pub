@@ -1595,6 +1595,15 @@ class PlannerService:
                 target = target[:index].strip()
                 break
         for suffix in (
+            "在哪条高速",
+            "在哪条路",
+            "属于哪条高速",
+            "属于哪条路",
+            "哪个高速上的",
+            "哪条高速上的",
+            "是哪个高速上的",
+            "是在哪条高速上",
+            "是哪个路上的",
             "路况怎么样",
             "路况如何",
             "怎么样",
@@ -1706,7 +1715,28 @@ class PlannerService:
                 candidate = candidate[len(prefix) :].strip()
                 break
 
-        if candidate in {"高速", "高速路", "高速公路", "路况", "实时路况"}:
+        if candidate in {
+            "高速",
+            "高速路",
+            "高速公路",
+            "所属高速",
+            "所属高速公路",
+            "哪条高速",
+            "哪条高速上",
+            "哪个高速",
+            "哪个高速上",
+            "哪条路",
+            "哪条路上",
+            "路况",
+            "实时路况",
+        }:
+            return None
+        if (
+            any(keyword in candidate for keyword in ("收费站", "收费口", "入口", "出口", "枢纽", "互通"))
+            and PlannerService._looks_like_road_code(candidate) is False
+        ):
+            return None
+        if any(keyword in candidate for keyword in ("所属高速", "所属高速公路", "哪条高速", "哪个高速")):
             return None
         return candidate
 
@@ -2247,6 +2277,8 @@ class PlannerService:
     def _infer_traffic_focus(message: str) -> str | None:
         """Infer whether the user mainly cares about congestion, incidents or controls."""
 
+        if PlannerService._looks_like_toll_station_attribution_query(message):
+            return "road_attribution"
         if any(keyword in message for keyword in ("堵", "拥堵", "缓行", "堵车")):
             return "congestion"
         if any(keyword in message for keyword in ("事故",)):
@@ -2259,6 +2291,8 @@ class PlannerService:
 
     @staticmethod
     def _infer_answer_focus(message: str, primary_category: ProblemCategory) -> str | None:
+        if PlannerService._looks_like_toll_station_attribution_query(message):
+            return "收费站所属高速"
         if PlannerService._looks_like_explicit_route_query(message):
             return "路线推荐与关键路况"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
@@ -2713,6 +2747,25 @@ class PlannerService:
             )
         )
         return bool(has_specific_road or has_facility_without_od)
+
+    @staticmethod
+    def _looks_like_toll_station_attribution_query(message: str) -> bool:
+        if not any(keyword in message for keyword in ("收费站", "收费口", "入口", "出口", "枢纽", "互通")):
+            return False
+        return any(
+            keyword in message
+            for keyword in (
+                "在哪条高速",
+                "在哪条路",
+                "属于哪条高速",
+                "属于哪条路",
+                "哪个高速",
+                "哪条高速上",
+                "是哪个高速上的",
+                "是在哪条高速上",
+                "是哪个路上的",
+            )
+        )
 
     @staticmethod
     def _looks_like_explicit_route_query(latest_user_message: str) -> bool:

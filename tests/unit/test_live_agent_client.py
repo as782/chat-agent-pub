@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import httpx
 import pytest
 
 from app.core.exceptions import UpstreamServiceException
 from app.tools.live_agent.client import LiveAgentClient
-
-
-@pytest.fixture(autouse=True)
-def disable_terminal_exec_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep existing direct-call tests isolated from a local development .env."""
-
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_ENABLED", "false")
 
 
 @pytest.mark.asyncio
@@ -121,79 +113,3 @@ async def test_live_agent_client_logs_invalid_json_response_text(
 
     assert "Live Agent response parsing failed:" in caplog.text
     assert "response_text=not-json-response" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_live_agent_client_uses_terminal_exec_proxy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Development proxy mode should call terminal_exec and parse the inner live-agent envelope."""
-
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_ENABLED", "true")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_URL", "https://proxy.example/terminal_exec")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_TARGET_BASE_URL", "http://33.69.9.33:8081")
-
-    captured: dict[str, str] = {}
-
-    async def fake_call_terminal_exec(
-        self: LiveAgentClient,
-        *,
-        command: str,
-    ) -> dict[str, Any]:
-        del self
-        captured["command"] = command
-        return {
-            "data": {
-                "success": True,
-                "output": (
-                    '{"code":200,"message":"操作成功",'
-                    '"data":{"routesCount":1,"routes":[]}}'
-                ),
-            }
-        }
-
-    monkeypatch.setattr(LiveAgentClient, "_call_terminal_exec", fake_call_terminal_exec)
-
-    client = LiveAgentClient()
-    result = await client.request(
-        "GET",
-        "/agent/driving",
-        params={"start": "温州", "end": "金华"},
-    )
-
-    assert result == {"routesCount": 1, "routes": []}
-    assert captured["command"] == (
-        "curl -sS "
-        "'http://33.69.9.33:8081/agent/driving?"
-        "start=%E6%B8%A9%E5%B7%9E&end=%E9%87%91%E5%8D%8E'"
-    )
-
-
-@pytest.mark.asyncio
-async def test_live_agent_client_terminal_exec_normalizes_null_event_data(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The monitor-network event endpoint can return data=null for no events."""
-
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_ENABLED", "true")
-    monkeypatch.setenv("LIVE_AGENT_TERMINAL_TARGET_BASE_URL", "http://33.69.9.33:8081")
-
-    async def fake_call_terminal_exec(
-        self: LiveAgentClient,
-        *,
-        command: str,
-    ) -> dict[str, Any]:
-        del self, command
-        return {
-            "data": {
-                "success": True,
-                "output": '{"code":200,"message":"操作成功","data":null}',
-            }
-        }
-
-    monkeypatch.setattr(LiveAgentClient, "_call_terminal_exec", fake_call_terminal_exec)
-
-    client = LiveAgentClient()
-    result = await client.query_road_events(road="沪杭高速")
-
-    assert result == []

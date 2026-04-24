@@ -873,8 +873,8 @@ class TrafficNode:
     ) -> str:
         """把路况查询结果整理成适合直接喂给模型的模板化文本。"""
 
-        _ = query_arguments
         context_blocks = TrafficNode._build_compact_traffic_context_blocks(
+            query_arguments=query_arguments,
             response_payload=response_payload,
             per_road_results=per_road_results,
         )
@@ -886,6 +886,7 @@ class TrafficNode:
     @staticmethod
     def _build_compact_traffic_context_blocks(
         *,
+        query_arguments: dict[str, object],
         response_payload: list[dict[str, object]],
         per_road_results: list[dict[str, object]],
     ) -> list[str]:
@@ -893,6 +894,12 @@ class TrafficNode:
 
         source_results = per_road_results if per_road_results else [{"api_result": response_payload}]
         road_blocks: list[str] = []
+        focus_block = TrafficNode._build_focus_query_block(
+            query_arguments=query_arguments,
+            response_payload=response_payload,
+        )
+        if focus_block:
+            road_blocks.append(focus_block)
         seen_roads: set[tuple[str, str]] = set()
 
         for road_result in source_results:
@@ -908,14 +915,21 @@ class TrafficNode:
                 if road_key in seen_roads:
                     continue
                 seen_roads.add(road_key)
-                block = TrafficNode._build_compact_traffic_road_block(road)
+                block = TrafficNode._build_compact_traffic_road_block(
+                    road,
+                    query_arguments=query_arguments,
+                )
                 if block:
                     road_blocks.append(block)
 
         return road_blocks
 
     @staticmethod
-    def _build_compact_traffic_road_block(road: dict[str, object]) -> str:
+    def _build_compact_traffic_road_block(
+        road: dict[str, object],
+        *,
+        query_arguments: dict[str, object],
+    ) -> str:
         """单条道路的路况摘要模板。"""
 
         road_name = TrafficNode._string_or_placeholder(road.get("roadName"), "未知道路")
@@ -963,7 +977,10 @@ class TrafficNode:
 
         if traffic_control_items:
             lines.append("交通管制列表：")
-            for item in traffic_control_items[:3]:
+            for item in TrafficNode._prioritize_traffic_control_items(
+                traffic_control_items,
+                query_arguments=query_arguments,
+            )[:3]:
                 lines.append(
                     "  - "
                     f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
@@ -976,7 +993,10 @@ class TrafficNode:
 
         if exit_items:
             lines.append("收费站列表：")
-            for item in exit_items[:3]:
+            for item in TrafficNode._prioritize_exit_items(
+                exit_items,
+                query_arguments=query_arguments,
+            )[:3]:
                 lines.append(
                     "  - "
                     f"{TrafficNode._string_or_placeholder(item.get('toll_name'), '未知收费站')}："
@@ -995,6 +1015,158 @@ class TrafficNode:
                 )
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _build_focus_query_block(
+        *,
+        query_arguments: dict[str, object],
+        response_payload: list[dict[str, object]],
+    ) -> str | None:
+        toll_station = str(query_arguments.get("toll_station") or "").strip()
+        if not toll_station:
+            return None
+
+        direction = str(query_arguments.get("direction") or "").strip()
+        matched_exit_items = TrafficNode._find_matching_exit_items(
+            response_payload=response_payload,
+            toll_station=toll_station,
+        )
+        matched_control_items = TrafficNode._find_matching_control_items(
+            response_payload=response_payload,
+            toll_station=toll_station,
+        )
+        if not matched_exit_items and not matched_control_items:
+            return None
+
+        lines = ["本次查询命中对象："]
+        lines.append(f"- 收费站：{toll_station}")
+        if direction:
+            lines.append(f"- 用户关注方向/部位：{direction}")
+
+        matched_roads = TrafficNode._deduplicate_strings(
+            item.get("road_name") or item.get("road_code") for item in matched_exit_items
+        )
+        if matched_roads:
+            lines.append(f"- 命中所属道路：{'；'.join(matched_roads)}")
+
+        if matched_exit_items:
+            lines.append("- 命中收费站状态：")
+            for item in matched_exit_items[:3]:
+                lines.append(
+                    "  - "
+                    f"{TrafficNode._string_or_placeholder(item.get('toll_name'), toll_station)}"
+                    f"（{TrafficNode._string_or_placeholder(item.get('road_name'), '未知道路')}）："
+                    f"入口{TrafficNode._string_or_placeholder(item.get('entrance_status_label'), '未知')} / "
+                    f"出口{TrafficNode._string_or_placeholder(item.get('export_status_label'), '未知')}"
+                )
+
+        if matched_control_items:
+            lines.append("- 与该收费站直接相关的管制/事件：")
+            for item in matched_control_items[:3]:
+                lines.append(
+                    "  - "
+                    f"{TrafficNode._string_or_placeholder(item.get('description'), '暂无描述')}"
+                )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _find_matching_exit_items(
+        *,
+        response_payload: list[dict[str, object]],
+        toll_station: str,
+    ) -> list[dict[str, object]]:
+        normalized_station = TrafficNode._normalize_station_name(toll_station)
+        matched_items: list[dict[str, object]] = []
+        for item in TrafficNode._extract_exit_items(response_payload):
+            toll_name = str(item.get("toll_name") or "").strip()
+            normalized_toll_name = TrafficNode._normalize_station_name(toll_name)
+            if not normalized_toll_name:
+                continue
+            if normalized_station == normalized_toll_name:
+                matched_items.append(item)
+        return matched_items
+
+    @staticmethod
+    def _find_matching_control_items(
+        *,
+        response_payload: list[dict[str, object]],
+        toll_station: str,
+    ) -> list[dict[str, object]]:
+        normalized_station = TrafficNode._normalize_station_name(toll_station)
+        matched_items: list[dict[str, object]] = []
+        for item in TrafficNode._extract_traffic_control_items(response_payload):
+            description = str(item.get("description") or "").strip()
+            normalized_description = TrafficNode._normalize_station_name(description)
+            if normalized_station and normalized_station in normalized_description:
+                matched_items.append(item)
+        return matched_items
+
+    @staticmethod
+    def _prioritize_exit_items(
+        exit_items: list[dict[str, object]],
+        *,
+        query_arguments: dict[str, object],
+    ) -> list[dict[str, object]]:
+        toll_station = str(query_arguments.get("toll_station") or "").strip()
+        if not toll_station:
+            return exit_items
+
+        normalized_station = TrafficNode._normalize_station_name(toll_station)
+        prioritized_items = sorted(
+            exit_items,
+            key=lambda item: (
+                0
+                if TrafficNode._normalize_station_name(str(item.get("toll_name") or "").strip())
+                == normalized_station
+                else 1,
+                0
+                if (
+                    TrafficNode._is_abnormal_station_status(item.get("entrance_status"))
+                    or TrafficNode._is_abnormal_station_status(item.get("export_status"))
+                )
+                else 1,
+            ),
+        )
+        return prioritized_items
+
+    @staticmethod
+    def _prioritize_traffic_control_items(
+        traffic_control_items: list[dict[str, object]],
+        *,
+        query_arguments: dict[str, object],
+    ) -> list[dict[str, object]]:
+        toll_station = str(query_arguments.get("toll_station") or "").strip()
+        if not toll_station:
+            return traffic_control_items
+
+        normalized_station = TrafficNode._normalize_station_name(toll_station)
+        prioritized_items = sorted(
+            traffic_control_items,
+            key=lambda item: (
+                0
+                if normalized_station
+                and normalized_station
+                in TrafficNode._normalize_station_name(str(item.get("description") or "").strip())
+                else 1,
+            ),
+        )
+        return prioritized_items
+
+    @staticmethod
+    def _normalize_station_name(value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return ""
+        return (
+            normalized.replace("收费主站", "收费站")
+            .replace("收费副站", "收费站")
+            .replace("收费口", "收费站")
+            .replace("站口", "收费站")
+            .replace("出口", "")
+            .replace("入口", "")
+            .replace(" ", "")
+        )
 
     @staticmethod
     def _format_direction(item: dict[str, object]) -> str:
