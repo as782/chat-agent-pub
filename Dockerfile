@@ -44,7 +44,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /workspace
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends gosu \
+    && apt-get install --yes --no-install-recommends curl gosu \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system app \
     && adduser --system --ingroup app app \

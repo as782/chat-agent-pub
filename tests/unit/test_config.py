@@ -35,6 +35,12 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
     monkeypatch.setenv("LIVE_AGENT_TIMEOUT_SECONDS", "18")
+    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_ENABLED", "true")
+    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_URL", "https://proxy.example/terminal_exec")
+    monkeypatch.setenv("LIVE_AGENT_TERMINAL_TARGET_BASE_URL", "http://10.0.0.8:8081")
+    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_TIMEOUT_SECONDS", "181")
+    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_RETRIES", "4")
+    monkeypatch.setenv("LIVE_AGENT_TERMINAL_EXEC_CURL_BINARY", "curl.exe")
     monkeypatch.setenv("RAGFLOW_TIMEOUT_SECONDS", "22")
     monkeypatch.setenv("MCP_HTTP_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("MCP_SSE_TIMEOUT_SECONDS", "11")
@@ -69,6 +75,12 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.live_agent_base_url == "http://localhost:8081"
     assert settings.live_agent_timeout_seconds == 18.0
+    assert settings.live_agent_terminal_exec_enabled is True
+    assert settings.live_agent_terminal_exec_url == "https://proxy.example/terminal_exec"
+    assert settings.live_agent_terminal_target_base_url == "http://10.0.0.8:8081"
+    assert settings.live_agent_terminal_exec_timeout_seconds == 181
+    assert settings.live_agent_terminal_exec_retries == 4
+    assert settings.live_agent_terminal_exec_curl_binary == "curl.exe"
     assert settings.ragflow_timeout_seconds == 22.0
     assert settings.mcp_http_timeout_seconds == 9.0
     assert settings.mcp_sse_timeout_seconds == 11.0
