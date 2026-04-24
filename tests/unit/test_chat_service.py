@@ -156,6 +156,25 @@ def test_build_execution_request_prefers_top_level_enable_thinking() -> None:
     assert execution_request.enable_thinking is True
 
 
+def test_build_execution_request_forwards_scheduled_route() -> None:
+    """scheduled_route should be copied into the internal execution request."""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    request = OpenAIChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "请提供省内整体实时路况总结。"}],
+        scheduled_route="report",
+    )
+
+    execution_request = service._build_execution_request(
+        chat_request=request,
+        session_id=None,
+    )
+
+    assert execution_request.scheduled_route == "report"
+
+
 @pytest.mark.asyncio
 async def test_prepare_chat_execution_resolves_session_and_persists_user_message_once() -> None:
     """公共准备流程应解析会话并且只持久化一次用户消息。"""

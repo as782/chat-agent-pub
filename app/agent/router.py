@@ -13,8 +13,11 @@ def resolve_agent_route(state: AgentState) -> AgentRoute:
 
     latest_user_message = str(state.get("latest_user_message", ""))
     normalized_message = latest_user_message.lower()
+    forced_route = state.get("forced_route")
     scheduled_route = state.get("scheduled_route")
 
+    if forced_route is not None:
+        return forced_route
     if scheduled_route is not None:
         return scheduled_route
     if state.get("requested_tool_names"):
