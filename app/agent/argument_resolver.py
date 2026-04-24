@@ -155,11 +155,15 @@ class ArgumentResolver:
             normalized_target=normalized_target,
             explicit_roads=roads,
         )
+        road = inferred_context.road
+        if road is None and self._normalize_traffic_road_candidate(normalized_target) is not None:
+            road = normalized_target
         arguments: dict[str, object] = {
             "query": normalized_query,
-            "road": inferred_context.road or normalized_target,
             "target": inferred_context.target or normalized_target,
         }
+        if road is not None:
+            arguments["road"] = road
         if inferred_context.roads:
             arguments["roads"] = list(inferred_context.roads)
         if inferred_context.direction is not None:
@@ -410,15 +414,64 @@ class ArgumentResolver:
             segment = segment.strip()
             if not segment:
                 continue
-            matches = [match.group(0).strip() for match in ROAD_TOKEN_PATTERN.finditer(segment)]
+            matches = [
+                road_target
+                for road_target in (
+                    ArgumentResolver._normalize_traffic_road_candidate(match.group(0))
+                    for match in ROAD_TOKEN_PATTERN.finditer(segment)
+                )
+                if road_target is not None
+            ]
             if matches:
                 road_targets.append(max(matches, key=len))
 
         if len(road_targets) >= 2:
             return ArgumentResolver._deduplicate_strings(road_targets)
 
-        matches = [match.group(0).strip() for match in ROAD_TOKEN_PATTERN.finditer(normalized_target)]
+        matches = [
+            road_target
+            for road_target in (
+                ArgumentResolver._normalize_traffic_road_candidate(match.group(0))
+                for match in ROAD_TOKEN_PATTERN.finditer(normalized_target)
+            )
+            if road_target is not None
+        ]
         return ArgumentResolver._deduplicate_strings(matches)
+
+    @staticmethod
+    def _normalize_traffic_road_candidate(value: str) -> str | None:
+        """剔除请求性前缀和泛化高速词，避免把用户指令当成道路名。"""
+
+        candidate = value.strip()
+        if not candidate:
+            return None
+
+        for prefix in (
+            "请提供",
+            "请帮我看",
+            "请帮我查",
+            "帮我看",
+            "帮我查",
+            "帮忙看",
+            "帮忙查",
+            "麻烦看",
+            "麻烦查",
+            "请看",
+            "请查",
+            "查一下",
+            "查下",
+            "看一下",
+            "看看",
+            "给我看",
+            "给我查",
+        ):
+            if candidate.startswith(prefix) and len(candidate) > len(prefix):
+                candidate = candidate[len(prefix) :].strip()
+                break
+
+        if candidate in {"高速", "高速路", "高速公路", "路况", "实时路况"}:
+            return None
+        return candidate
 
     @staticmethod
     def _infer_service_keyword(message: str) -> str | None:

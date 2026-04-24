@@ -636,6 +636,29 @@ async def test_planner_fallback_routes_network_report_question_to_report() -> No
     assert [step.executor for step in plan.steps] == ["report", "answer"]
 
 
+def test_planner_keeps_generic_highway_realtime_traffic_on_report_route() -> None:
+    """没有具体道路对象的高速实时路况，应保留为网络汇总而不是单路况查询。"""
+
+    message = "请提供高速实时路况"
+
+    assert PlannerService._extract_explicit_road_targets(message) == []
+    assert PlannerService._has_direct_traffic_target(message) is False
+    assert (
+        PlannerService._infer_primary_category(
+            latest_user_message=message,
+            has_requested_tools=False,
+        )
+        == "network_report"
+    )
+    assert (
+        PlannerService._normalize_primary_category(
+            latest_user_message=message,
+            primary_category="network_report",
+        )
+        == "network_report"
+    )
+
+
 async def test_planner_fallback_routes_od_congestion_to_route_only() -> None:
     """OD + 拥堵问题应走 route -> answer。"""
 

@@ -173,7 +173,6 @@ _DIRECT_TRAFFIC_TARGET_KEYWORDS: tuple[str, ...] = (
     "互通",
     "服务区",
     "隧道",
-    "高速",
     "路段",
 )
 _DIRECT_TRAFFIC_ALIAS_PATTERN = re_compile(r"[\u4e00-\u9fffA-Za-z0-9]{2,8}高(?:速)?")
@@ -1649,15 +1648,64 @@ class PlannerService:
             segment = segment.strip()
             if not segment:
                 continue
-            matches = [match.group(0).strip() for match in _ROAD_TOKEN_PATTERN.finditer(segment)]
+            matches = [
+                road_target
+                for road_target in (
+                    PlannerService._normalize_traffic_road_candidate(match.group(0))
+                    for match in _ROAD_TOKEN_PATTERN.finditer(segment)
+                )
+                if road_target is not None
+            ]
             if matches:
                 road_targets.append(max(matches, key=len))
 
         if len(road_targets) >= 2:
             return PlannerService._deduplicate_strings(road_targets)
 
-        matches = [match.group(0).strip() for match in _ROAD_TOKEN_PATTERN.finditer(normalized_target)]
+        matches = [
+            road_target
+            for road_target in (
+                PlannerService._normalize_traffic_road_candidate(match.group(0))
+                for match in _ROAD_TOKEN_PATTERN.finditer(normalized_target)
+            )
+            if road_target is not None
+        ]
         return PlannerService._deduplicate_strings(matches)
+
+    @staticmethod
+    def _normalize_traffic_road_candidate(value: str) -> str | None:
+        """Strip request phrases and reject generic highway placeholders."""
+
+        candidate = value.strip()
+        if not candidate:
+            return None
+
+        for prefix in (
+            "请提供",
+            "请帮我看",
+            "请帮我查",
+            "帮我看",
+            "帮我查",
+            "帮忙看",
+            "帮忙查",
+            "麻烦看",
+            "麻烦查",
+            "请看",
+            "请查",
+            "查一下",
+            "查下",
+            "看一下",
+            "看看",
+            "给我看",
+            "给我查",
+        ):
+            if candidate.startswith(prefix) and len(candidate) > len(prefix):
+                candidate = candidate[len(prefix) :].strip()
+                break
+
+        if candidate in {"高速", "高速路", "高速公路", "路况", "实时路况"}:
+            return None
+        return candidate
 
     @staticmethod
     def _has_explicit_report_intent(message: str) -> bool:
@@ -1899,7 +1947,9 @@ class PlannerService:
             if PlannerService._looks_like_od_query(latest_user_message):
                 return "route_planning"
             if PlannerService._looks_like_traffic_status_query(latest_user_message):
-                return "traffic_status"
+                if PlannerService._has_direct_traffic_target(latest_user_message):
+                    return "traffic_status"
+                return "network_report"
             inferred_primary_category = PlannerService._infer_primary_category(
                 latest_user_message=latest_user_message,
                 has_requested_tools=False,
@@ -2087,7 +2137,10 @@ class PlannerService:
         )
         if inferred_context.toll_station is not None or inferred_context.direction is not None:
             return True
-        return _DIRECT_TRAFFIC_ALIAS_PATTERN.search(normalized_target) is not None
+        alias_match = _DIRECT_TRAFFIC_ALIAS_PATTERN.search(normalized_target)
+        if alias_match is None:
+            return False
+        return PlannerService._normalize_traffic_road_candidate(alias_match.group(0)) is not None
 
     @staticmethod
     def _looks_like_traffic_status_query(latest_user_message: str) -> bool:
@@ -2148,8 +2201,14 @@ class PlannerService:
             return "network_report"
         if PlannerService._looks_like_od_query(latest_user_message):
             return "route_planning"
+        if any(keyword in latest_user_message for keyword in _NETWORK_TRAFFIC_KEYWORDS):
+            if PlannerService._has_direct_traffic_target(latest_user_message):
+                return "traffic_status"
+            return "network_report"
         if PlannerService._looks_like_traffic_status_query(latest_user_message):
-            return "traffic_status"
+            if PlannerService._has_direct_traffic_target(latest_user_message):
+                return "traffic_status"
+            return "network_report"
         if (
             "到" in latest_user_message
             and any(keyword in latest_user_message for keyword in ("怎么走", "怎么去", "路线", "导航"))
