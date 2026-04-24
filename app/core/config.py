@@ -60,32 +60,6 @@ class Settings(BaseSettings):
         default=15.0,
         validation_alias="LIVE_AGENT_TIMEOUT_SECONDS",
     )
-    live_agent_terminal_exec_enabled: bool = Field(
-        default=False,
-        validation_alias="LIVE_AGENT_TERMINAL_EXEC_ENABLED",
-    )
-    live_agent_terminal_exec_url: str = Field(
-        default="https://frp-sea.com:28965/api/v1/mcp/terminal_exec",
-        validation_alias="LIVE_AGENT_TERMINAL_EXEC_URL",
-    )
-    live_agent_terminal_target_base_url: str | None = Field(
-        default=None,
-        validation_alias="LIVE_AGENT_TERMINAL_TARGET_BASE_URL",
-    )
-    live_agent_terminal_exec_timeout_seconds: int = Field(
-        default=180,
-        validation_alias="LIVE_AGENT_TERMINAL_EXEC_TIMEOUT_SECONDS",
-        ge=1,
-    )
-    live_agent_terminal_exec_retries: int = Field(
-        default=3,
-        validation_alias="LIVE_AGENT_TERMINAL_EXEC_RETRIES",
-        ge=1,
-    )
-    live_agent_terminal_exec_curl_binary: str = Field(
-        default="curl",
-        validation_alias="LIVE_AGENT_TERMINAL_EXEC_CURL_BINARY",
-    )
     mcp_servers_json: str | None = Field(default=None, validation_alias="MCP_SERVERS_JSON")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
