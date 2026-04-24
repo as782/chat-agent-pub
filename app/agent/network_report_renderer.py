@@ -45,6 +45,35 @@ class RenderedNetworkReport:
         return f"{self.summary}\n\n{self.table_markdown}"
 
 
+def _should_filter_event(item: dict[str, object]) -> bool:
+    """判断是否应该过滤掉该事件，基于事件分类码值。
+    
+    根据需求，需要过滤掉交通事故(04)和车辆故障(07)等事件，
+    以及10110硬路肩开放的管制类型。
+    """
+    # 获取事件分类字段
+    event_class = _first_non_empty(item.get("eventClass"))
+    event_type = _first_non_empty(item.get("eventType"))
+    control_type = _first_non_empty(item.get("controlType"))
+    
+    # 定义需要过滤的事件分类码值
+    filtered_classes = {"04", "07"}  # 04:交通事故, 07:车辆故障
+    
+    # 检查eventClass是否在过滤列表中
+    if event_class in filtered_classes:
+        return True
+        
+    # 检查eventType是否在过滤列表中
+    if event_type in filtered_classes:
+        return True
+        
+    # 检查controlType是否为10110（硬路肩开放）
+    if control_type == "10110":
+        return True
+        
+    return False
+
+
 def build_network_report_render_result(
     step_results: dict[str, object],
 ) -> RenderedNetworkReport | None:
@@ -62,16 +91,31 @@ def build_network_report_render_result(
     control_items = _coerce_items(normalized_result.get("control_top_items"))
     exit_items = _coerce_items(normalized_result.get("exit_top_items"))
 
+    # 对拥堵事件进行筛选，过滤掉不需要的事件类型
+    filtered_congestion_items = [
+        item for item in congestion_items 
+        if not _should_filter_event(item)
+    ]
+    
+    # 对主线管制事件进行筛选
+    filtered_control_items = [
+        item for item in control_items 
+        if not _should_filter_event(item)
+    ]
+    
+    # 收费站管制通常不需要过滤，保持原样
+    filtered_exit_items = exit_items
+
     road_profiles = _build_road_profiles(
-        congestion_items=congestion_items,
-        control_items=control_items,
-        exit_items=exit_items,
+        congestion_items=filtered_congestion_items,
+        control_items=filtered_control_items,
+        exit_items=filtered_exit_items,
     )
 
-    exit_rows = _build_exit_rows(exit_items=exit_items, road_profiles=road_profiles)
-    control_rows = _build_control_rows(control_items=control_items, road_profiles=road_profiles)
+    exit_rows = _build_exit_rows(exit_items=filtered_exit_items, road_profiles=road_profiles)
+    control_rows = _build_control_rows(control_items=filtered_control_items, road_profiles=road_profiles)
     congestion_rows = _build_congestion_rows(
-        congestion_items=congestion_items,
+        congestion_items=filtered_congestion_items,
         road_profiles=road_profiles,
     )
     rows = [*exit_rows, *control_rows, *congestion_rows]
@@ -314,14 +358,21 @@ def _build_congestion_rows(
             direction=direction,
         )
         if not description:
-            location = _format_location(
-                item.get("beginMilestone"),
-                item.get("endMilestone"),
-            )
+ 
             distance = _format_distance(item.get("roadAmbleMile"))
-            description = "，".join(
-                part for part in (direction, location, distance) if part and part != "未知"
-            )
+            # 调整顺序：方向在前，然后是位置和距离信息
+            parts = []
+            if direction and direction != "未知":
+                # 将方向调整为"XX方向XX"的格式
+                if "方向" in direction:
+                    # 如果已经是"XX方向"格式，只需添加方向描述
+                    parts.append(direction)
+                else:
+                    # 如果只是方向描述，加上"方向"
+                    parts.append(f"{direction}方向")
+            if distance and distance != "未知":
+                parts.append(distance)
+            description = "，".join(parts)
         rows.append(
             _ReportRow(
                 road_code=road_profile.code,
@@ -454,14 +505,7 @@ def _normalize_control_reason(description: str | None) -> str | None:
     normalized_description = description.strip("。；;，, ")
     if not normalized_description:
         return None
-    if "因" in normalized_description:
-        normalized_description = normalized_description[
-            normalized_description.index("因") :
-        ]
-    for separator in ("，", ";", ","):
-        if separator in normalized_description:
-            normalized_description = normalized_description.split(separator, 1)[0].strip()
-            break
+ 
     return normalized_description or None
 
 
@@ -487,8 +531,7 @@ def _normalize_congestion_description(
     normalized_description = normalized_description.strip("，, ")
     if not normalized_description:
         return direction
-    if direction != "未知" and not normalized_description.startswith(direction):
-        return f"{direction}，{normalized_description}"
+ 
     return normalized_description
 
 

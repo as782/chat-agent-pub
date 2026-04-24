@@ -139,18 +139,39 @@ class ReportNode:
         control_top_items = ReportNode._extract_payload_items(response_payload, "controlTopN")
         exit_top_items = ReportNode._extract_payload_items(response_payload, "exitTopN")
 
+        # 对拥堵事件进行筛选，过滤掉不需要的事件类型
+        filtered_congestion_items = [
+            item for item in congestion_top_items 
+            if not ReportNode._should_filter_event(item)
+        ]
+        
+        # 对主线管制事件进行筛选
+        filtered_control_items = [
+            item for item in control_top_items 
+            if not ReportNode._should_filter_event(item)
+        ]
+        
+        # 对事故事件进行筛选
+        filtered_accident_items = [
+            item for item in accident_top_items 
+            if not ReportNode._should_filter_event(item)
+        ]
+        
+        # 收费站管制通常不需要过滤，保持原样
+        filtered_exit_items = exit_top_items
+
         return {
             "record_count": 1,
             "query_time": query_time,
             "congestion_total_mile": congestion_total_mile,
-            "congestion_top_count": len(congestion_top_items),
-            "accident_top_count": len(accident_top_items),
-            "control_top_count": len(control_top_items),
-            "exit_top_count": len(exit_top_items),
-            "congestion_top_items": congestion_top_items,
-            "accident_top_items": accident_top_items,
-            "control_top_items": control_top_items,
-            "exit_top_items": exit_top_items,
+            "congestion_top_count": len(filtered_congestion_items),
+            "accident_top_count": len(filtered_accident_items),
+            "control_top_count": len(filtered_control_items),
+            "exit_top_count": len(filtered_exit_items),
+            "congestion_top_items": filtered_congestion_items,
+            "accident_top_items": filtered_accident_items,
+            "control_top_items": filtered_control_items,
+            "exit_top_items": filtered_exit_items,
         }
 
     @staticmethod
@@ -445,6 +466,35 @@ class ReportNode:
         ]
         return " | ".join(parts)
 
+    @staticmethod
+    def _should_filter_event(item: dict[str, object]) -> bool:
+        """判断是否应该过滤掉该事件，基于事件分类码值。
+        
+        根据需求，需要过滤掉交通事故(04)和车辆故障(07)等事件，
+        以及10110硬路肩开放的管制类型。
+        """
+        # 获取事件分类字段
+        event_class = ReportNode._string_or_placeholder(item.get("eventClass"))
+        event_type = ReportNode._string_or_placeholder(item.get("eventType"))
+        control_type = ReportNode._string_or_placeholder(item.get("controlType"))
+        
+        # 定义需要过滤的事件分类码值
+        filtered_classes = {"04", "07"}  # 04:交通事故, 07:车辆故障
+        
+        # 检查eventClass是否在过滤列表中
+        if event_class in filtered_classes:
+            return True
+            
+        # 检查eventType是否在过滤列表中
+        if event_type in filtered_classes:
+            return True
+            
+        # 检查controlType是否为10110（硬路肩开放）
+        if control_type == "10110":
+            return True
+            
+        return False
+
     @classmethod
     def _build_compact_report_context(
         cls,
@@ -472,19 +522,35 @@ class ReportNode:
         congestion_items = cls._extract_payload_items(response_payload, "congestionTopN")
         control_items = cls._extract_payload_items(response_payload, "controlTopN")
         exit_items = cls._extract_payload_items(response_payload, "exitTopN")
+        
+        # 对拥堵事件进行筛选，过滤掉不需要的事件类型
+        filtered_congestion_items = [
+            item for item in congestion_items 
+            if not cls._should_filter_event(item)
+        ]
+        
+        # 对主线管制事件进行筛选
+        filtered_control_items = [
+            item for item in control_items 
+            if not cls._should_filter_event(item)
+        ]
+        
+        # 收费站管制通常不需要过滤，保持原样
+        filtered_exit_items = exit_items
+
         congestion_section = cls._build_item_section(
             "拥堵汇总",
-            congestion_items,
+            filtered_congestion_items,
             cls._build_congestion_line,
         )
         control_section = cls._build_item_section(
             "主线管制",
-            control_items,
+            filtered_control_items,
             cls._build_control_line,
         )
         exit_section = cls._build_item_section(
             "收费站管制",
-            exit_items,
+            filtered_exit_items,
             cls._build_exit_line,
         )
 

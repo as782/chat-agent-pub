@@ -73,6 +73,147 @@ class _TemplateReportToolRegistry:
         )
 
 
+class _FilteredReportToolRegistry:
+    async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+        if tool_name == "live_network_overview_query":
+            return dumps(
+                {
+                    "data": {
+                        "queryTime": "2026-04-24 21:30:00",
+                        "congestionTotalMile": 8.5,
+                        "congestionTopN": [
+                            # 交通事故事件 - 应该被过滤
+                            {
+                                "roadGBCode": "G60",
+                                "roadName": "沪昆高速",
+                                "directionName": "上海方向",
+                                "eventClass": "04",  # 交通事故
+                                "des": "发生交通事故，多车追尾",
+                            },
+                            # 车辆故障事件 - 应该被过滤  
+                            {
+                                "roadGBCode": "G2",
+                                "roadName": "京沪高速",
+                                "directionName": "北京方向",
+                                "eventType": "07",  # 车辆故障
+                                "des": "货车抛锚占用应急车道",
+                            },
+                            # 正常拥堵事件 - 应该保留
+                            {
+                                "roadGBCode": "G15",
+                                "roadName": "沈海高速",
+                                "directionName": "广州方向",
+                                "eventClass": "03",  # 道路缓行
+                                "des": "车流量大，缓行3公里",
+                            }
+                        ],
+                        "controlTopN": [
+                            # 交通事故管制 - 应该被过滤
+                            {
+                                "roadGBCode": "G42",
+                                "roadName": "沪蓉高速",
+                                "directionName": "成都方向",
+                                "eventClass": "04",  # 交通事故
+                                "controlTypeName": "单向封道",
+                                "des": "因交通事故实施单向封道",
+                            },
+                            # 硬路肩开放管制 - 应该被过滤
+                            {
+                                "roadGBCode": "G50",
+                                "roadName": "沪渝高速",
+                                "directionName": "重庆方向",
+                                "controlType": "10110",  # 硬路肩开放
+                                "controlTypeName": "硬路肩开放",
+                                "des": "开放硬路肩供车辆通行",
+                            },
+                            # 正常施工管制 - 应该保留
+                            {
+                                "roadGBCode": "G56",
+                                "roadName": "杭瑞高速",
+                                "directionName": "杭州方向",
+                                "eventClass": "05",  # 路面施工
+                                "controlTypeName": "封闭部分车道",
+                                "des": "道路施工，封闭右侧车道",
+                            }
+                        ],
+                        "exitTopN": [
+                            # 收费站管制 - 不应该被过滤
+                            {
+                                "roadGBCode": "G60",
+                                "roadName": "沪昆高速",
+                                "directionName": "杭州方向",
+                                "tollName": "嘉兴收费站",
+                                "entrance": 1,
+                                "controlTypeName": "关闭",
+                            }
+                        ],
+                    }
+                },
+                ensure_ascii=False,
+            )
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+
+@pytest.mark.asyncio
+async def test_report_node_filters_accident_and_vehicle_fault_events() -> None:
+    """测试report_node正确过滤交通事故(04)、车辆故障(07)事件和10110硬路肩开放管制。"""
+    node = ReportNode(tool_registry=_FilteredReportToolRegistry())
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="network_report",
+                execution_mode="single_step",
+                recommended_route="report",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="network_report",
+                arguments={"query": "生成全路网路况对比表格"},
+            ),
+        }
+    )
+
+    report_context = result["report_context"]
+    assert report_context is not None
+    
+    # 验证交通事故、车辆故障和硬路肩开放事件没有出现在report_context中
+    assert "多车追尾" not in report_context
+    assert "货车抛锚" not in report_context
+    assert "因交通事故实施单向封道" not in report_context
+    assert "开放硬路肩供车辆通行" not in report_context
+    
+    # 验证正常事件仍然存在
+    assert "车流量大，缓行3公里" in report_context
+    assert "道路施工，封闭右侧车道" in report_context
+    assert "嘉兴收费站" in report_context
+    
+    # 验证高速公路代码
+    assert "G15" in report_context  # 沈海高速 - 正常拥堵
+    assert "G56" in report_context  # 杭瑞高速 - 正常施工  
+    assert "G60" in report_context  # 沪昆高速 - 有收费站管制
+    
+    step_results = result["step_results"]
+    assert "report_1" in step_results
+    normalized_result = step_results["report_1"].normalized_result
+    
+    # 验证normalized_result中的数据也被正确过滤
+    congestion_items = normalized_result["congestion_top_items"]
+    control_items = normalized_result["control_top_items"]
+    exit_items = normalized_result["exit_top_items"]
+    
+    # 拥堵事件应该只有1个（过滤掉了2个）
+    assert len(congestion_items) == 1
+    assert congestion_items[0]["roadGBCode"] == "G15"
+    
+    # 主线管制应该只有1个（过滤掉了2个：交通事故和硬路肩开放）
+    assert len(control_items) == 1
+    assert control_items[0]["roadGBCode"] == "G56"
+    
+    # 收费站管制应该有1个（未被过滤）
+    assert len(exit_items) == 1
+    assert exit_items[0]["roadGBCode"] == "G60"
+
+
 @pytest.mark.asyncio
 async def test_report_node_builds_template_context() -> None:
     node = ReportNode(tool_registry=_TemplateReportToolRegistry())

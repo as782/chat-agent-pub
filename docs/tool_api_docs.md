@@ -1,14 +1,16 @@
+# 直播问数智能体接口文档
+
 ## 路线查询
 
-**接口地址** `33.69.3.160:8081/agent/driving`
+**接口地址** `33.69.9.160/agent/driving`
 
-**请求方式** `GET`
+**请求方式** `GET`
 
-**consumes** ``
+**consumes** \`\`
 
-**produces** `["*/*"]`
+**produces** `["*/*"]`
 
-**接口描述** ``
+**接口描述** \`\`
 
 **请求参数**
 
@@ -24,7 +26,7 @@
 | 200    | OK           | Result«DrivingPlanVo» |
 | 401    | Unauthorized |                       |
 | 403    | Forbidden    |                       |
-| 404    | Not Found    |                       |
+| 404    | Not Found    |                       |
 
 **响应参数**
 
@@ -67,8 +69,8 @@
 
 | 参数名称       | 参数说明                                                 | 类型           | schema |
 | -------------- | -------------------------------------------------------- | -------------- | ------ |
-| entranceStatus | 收费站入口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
-| exportStatus   | 收费站出口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
+| entranceStatus | 收费站入口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
+| exportStatus   | 收费站出口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
 | tollId         | 收费站id                                                 | integer(int32) |        |
 | tollName       | 收费站名称                                               | string         |        |
 
@@ -76,7 +78,7 @@
 
 | 参数名称      | 参数说明                      | 类型           | schema |
 | ------------- | ----------------------------- | -------------- | ------ |
-| directionType | 方向，00 双向，01上行，02下行 | string         |        |
+| directionType | 方向，00 双向，01上行，02下行 | string         |        |
 | latitude      | 纬度                          | number(double) |        |
 | longitude     | 经度                          | number(double) |        |
 | roadId        | 高速id                        | integer(int32) |        |
@@ -88,10 +90,10 @@
 | 参数名称        | 参数说明                                      | 类型           | schema |
 | --------------- | --------------------------------------------- | -------------- | ------ |
 | beginMilestone  | 开始桩号                                      | integer(int32) |        |
-| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | controlMeasures | 管制说明                                      | string         |        |
 | des             | 事件描述                                      | string         |        |
-| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
+| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
 | endMilestone    | 结束桩号                                      | integer(int32) |        |
 | eventType       | 事件大类编码                                  | string         |        |
 | id              | 事件id                                        | string         |        |
@@ -104,10 +106,10 @@
 | 参数名称        | 参数说明                                      | 类型           | schema |
 | --------------- | --------------------------------------------- | -------------- | ------ |
 | beginMilestone  | 开始桩号                                      | integer(int32) |        |
-| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | controlMeasures | 管制说明                                      | string         |        |
 | des             | 事件描述                                      | string         |        |
-| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
+| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
 | endMilestone    | 结束桩号                                      | integer(int32) |        |
 | eventType       | 事件大类编码                                  | string         |        |
 | id              | 事件id                                        | string         |        |
@@ -178,7 +180,9 @@
             ]
           }
         ],
+
         "tags": [],
+
         "toll": 0
       }
     ],
@@ -190,15 +194,15 @@
 
 ## 路况查询
 
-**接口地址** `33.69.3.160:8081/agent/event`
+**接口地址** `33.69.3.160:8081/agent/event`
 
-**请求方式** `GET`
+**请求方式** `GET`
 
-**consumes** ``
+**consumes** \`\`
 
-**produces** `["*/*"]`
+**produces** `["*/*"]`
 
-**接口描述** ``
+**接口描述** \`\`
 
 **请求参数**
 
@@ -213,7 +217,7 @@
 | 200    | OK           | Result«List«RoadConditionVo»» |
 | 401    | Unauthorized |                               |
 | 403    | Forbidden    |                               |
-| 404    | Not Found    |                               |
+| 404    | Not Found    |                               |
 
 **响应参数**
 
@@ -242,13 +246,13 @@
 | 参数名称        | 参数说明                                      | 类型           | schema |
 | --------------- | --------------------------------------------- | -------------- | ------ |
 | beginMilestone  | 开始桩号                                      | integer(int32) |        |
-| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | controlMeasures | 管制说明                                      | string         |        |
 | des             | 事件描述                                      | string         |        |
-| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
+| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
 | endMilestone    | 结束桩号                                      | integer(int32) |        |
 | eventType       | 事件大类编码                                  | string         |        |
-| expectedEndTime | 预计结束时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| expectedEndTime | 预计结束时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | id              | 事件id                                        | string         |        |
 | roadAmbleMile   | 缓行公里数                                    | number(double) |        |
 | roadId          | 高速id                                        | integer(int32) |        |
@@ -258,8 +262,8 @@
 
 | 参数名称       | 参数说明                                                 | 类型           | schema |
 | -------------- | -------------------------------------------------------- | -------------- | ------ |
-| entranceStatus | 收费站入口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
-| exportStatus   | 收费站出口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
+| entranceStatus | 收费站入口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
+| exportStatus   | 收费站出口状态。0: 开启，10202关闭，10203限流，10204分流 | integer(int32) |        |
 | tollId         | 收费站id                                                 | integer(int32) |        |
 | tollName       | 收费站名称                                               | string         |        |
 
@@ -267,7 +271,7 @@
 
 | 参数名称      | 参数说明                      | 类型           | schema |
 | ------------- | ----------------------------- | -------------- | ------ |
-| directionType | 方向，00 双向，01上行，02下行 | string         |        |
+| directionType | 方向，00 双向，01上行，02下行 | string         |        |
 | serviceId     | 服务区id                      | integer(int64) |        |
 | serviceName   | 服务区名称                    | string         |        |
 | statusTag     | 服务区拥挤状态                | string         |        |
@@ -277,13 +281,13 @@
 | 参数名称        | 参数说明                                      | 类型           | schema |
 | --------------- | --------------------------------------------- | -------------- | ------ |
 | beginMilestone  | 开始桩号                                      | integer(int32) |        |
-| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| beginTime       | 事件开始时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | controlMeasures | 管制说明                                      | string         |        |
 | des             | 事件描述                                      | string         |        |
-| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
+| directionType   | 方向，00 双向，01上行，02下行                 | string         |        |
 | endMilestone    | 结束桩号                                      | integer(int32) |        |
 | eventType       | 事件大类编码                                  | string         |        |
-| expectedEndTime | 预计结束时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
+| expectedEndTime | 预计结束时间. 事件格式为: yyyy-MM-dd HH:mm:ss | string         |        |
 | id              | 事件id                                        | string         |        |
 | roadAmbleMile   | 缓行公里数                                    | number(double) |        |
 | roadId          | 高速id                                        | integer(int32) |        |
@@ -355,15 +359,15 @@
 
 ## 服务区查询
 
-**接口地址** `33.69.3.160:8081/agent/service`
+**接口地址** `33.69.3.160:8081/agent/service`
 
-**请求方式** `GET`
+**请求方式** `GET`
 
-**consumes** ``
+**consumes** \`\`
 
-**produces** `["*/*"]`
+**produces** `["*/*"]`
 
-**接口描述** ``
+**接口描述** \`\`
 
 **请求参数**
 
@@ -378,7 +382,7 @@
 | 200    | OK           | Result«List«ServiceInfoVo»» |
 | 401    | Unauthorized |                             |
 | 403    | Forbidden    |                             |
-| 404    | Not Found    |                             |
+| 404    | Not Found    |                             |
 
 **响应参数**
 
@@ -398,7 +402,7 @@
 | commercialList | 商业服务数据集合                | array          | StoreVo  |
 | direction      | 服务区方向                      | string         |          |
 | directionName  | 服务区方向名称                  | string         |          |
-| directionType  | 方向，00 双向，01 上行，02 下行 | string         |          |
+| directionType  | 方向，00 双向，01 上行，02 下行 | string         |          |
 | latitude       | 服务区纬度                      | number(double) |          |
 | longitude      | 服务区经度                      | number(double) |          |
 | milestone      | 桩号                            | string         |          |
@@ -473,6 +477,7 @@
       "serviceId": 0,
       "serviceName": "",
       "statusTag": "",
+
       "tags": []
     }
   ],
@@ -520,7 +525,7 @@
 | 参数名称       | 参数说明                                  | 类型   | schema |
 | -------------- | ----------------------------------------- | ------ | ------ |
 | congestionTopN | 拥堵汇总                                  | array  |        |
-| controlTopN    | 主线管制汇总（不展示超过48h的管制）       | array  |        |
+| controlTopN    | 主线管制汇总                              | array  |        |
 | exitTopN       | 收费站管制汇总                            | array  |        |
 | queryTime      | 查询时间，时间格式为: yyyy-MM-dd HH:mm:ss | string |        |
 
@@ -561,28 +566,28 @@
 
 **TollControlDTO**
 
-| 参数名称             | 参数说明                                                               | 类型           | schema |
-| -------------------- | ---------------------------------------------------------------------- | -------------- | ------ |
-| controlType          | 管制类型id，10202关闭，10203限流，10204分流                            | integer(int32) |        |
-| controlTypeName      | 管制类型名称                                                           | string         |        |
-| delFlag              | 是否删除0：未删除1：已删除                                             | integer(int32) |        |
-| des                  | 管制措施说明                                                           | string         |        |
-| direction            | 方向, 100700上行，100701下行                                           | integer(int32) |        |
-| directionName        |                                                                        | string         |        |
-| endTime              | 结束时间，格式:YYYY-MM-dd HH:mm:ss。当前时间大于此时间时，说明管制结束 | string         |        |
-| entrance             | 出入口：0 出口 1 入口                                                  | integer(int32) |        |
-| entranceName         | 出入口名称                                                             | string         |        |
-| eventId              | 关联事件id                                                             | string         |        |
-| id                   | 管制措施id                                                             | string         |        |
-| limitMeasureTypeName | 限流管制措施详细类型                                                   | string         |        |
-| messageId            |                                                                        | string         |        |
-| roadGBCode           | 路段国标号                                                             | string         |        |
-| roadId               | 路段ID                                                                 | string         |        |
-| roadName             | 路段名称                                                               | string         |        |
-| startTime            | 开始时间，格式:YYYY-MM-dd HH:mm:ss                                     | string         |        |
-| timestamp            | 消息发布时间的时间戳                                                   | integer(int64) |        |
-| tollId               | 收费站id                                                               | integer(int32) |        |
-| tollName             | 收费站名称                                                             | string         |        |
+| 参数名称             | 参数说明                                                                                                                                                                                                                           | 类型           | schema |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ------ |
+| controlType          | 站点管制：<br>管制类型id，10202关闭，10203限流，10204分流<br>主线管制：<br>管制类型id，10101封闭部分车道，10102单向封道，10103双向封道，10105借道通行，10106卡口，10107限速，10108主线互通（匝道），10109主线限流，10110硬路肩开放 | integer(int32) |        |
+| controlTypeName      | 管制类型名称                                                                                                                                                                                                                       | string         |        |
+| delFlag              | 是否删除0：未删除1：已删除                                                                                                                                                                                                         | integer(int32) |        |
+| des                  | 管制措施说明                                                                                                                                                                                                                       | string         |        |
+| direction            | 方向, 100700上行，100701下行                                                                                                                                                                                                       | integer(int32) |        |
+| directionName        | 方向名称                                                                                                                                                                                                                           | string         |        |
+| endTime              | 结束时间，格式:YYYY-MM-dd HH:mm:ss。当前时间大于此时间时，说明管制结束                                                                                                                                                             | string         |        |
+| entrance             | 出入口：0 出口 1 入口                                                                                                                                                                                                              | integer(int32) |        |
+| entranceName         | 出入口名称                                                                                                                                                                                                                         | string         |        |
+| eventId              | 关联事件id                                                                                                                                                                                                                         | string         |        |
+| id                   | 管制措施id                                                                                                                                                                                                                         | string         |        |
+| limitMeasureTypeName | 限流管制措施详细类型                                                                                                                                                                                                               | string         |        |
+| messageId            |                                                                                                                                                                                                                                    | string         |        |
+| roadGBCode           | 路段国标号                                                                                                                                                                                                                         | string         |        |
+| roadId               | 路段ID                                                                                                                                                                                                                             | string         |        |
+| roadName             | 路段名称                                                                                                                                                                                                                           | string         |        |
+| startTime            | 开始时间，格式:YYYY-MM-dd HH:mm:ss                                                                                                                                                                                                 | string         |        |
+| timestamp            | 消息发布时间的时间戳                                                                                                                                                                                                               | integer(int64) |        |
+| tollId               | 收费站id                                                                                                                                                                                                                           | integer(int32) |        |
+| tollName             | 收费站名称                                                                                                                                                                                                                         | string         |        |
 
 **响应示例**
 
@@ -671,3 +676,24 @@
   "message": ""
 }
 ```
+
+EVENT_TYPE 映射关系
+
+| 事件大类编码 | 事件大类       |
+| ------------ | -------------- |
+| 01           | 交通事件       |
+| 02           | 交通灾害       |
+| 03           | 交通气象       |
+| 04           | 路面状况       |
+| 05           | 路面施工       |
+| 06           | 活动           |
+| 07           | 重大事件       |
+| 09           | 其他           |
+| 97           | 车辆故障       |
+| 98           | 服务区事件     |
+| 99           | 收费站入口关闭 |
+| 100          | 收费站入口限流 |
+| 101          | 收费站出口关闭 |
+| 104          | 收费站出口分流 |
+| 103          | 主线管制       |
+| 105          | 道路缓行       |
