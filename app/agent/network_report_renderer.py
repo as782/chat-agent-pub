@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from logging import Logger
 import re
 
+from app.core.logger import get_logger
 from app.agent.state import ExecutorResult
 
 _ROAD_CODE_PATTERN = re.compile(r"([GS]\d{1,4})", re.IGNORECASE)
@@ -15,6 +17,7 @@ _SUFFIX_SEGMENT_PATTERN = re.compile(r"^(.*?)([\u4e00-\u9fffA-Za-z0-9\[\]]{1,12}
 
 _TABLE_HEADER = "| roadCode | highwayName | roadSection | controls | traffic |"
 _TABLE_SEPARATOR = "| --- | --- | --- | --- | --- |"
+LOGGER: Logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -142,11 +145,18 @@ def build_network_report_render_result(
                 )
             )
 
-    return RenderedNetworkReport(
+    rendered_report = RenderedNetworkReport(
         summary=summary,
         table_markdown="\n".join(table_lines),
         rows=rows,
     )
+    LOGGER.info(
+        "Network report table generated: rows=%s\nsummary=%s\ntable=\n%s",
+        len(rendered_report.rows),
+        rendered_report.summary,
+        rendered_report.table_markdown,
+    )
+    return rendered_report
 
 
 def render_network_report_from_step_results(

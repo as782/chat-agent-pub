@@ -1,5 +1,7 @@
 """Deterministic network report renderer tests."""
 
+import logging
+
 from app.agent.network_report_renderer import (
     build_network_report_render_result,
     render_network_report_from_step_results,
@@ -183,3 +185,36 @@ def test_network_report_renderer_accepts_serialized_step_results() -> None:
 
     assert render_result is not None
     assert "| G1512 |" in render_result.to_markdown()
+
+
+def test_network_report_renderer_logs_generated_table(caplog) -> None:
+    with caplog.at_level(logging.INFO, logger="app.agent.network_report_renderer"):
+        render_result = build_network_report_render_result(
+            {
+                "report_1": ExecutorResult(
+                    step_id="report_1",
+                    executor="report",
+                    is_success=True,
+                    normalized_result={
+                        "congestion_total_mile": 0,
+                        "congestion_top_items": [],
+                        "control_top_items": [],
+                        "exit_top_items": [
+                            {
+                                "roadGBCode": "G60",
+                                "roadName": "G60沪昆高速",
+                                "directionName": "杭州方向",
+                                "tollName": "嘉兴收费站",
+                                "entrance": 1,
+                                "controlTypeName": "关闭",
+                            }
+                        ],
+                    },
+                )
+            }
+        )
+
+    assert render_result is not None
+    assert "Network report table generated" in caplog.text
+    assert "| roadCode | highwayName | roadSection | controls | traffic |" in caplog.text
+    assert "| G60 |" in caplog.text
