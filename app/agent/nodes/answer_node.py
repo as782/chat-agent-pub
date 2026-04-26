@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.context_builder import ContextBuilder
+from app.agent.context_builder import ContextBuilder, estimate_messages_tokens
 from app.agent.history_utils import MAX_CONTEXT_MESSAGES
 from app.agent.network_report_renderer import (
     RenderedNetworkReport,
@@ -767,15 +767,24 @@ class AnswerNode:
             return None
 
         execution_request = self.build_execution_request_from_state(state)
+        summary_request = "请基于完整报表上下文输出1-2句路网播报总结。"
+        summary_messages = [
+            LlmInputMessage(role="system", content=NETWORK_REPORT_BROADCAST_PROMPT),
+            LlmInputMessage(role="system", content=report_context),
+            LlmInputMessage(role="user", content=summary_request),
+        ]
+        estimated_prompt_tokens = estimate_messages_tokens(
+            summary_messages,
+            model_name=execution_request.model_name,
+        )
+        LOGGER.info(
+            "Network report summary prompt estimate: model=%s estimated_prompt_tokens=%s message_count=%s",
+            execution_request.model_name or self._settings.openai_model,
+            estimated_prompt_tokens,
+            len(summary_messages),
+        )
         return await self._llm_client.create_chat_completion(
-            messages=[
-                LlmInputMessage(role="system", content=NETWORK_REPORT_BROADCAST_PROMPT),
-                LlmInputMessage(role="system", content=report_context),
-                LlmInputMessage(
-                    role="user",
-                    content="请基于完整报表上下文输出1-2句路网播报总结。",
-                ),
-            ],
+            messages=summary_messages,
             model_name=execution_request.model_name,
             api_key=(
                 self._settings.openai_api_key.get_secret_value()
