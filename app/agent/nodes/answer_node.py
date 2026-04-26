@@ -508,9 +508,10 @@ class AnswerNode:
         for step_id, result in step_results.items():
             compact_result = AnswerNode._compact_executor_result(result)
             result_summary = "\n".join(f"- {k}: {v}" for k, v in compact_result.items())
+            details_block = result_summary if result_summary else "- no_compact_fields: true"
             parts.append(
                 f"[{step_id}] executor={result.executor} success={result.is_success} "
-                f"sources={result.sources}\n{result_summary}\n{result.summary}"
+                f"sources={result.sources}\n{details_block}\n{result.summary}"
             )
 
         return "\n\n".join(parts)
@@ -523,28 +524,21 @@ class AnswerNode:
         if not isinstance(normalized_result, dict):
             return {}
 
-        skip_keys = {
-            "raw_result",
-            "route_summaries",
-            "road_summaries",
-            "road_details",
-            "event_items",
-            "congestion_items",
-            "traffic_control_items",
-            "service_area_items",
-            "exit_items",
-            "traffic_controls",
-            "service_areas",
-            "charge_items",
-            "commercial_items",
-            "congestion_top_items",
-            "accident_top_items",
-            "control_top_items",
+        keep_keys_by_executor: dict[str, set[str]] = {
+            "route": {"routes_count"},
+            "traffic": {"matched_road_count", "event_count"},
+            "service": {"result_count"},
+            "rag": {"result_count"},
+            "report": set(),
+            "mcp": set(),
+            "tool": set(),
+            "answer": set(),
         }
+        allowed_keys = keep_keys_by_executor.get(result.executor, set())
 
         compact_result: dict[str, object] = {}
         for key, value in normalized_result.items():
-            if key in skip_keys:
+            if key not in allowed_keys:
                 continue
             compact_result[key] = value
         return compact_result
