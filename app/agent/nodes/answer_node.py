@@ -180,15 +180,18 @@ class AnswerNode:
                 step_result_keys = type(step_results).__name__
             LOGGER.info(
                 (
-                    "Network report probe: scheduled_route=%s route=%s current_step_id=%s "
-                    "step_result_keys=%s prepared_context_present=%s render_ready=%s"
+                    "Network report probe: requested_scheduled_route=%s scheduled_route=%s "
+                    "route=%s current_step_id=%s step_result_keys=%s "
+                    "prepared_context_present=%s render_ready=%s report_context_budget=%s"
                 ),
+                state.get("requested_scheduled_route"),
                 state.get("scheduled_route"),
                 state.get("route"),
                 state.get("current_step_id"),
                 step_result_keys,
                 isinstance(state.get("prepared_context"), PreparedContext),
                 network_report_render is not None,
+                self._resolve_report_context_token_budget(state),
             )
             if network_report_render is None:
                 LOGGER.warning(
@@ -333,7 +336,11 @@ class AnswerNode:
 
         return (
             MAX_SCHEDULED_REPORT_CONTEXT_TOKENS
-            if state.get("scheduled_route") == "report"
+            if (
+                state.get("requested_scheduled_route") == "report"
+                or state.get("forced_route") == "report"
+                or state.get("scheduled_route") == "report"
+            )
             else MAX_REPORT_CONTEXT_TOKENS
         )
 

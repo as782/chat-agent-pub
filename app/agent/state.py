@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
 from langchain_core.messages import AIMessage
+
 from app.clients.llm_client import LlmInputMessage
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
@@ -141,6 +142,7 @@ class AgentState(TypedDict, total=False):
     tool_choice: str | dict[str, object] | None
     enable_thinking: bool | None
     forced_route: AgentRoute | None
+    requested_scheduled_route: AgentRoute | None
     route: AgentRoute
     scheduled_route: AgentRoute
     current_step_id: str | None
