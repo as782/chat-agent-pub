@@ -19,6 +19,14 @@ from app.agent.answer_prompts import (
     SERVICE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
+from app.agent.brief_answer_prompts import (
+    BRIEF_COMPOSITE_ANSWER_PROMPT,
+    BRIEF_GENERAL_ANSWER_PROMPT,
+    BRIEF_POLICY_SUMMARY_PROMPT,
+    BRIEF_ROUTE_SUMMARY_PROMPT,
+    BRIEF_SERVICE_SUMMARY_PROMPT,
+    BRIEF_TRAFFIC_SUMMARY_PROMPT,
+)
 from app.agent.context_builder import (
     MAX_REPORT_CONTEXT_TOKENS,
     MAX_SCHEDULED_REPORT_CONTEXT_TOKENS,
@@ -77,6 +85,14 @@ _PROMPT_NAME_BY_CATEGORY = {
     "service_area": "SERVICE_SUMMARY_PROMPT",
     "network_report": "NETWORK_REPORT_SUMMARY_PROMPT",
     "general": "GENERAL_ANSWER_PROMPT",
+}
+_BRIEF_PROMPT_NAME_BY_CATEGORY = {
+    "composite": "BRIEF_COMPOSITE_ANSWER_PROMPT",
+    "policy": "BRIEF_POLICY_SUMMARY_PROMPT",
+    "route_planning": "BRIEF_ROUTE_SUMMARY_PROMPT",
+    "traffic_status": "BRIEF_TRAFFIC_SUMMARY_PROMPT",
+    "service_area": "BRIEF_SERVICE_SUMMARY_PROMPT",
+    "general": "BRIEF_GENERAL_ANSWER_PROMPT",
 }
 
 # _TRAFFIC_KEYWORDS = (
@@ -526,6 +542,7 @@ class AnswerNode:
             tool_choice=state.get("tool_choice"),
             scheduled_route=state.get("scheduled_route"),
             enable_thinking=state.get("enable_thinking"),
+            brief_answer=bool(state.get("brief_answer", False)),
         )
 
     def _generate_identifier(self) -> str:
@@ -934,10 +951,26 @@ class AnswerNode:
     def _resolve_answer_instruction(state: AgentState) -> str:
         """根据主分类选择最终回答阶段的提示词。"""
 
+        brief_answer = AnswerNode._should_use_brief_answer_prompt(state)
         if AnswerNode._should_use_composite_prompt(state):
-            return AnswerNode._build_composite_answer_instruction(state)
+            return AnswerNode._build_composite_answer_instruction(
+                state,
+                brief_answer=brief_answer,
+            )
 
         category = AnswerNode._resolve_answer_topic(state)
+        if category == "network_report":
+            return NETWORK_REPORT_SUMMARY_PROMPT
+        if brief_answer:
+            if category == "policy":
+                return BRIEF_POLICY_SUMMARY_PROMPT
+            if category == "route_planning" or AnswerNode._should_use_route_summary_prompt(state):
+                return AnswerNode._build_route_answer_instruction(state, brief_answer=True)
+            if category == "traffic_status":
+                return BRIEF_TRAFFIC_SUMMARY_PROMPT
+            if category == "service_area":
+                return BRIEF_SERVICE_SUMMARY_PROMPT
+            return BRIEF_GENERAL_ANSWER_PROMPT
         if category == "policy":
             return POLICY_SUMMARY_PROMPT
         if category == "route_planning" or AnswerNode._should_use_route_summary_prompt(state):
@@ -946,19 +979,32 @@ class AnswerNode:
             return TRAFFIC_SUMMARY_PROMPT
         if category == "service_area":
             return SERVICE_SUMMARY_PROMPT
-        if category == "network_report":
-            return NETWORK_REPORT_SUMMARY_PROMPT
         return GENERAL_ANSWER_PROMPT
 
     @staticmethod
     def _resolve_answer_prompt_name(state: AgentState) -> str:
+        brief_answer = AnswerNode._should_use_brief_answer_prompt(state)
         if AnswerNode._should_use_composite_prompt(state):
-            return "COMPOSITE_ANSWER_PROMPT"
+            return (
+                "BRIEF_COMPOSITE_ANSWER_PROMPT"
+                if brief_answer
+                else "COMPOSITE_ANSWER_PROMPT"
+            )
 
         category = AnswerNode._resolve_answer_topic(state)
+        if category == "network_report":
+            return "NETWORK_REPORT_SUMMARY_PROMPT"
+        if brief_answer:
+            if category == "route_planning" or AnswerNode._should_use_route_summary_prompt(state):
+                return "BRIEF_ROUTE_SUMMARY_PROMPT"
+            return _BRIEF_PROMPT_NAME_BY_CATEGORY.get(category, "BRIEF_GENERAL_ANSWER_PROMPT")
         if category == "route_planning" or AnswerNode._should_use_route_summary_prompt(state):
             return "ROUTE_SUMMARY_PROMPT"
         return _PROMPT_NAME_BY_CATEGORY.get(category, "GENERAL_ANSWER_PROMPT")
+
+    @staticmethod
+    def _should_use_brief_answer_prompt(state: AgentState) -> bool:
+        return bool(state.get("brief_answer", False))
 
     @staticmethod
     def _resolve_answer_topic(state: AgentState) -> str:
@@ -1026,11 +1072,17 @@ class AnswerNode:
         return executed_executors
 
     @staticmethod
-    def _build_composite_answer_instruction(state: AgentState) -> str:
+    def _build_composite_answer_instruction(
+        state: AgentState,
+        *,
+        brief_answer: bool = False,
+    ) -> str:
         focus = AnswerNode._resolve_planner_focus(state) or AnswerNode._resolve_answer_focus(state)
         executed_executors = sorted(AnswerNode._collect_executed_executors(state))
 
-        instruction_parts = [COMPOSITE_ANSWER_PROMPT]
+        instruction_parts = [
+            BRIEF_COMPOSITE_ANSWER_PROMPT if brief_answer else COMPOSITE_ANSWER_PROMPT
+        ]
         if focus:
             instruction_parts.append(f"本轮回答焦点：{focus}")
         if executed_executors:
@@ -1042,11 +1094,19 @@ class AnswerNode:
         return "\n\n".join(instruction_parts)
 
     @staticmethod
-    def _build_route_answer_instruction(state: AgentState) -> str:
+    def _build_route_answer_instruction(
+        state: AgentState,
+        *,
+        brief_answer: bool = False,
+    ) -> str:
         """优先根据用户问题正则判断焦点，metadata.focus 作为兜底。"""
 
-        focus = AnswerNode._resolve_route_summary_focus(state) or AnswerNode._resolve_planner_focus(state)
-        return ROUTE_SUMMARY_PROMPT.format(focus=focus or "未提供")
+        focus = (
+            AnswerNode._resolve_route_summary_focus(state)
+            or AnswerNode._resolve_planner_focus(state)
+        )
+        prompt = BRIEF_ROUTE_SUMMARY_PROMPT if brief_answer else ROUTE_SUMMARY_PROMPT
+        return prompt.format(focus=focus or "未提供")
 
     @staticmethod
     def _looks_like_service_query(message: str) -> bool:

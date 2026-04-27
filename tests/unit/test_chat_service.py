@@ -175,6 +175,25 @@ def test_build_execution_request_forwards_scheduled_route() -> None:
     assert execution_request.scheduled_route == "report"
 
 
+def test_build_execution_request_forwards_brief_answer() -> None:
+    """brief_answer should reach answer_node through the internal execution request."""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    request = OpenAIChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "杭金衢高速堵不堵"}],
+        brief_answer=True,
+    )
+
+    execution_request = service._build_execution_request(
+        chat_request=request,
+        session_id=None,
+    )
+
+    assert execution_request.brief_answer is True
+
+
 @pytest.mark.asyncio
 async def test_prepare_chat_execution_resolves_session_and_persists_user_message_once() -> None:
     """公共准备流程应解析会话并且只持久化一次用户消息。"""

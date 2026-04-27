@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from pytest import MonkeyPatch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.agent.nodes.answer_node import AnswerNode
 from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     NETWORK_REPORT_SUMMARY_PROMPT,
@@ -15,6 +14,11 @@ from app.agent.answer_prompts import (
     SERVICE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
+from app.agent.brief_answer_prompts import (
+    BRIEF_ROUTE_SUMMARY_PROMPT,
+    BRIEF_TRAFFIC_SUMMARY_PROMPT,
+)
+from app.agent.nodes.answer_node import AnswerNode
 from app.agent.state import ExecutionPlan, ExecutionStep, ExecutorResult, PreparedContext
 from app.clients.llm_client import LlmInputMessage
 from app.persistence.base import Base
@@ -126,6 +130,63 @@ def test_answer_node_keeps_traffic_prompt_for_traffic_only_questions() -> None:
     }
 
     assert AnswerNode._resolve_answer_prompt_name(state) == "TRAFFIC_SUMMARY_PROMPT"
+
+
+def test_answer_node_uses_brief_prompt_when_requested() -> None:
+    state = {
+        "primary_category": "traffic_status",
+        "brief_answer": True,
+        "latest_user_message": "杭金衢高速堵不堵",
+        "step_results": {
+            "traffic_1": ExecutorResult(
+                step_id="traffic_1",
+                executor="traffic",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "BRIEF_TRAFFIC_SUMMARY_PROMPT"
+    assert AnswerNode._resolve_answer_instruction(state) == BRIEF_TRAFFIC_SUMMARY_PROMPT
+
+
+def test_answer_node_uses_brief_route_prompt_when_requested() -> None:
+    state = {
+        "primary_category": "route_planning",
+        "brief_answer": True,
+        "latest_user_message": "杭州到金华怎么走",
+        "step_results": {
+            "route_1": ExecutorResult(
+                step_id="route_1",
+                executor="route",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "BRIEF_ROUTE_SUMMARY_PROMPT"
+    instruction = AnswerNode._resolve_answer_instruction(state)
+    assert "回答控制在 1 到 2 句话内" in instruction
+    assert "{focus}" not in instruction
+    assert instruction != BRIEF_ROUTE_SUMMARY_PROMPT
+
+
+def test_answer_node_keeps_network_report_prompt_when_brief_requested() -> None:
+    state = {
+        "primary_category": "network_report",
+        "brief_answer": True,
+        "latest_user_message": "请提供省内整体实时路况总结。",
+        "step_results": {
+            "report_1": ExecutorResult(
+                step_id="report_1",
+                executor="report",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "NETWORK_REPORT_SUMMARY_PROMPT"
+    assert AnswerNode._resolve_answer_instruction(state) == NETWORK_REPORT_SUMMARY_PROMPT
 
 
 def test_traffic_prompts_require_detailed_event_breakdown() -> None:

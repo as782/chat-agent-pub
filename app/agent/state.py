@@ -90,6 +90,7 @@ class ChatExecutionRequest:
     forced_route: AgentRoute | None = None
     scheduled_route: AgentRoute | None = None
     enable_thinking: bool | None = None
+    brief_answer: bool = False
     user_id: str | None = None
     message_metadata: dict[str, object] = field(default_factory=dict)
 
@@ -141,6 +142,7 @@ class AgentState(TypedDict, total=False):
     requested_tool_names: list[str] | None
     tool_choice: str | dict[str, object] | None
     enable_thinking: bool | None
+    brief_answer: bool
     forced_route: AgentRoute | None
     requested_scheduled_route: AgentRoute | None
     route: AgentRoute
