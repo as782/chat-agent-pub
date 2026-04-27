@@ -6,17 +6,10 @@
 
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.context_builder import ContextBuilder, estimate_messages_tokens
-from app.agent.history_utils import MAX_CONTEXT_MESSAGES
-from app.agent.network_report_renderer import (
-    RenderedNetworkReport,
-    build_network_report_render_result,
-    coerce_executor_result,
-)
 from app.agent.answer_prompts import (
     COMPOSITE_ANSWER_PROMPT,
     GENERAL_ANSWER_PROMPT,
@@ -26,6 +19,19 @@ from app.agent.answer_prompts import (
     SERVICE_SUMMARY_PROMPT,
     TRAFFIC_SUMMARY_PROMPT,
 )
+from app.agent.context_builder import (
+    MAX_REPORT_CONTEXT_TOKENS,
+    MAX_SCHEDULED_REPORT_CONTEXT_TOKENS,
+    ContextBuilder,
+    estimate_messages_tokens,
+    truncate_text_to_token_budget,
+)
+from app.agent.history_utils import MAX_CONTEXT_MESSAGES
+from app.agent.network_report_renderer import (
+    RenderedNetworkReport,
+    build_network_report_render_result,
+    coerce_executor_result,
+)
 from app.agent.state import (
     AgentState,
     ChatExecutionRequest,
@@ -34,6 +40,7 @@ from app.agent.state import (
     PreparedContext,
     get_execution_step,
 )
+from app.agent.tool_traffic_intent import looks_like_traffic_query_v1
 from app.clients.llm_client import LlmClient, LlmInputMessage
 from app.core.config import get_settings
 from app.core.exceptions import AppException
@@ -41,7 +48,6 @@ from app.core.logger import get_logger
 from app.memory.manager import MemoryManager
 from app.persistence.message_repo import MessageRepository
 from app.tools.registry import ExecutedToolCall, ToolRegistry
-from app.agent.tool_traffic_intent import  looks_like_traffic_query_v1
 
 LOGGER = get_logger(__name__)
 
@@ -322,17 +328,37 @@ class AnswerNode:
         }
 
     @staticmethod
+    def _resolve_report_context_token_budget(state: AgentState) -> int:
+        """根据是否显式调度 report 决定 report_content 预算。"""
+
+        return (
+            MAX_SCHEDULED_REPORT_CONTEXT_TOKENS
+            if state.get("scheduled_route") == "report"
+            else MAX_REPORT_CONTEXT_TOKENS
+        )
+
+    @staticmethod
     def _prepare_network_report_context_state(state: AgentState) -> dict[str, PreparedContext]:
         prepared_context = state.get("prepared_context")
         if isinstance(prepared_context, PreparedContext):
             return {"prepared_context": prepared_context}
 
         report_context = state.get("report_context")
+        report_context_max_tokens = AnswerNode._resolve_report_context_token_budget(state)
+        truncated_report_context = (
+            truncate_text_to_token_budget(
+                report_context,
+                max_tokens=report_context_max_tokens,
+                label="report_content",
+            )
+            if isinstance(report_context, str)
+            else None
+        )
         return {
             "prepared_context": PreparedContext(
                 messages=[],
                 used_session_memory=False,
-                report_context=report_context if isinstance(report_context, str) else None,
+                report_context=truncated_report_context,
             )
         }
 
@@ -348,6 +374,7 @@ class AnswerNode:
         traffic_context: str | None,
         service_context: str | None,
         report_context: str | None,
+        report_context_max_tokens: int,
         max_turns: int,
     ) -> PreparedContext:
         """根据执行请求和节点状态准备上下文。"""
@@ -371,6 +398,7 @@ class AnswerNode:
             traffic_context=traffic_context,
             service_context=service_context,
             report_context=report_context,
+            report_context_max_tokens=report_context_max_tokens,
         )
 
     async def prepare_context_state(self, state: AgentState) -> dict[str, PreparedContext]:
@@ -399,6 +427,7 @@ class AnswerNode:
             traffic_context=state.get("traffic_context"),
             service_context=state.get("service_context"),
             report_context=state.get("report_context"),
+            report_context_max_tokens=self._resolve_report_context_token_budget(state),
             max_turns=max_turns,
         )
         LOGGER.info(
@@ -765,6 +794,15 @@ class AnswerNode:
         report_context = prepared_context.report_context or state.get("report_context")
         if not isinstance(report_context, str) or not report_context.strip():
             return None
+        report_context_max_tokens = self._resolve_report_context_token_budget(state)
+        report_context = (
+            truncate_text_to_token_budget(
+                report_context,
+                max_tokens=report_context_max_tokens,
+                label="report_content",
+            )
+            or ""
+        )
 
         execution_request = self.build_execution_request_from_state(state)
         summary_request = "请基于完整报表上下文输出1-2句路网播报总结。"
