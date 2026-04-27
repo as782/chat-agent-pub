@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -30,7 +30,10 @@ HOP_BY_HOP_HEADERS = {
     "content-length",
     "host",
 }
-CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
+LLM_PROXY_PATH = "/v1/chat/monitor-completions"
+LLM_UPSTREAM_PATH = "/v1/chat/completions"
+PROXY_STATE_HTTP_CLIENT_KEY = "monitor_network_proxy_http_client"
+proxy_router = APIRouter(tags=["monitor-network-proxy"])
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -48,9 +51,23 @@ def _build_upstream_url(settings: ProxySettings, path: str, raw_query: bytes) ->
     return f"{base_url}{path}"
 
 
+def build_proxy_http_client() -> httpx.AsyncClient:
+    """Create the shared HTTP client used by proxy routes."""
+
+    settings = get_proxy_settings()
+    return httpx.AsyncClient(timeout=httpx.Timeout(settings.proxy_timeout_seconds))
+
+
+def _resolve_http_client(request: Request) -> httpx.AsyncClient:
+    http_client = getattr(request.app.state, PROXY_STATE_HTTP_CLIENT_KEY, None)
+    if isinstance(http_client, httpx.AsyncClient):
+        return http_client
+    raise HTTPException(status_code=503, detail="Monitor-network proxy is not initialized.")
+
+
 async def _proxy_get(request: Request, path: str) -> Response:
     settings = get_proxy_settings()
-    http_client: httpx.AsyncClient = request.app.state.http_client
+    http_client = _resolve_http_client(request)
     upstream_url = _build_upstream_url(settings, path, request.url.query.encode("utf-8"))
 
     try:
@@ -84,9 +101,9 @@ def _build_forwarded_headers(request: Request) -> dict[str, str]:
 
 async def _proxy_chat_completions(request: Request) -> Response:
     settings = get_proxy_settings()
-    http_client: httpx.AsyncClient = request.app.state.http_client
+    http_client = _resolve_http_client(request)
     request_body = await request.body()
-    upstream_url = f"{settings.llm_upstream_base_url.rstrip('/')}{CHAT_COMPLETIONS_PATH}"
+    upstream_url = f"{settings.llm_upstream_base_url.rstrip('/')}{LLM_UPSTREAM_PATH}"
 
     try:
         upstream_request = http_client.build_request(
@@ -128,14 +145,27 @@ async def _proxy_chat_completions(request: Request) -> Response:
     )
 
 
+def _register_proxy_routes(router: APIRouter, paths: Iterable[str]) -> None:
+    for path in paths:
+        async def handler(request: Request, proxied_path: str = path) -> Response:
+            return await _proxy_get(request, proxied_path)
+
+        router.add_api_route(path, handler, methods=["GET"])
+
+
+_register_proxy_routes(proxy_router, PROXIED_PATHS)
+proxy_router.add_api_route(
+    LLM_PROXY_PATH,
+    _proxy_chat_completions,
+    methods=["POST"],
+)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    settings = get_proxy_settings()
-    application.state.http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(settings.proxy_timeout_seconds),
-    )
+    application.state.monitor_network_proxy_http_client = build_proxy_http_client()
     yield
-    await application.state.http_client.aclose()
+    await application.state.monitor_network_proxy_http_client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -151,20 +181,7 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    def _register_proxy_routes(paths: Iterable[str]) -> None:
-        for path in paths:
-            async def handler(request: Request, proxied_path: str = path) -> Response:
-                return await _proxy_get(request, proxied_path)
-
-            application.add_api_route(path, handler, methods=["GET"], tags=["proxy"])
-
-    _register_proxy_routes(PROXIED_PATHS)
-    application.add_api_route(
-        CHAT_COMPLETIONS_PATH,
-        _proxy_chat_completions,
-        methods=["POST"],
-        tags=["proxy"],
-    )
+    application.include_router(proxy_router)
     return application
 
 

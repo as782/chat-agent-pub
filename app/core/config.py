@@ -60,6 +60,10 @@ class Settings(BaseSettings):
         default=15.0,
         validation_alias="LIVE_AGENT_TIMEOUT_SECONDS",
     )
+    enable_monitor_network_proxy: bool = Field(
+        default=False,
+        validation_alias="ENABLE_MONITOR_NETWORK_PROXY",
+    )
     mcp_servers_json: str | None = Field(default=None, validation_alias="MCP_SERVERS_JSON")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")

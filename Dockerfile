@@ -54,6 +54,7 @@ RUN apt-get update \
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app pyproject.toml ./pyproject.toml
 COPY --chown=app:app app ./app
+COPY --chown=app:app live_agent_proxy ./live_agent_proxy
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
@@ -67,6 +68,10 @@ from pathlib import Path
 workspace = Path("/workspace")
 digest = sha256()
 for path in sorted((workspace / "app").rglob("*")):
+    if path.is_file():
+        digest.update(path.relative_to(workspace).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+for path in sorted((workspace / "live_agent_proxy").rglob("*")):
     if path.is_file():
         digest.update(path.relative_to(workspace).as_posix().encode("utf-8"))
         digest.update(path.read_bytes())
