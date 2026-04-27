@@ -123,7 +123,7 @@ def test_chat_completions_proxy_returns_non_stream_response_unchanged(
     )
 
     response = proxy_client.post(
-        "/v1/chat/completions",
+        "/v1/chat/monitor-completions",
         headers={
             "Authorization": "Bearer test-token",
             "Content-Type": "application/json",
@@ -160,7 +160,7 @@ def test_chat_completions_proxy_returns_stream_response_unchanged(
 
     with proxy_client.stream(
         "POST",
-        "/v1/chat/completions",
+        "/v1/chat/monitor-completions",
         headers={"Content-Type": "application/json"},
         json={
             "model": "qwen3535ba3b",

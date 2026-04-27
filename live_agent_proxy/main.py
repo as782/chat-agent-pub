@@ -30,7 +30,8 @@ HOP_BY_HOP_HEADERS = {
     "content-length",
     "host",
 }
-CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
+LLM_PROXY_PATH = "/v1/chat/monitor-completions"
+LLM_UPSTREAM_PATH = "/v1/chat/completions"
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -86,7 +87,7 @@ async def _proxy_chat_completions(request: Request) -> Response:
     settings = get_proxy_settings()
     http_client: httpx.AsyncClient = request.app.state.http_client
     request_body = await request.body()
-    upstream_url = f"{settings.llm_upstream_base_url.rstrip('/')}{CHAT_COMPLETIONS_PATH}"
+    upstream_url = f"{settings.llm_upstream_base_url.rstrip('/')}{LLM_UPSTREAM_PATH}"
 
     try:
         upstream_request = http_client.build_request(
@@ -160,7 +161,7 @@ def create_app() -> FastAPI:
 
     _register_proxy_routes(PROXIED_PATHS)
     application.add_api_route(
-        CHAT_COMPLETIONS_PATH,
+        LLM_PROXY_PATH,
         _proxy_chat_completions,
         methods=["POST"],
         tags=["proxy"],

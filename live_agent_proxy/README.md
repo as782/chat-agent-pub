@@ -6,10 +6,10 @@
 - `/agent/event`
 - `/agent/service`
 - `/agent/topN`
-- `/v1/chat/completions`
+- `/v1/chat/monitor-completions`
 
 它会把收到的 `GET` 请求按原始查询参数转发到真实上游 `http://33.69.9.33:8081`，并将上游响应体和状态码直接返回。
-对于 `POST /v1/chat/completions`，它会把请求体和常用请求头透明转发到 `http://12.1.90.211:32788/v1/chat/completions`，同时保留流式和非流式两种返回方式。
+对于 `POST /v1/chat/monitor-completions`，它会把请求体和常用请求头透明转发到 `http://12.1.90.211:32788/v1/chat/completions`，同时保留流式和非流式两种返回方式。
 
 ## 启动
 
@@ -53,10 +53,10 @@ curl "http://127.0.0.1:8081/agent/service?keyword=兰溪服务区南区"
 curl "http://127.0.0.1:8081/agent/topN"
 ```
 
-### 5. 大模型非流式调用
+### 5. 监控网大模型非流式调用
 
 ```bash
-curl "http://127.0.0.1:8081/v1/chat/completions" \
+curl "http://127.0.0.1:8081/v1/chat/monitor-completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer dKyDeqHfGLEAjSUQA46bFb6d1cBe4aA4822209012a8eF925" \
   -d '{
@@ -66,10 +66,10 @@ curl "http://127.0.0.1:8081/v1/chat/completions" \
   }'
 ```
 
-### 6. 大模型流式调用
+### 6. 监控网大模型流式调用
 
 ```bash
-curl "http://127.0.0.1:8081/v1/chat/completions" \
+curl "http://127.0.0.1:8081/v1/chat/monitor-completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer dKyDeqHfGLEAjSUQA46bFb6d1cBe4aA4822209012a8eF925" \
   -d '{
