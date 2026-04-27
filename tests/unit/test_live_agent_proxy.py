@@ -8,8 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from live_agent_proxy.config import get_proxy_settings
-from live_agent_proxy.main import create_app
+from live_agent_proxy.main import PROXY_STATE_HTTP_CLIENT_KEY, create_app
 
 SUCCESS_PAYLOAD = (
     b'{"code":200,"message":"\xe6\x93\x8d\xe4\xbd\x9c\xe6\x88\x90\xe5\x8a\x9f",'
@@ -17,17 +16,24 @@ SUCCESS_PAYLOAD = (
 )
 
 
+def _install_mock_http_client(
+    proxy_client: TestClient,
+    handle_request: object,
+) -> None:
+    setattr(
+        proxy_client.app.state,
+        PROXY_STATE_HTTP_CLIENT_KEY,
+        httpx.AsyncClient(transport=httpx.MockTransport(handle_request)),
+    )
+
+
 @pytest.fixture
-def proxy_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def proxy_client() -> TestClient:
     """Create a test client for the proxy app with clean settings cache."""
 
-    get_proxy_settings.cache_clear()
-    monkeypatch.setenv("LIVE_AGENT_UPSTREAM_BASE_URL", "http://upstream.example.com")
-    monkeypatch.setenv("LLM_UPSTREAM_BASE_URL", "http://llm-upstream.example.com")
     app = create_app()
     with TestClient(app) as client:
         yield client
-    get_proxy_settings.cache_clear()
 
 
 def test_proxy_forwards_query_and_returns_upstream_json_unchanged(
@@ -36,16 +42,14 @@ def test_proxy_forwards_query_and_returns_upstream_json_unchanged(
     """The proxy should forward the query string and return the exact upstream payload."""
 
     async def handle_request(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "http://upstream.example.com/agent/driving?start=%E6%9D%AD%E5%B7%9E&end=%E6%B8%A9%E5%B7%9E"
+        assert str(request.url) == "http://33.69.9.33:8081/agent/driving?start=%E6%9D%AD%E5%B7%9E&end=%E6%B8%A9%E5%B7%9E"
         return httpx.Response(
             status_code=200,
             headers={"Content-Type": "application/json; charset=utf-8", "X-Upstream": "ok"},
             content=SUCCESS_PAYLOAD,
         )
 
-    proxy_client.app.state.http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handle_request)
-    )
+    _install_mock_http_client(proxy_client, handle_request)
 
     response = proxy_client.get("/agent/driving", params={"start": "杭州", "end": "温州"})
 
@@ -59,16 +63,14 @@ def test_proxy_returns_upstream_non_success_status_unchanged(proxy_client: TestC
     """The proxy should not rewrite upstream non-2xx responses."""
 
     async def handle_request(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "http://upstream.example.com/agent/event?road=G60"
+        assert str(request.url) == "http://33.69.9.33:8081/agent/event?road=G60"
         return httpx.Response(
             status_code=503,
             headers={"Content-Type": "application/json"},
             content=b'{"code":503,"message":"upstream busy","data":null}',
         )
 
-    proxy_client.app.state.http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handle_request)
-    )
+    _install_mock_http_client(proxy_client, handle_request)
 
     response = proxy_client.get("/agent/event", params={"road": "G60"})
 
@@ -82,9 +84,7 @@ def test_proxy_returns_gateway_error_when_upstream_unreachable(proxy_client: Tes
     async def handle_request(_: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")
 
-    proxy_client.app.state.http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handle_request)
-    )
+    _install_mock_http_client(proxy_client, handle_request)
 
     response = proxy_client.get("/agent/topN")
 
@@ -104,7 +104,7 @@ def test_chat_completions_proxy_returns_non_stream_response_unchanged(
     }
 
     async def handle_request(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "http://llm-upstream.example.com/v1/chat/completions"
+        assert str(request.url) == "http://12.1.90.211:32788/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer test-token"
         assert request.headers["content-type"] == "application/json"
         assert json.loads(request.content.decode("utf-8")) == expected_request_body
@@ -118,9 +118,7 @@ def test_chat_completions_proxy_returns_non_stream_response_unchanged(
             ),
         )
 
-    proxy_client.app.state.http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handle_request)
-    )
+    _install_mock_http_client(proxy_client, handle_request)
 
     response = proxy_client.post(
         "/v1/chat/monitor-completions",
@@ -141,7 +139,7 @@ def test_chat_completions_proxy_returns_stream_response_unchanged(
     """The chat-completions proxy should preserve upstream SSE streaming output."""
 
     async def handle_request(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "http://llm-upstream.example.com/v1/chat/completions"
+        assert str(request.url) == "http://12.1.90.211:32788/v1/chat/completions"
         assert json.loads(request.content.decode("utf-8"))["stream"] is True
         return httpx.Response(
             status_code=200,
@@ -154,9 +152,7 @@ def test_chat_completions_proxy_returns_stream_response_unchanged(
             ),
         )
 
-    proxy_client.app.state.http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handle_request)
-    )
+    _install_mock_http_client(proxy_client, handle_request)
 
     with proxy_client.stream(
         "POST",

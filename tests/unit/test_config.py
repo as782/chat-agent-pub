@@ -48,6 +48,7 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     monkeypatch.setenv("DEFAULT_KNOWLEDGE_DATASET_ID", "dataset-default-001")
     monkeypatch.setenv("LIVE_AGENT_BASE_URL", "http://localhost:8081")
     monkeypatch.setenv("LIVE_AGENT_TIMEOUT_SECONDS", "18")
+    monkeypatch.setenv("ENABLE_MONITOR_NETWORK_PROXY", "true")
     monkeypatch.setenv("RAGFLOW_TIMEOUT_SECONDS", "22")
     monkeypatch.setenv("MCP_HTTP_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("MCP_SSE_TIMEOUT_SECONDS", "11")
@@ -82,6 +83,7 @@ def test_get_settings_reads_environment_variables(monkeypatch: MonkeyPatch) -> N
     assert settings.default_knowledge_dataset_id == "dataset-default-001"
     assert settings.live_agent_base_url == "http://localhost:8081"
     assert settings.live_agent_timeout_seconds == 18.0
+    assert settings.enable_monitor_network_proxy is True
     assert settings.ragflow_timeout_seconds == 22.0
     assert settings.mcp_http_timeout_seconds == 9.0
     assert settings.mcp_sse_timeout_seconds == 11.0

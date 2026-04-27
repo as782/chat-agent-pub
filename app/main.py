@@ -6,6 +6,7 @@
 
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 
 from app.api.openai_compat import router as openai_compat_router
@@ -24,20 +25,27 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    """在应用生命周期中初始化和释放基础资源。"""
-
-    await initialize_database()
-    yield
-    await dispose_database()
-
-
 def create_app() -> FastAPI:
     """创建 FastAPI 应用实例。"""
 
     settings = get_settings()
     configure_logging(settings=settings)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        """在应用生命周期中初始化和释放基础资源。"""
+
+        await initialize_database()
+        proxy_http_client: httpx.AsyncClient | None = None
+        if settings.enable_monitor_network_proxy:
+            from live_agent_proxy.main import build_proxy_http_client
+
+            proxy_http_client = build_proxy_http_client()
+            application.state.monitor_network_proxy_http_client = proxy_http_client
+        yield
+        if proxy_http_client is not None:
+            await proxy_http_client.aclose()
+        await dispose_database()
 
     application = FastAPI(
         title=settings.app_name,
@@ -48,6 +56,11 @@ def create_app() -> FastAPI:
     register_exception_handlers(application)
     application.include_router(openai_compat_router)
     application.include_router(api_router)
+    if settings.enable_monitor_network_proxy:
+        from live_agent_proxy.main import proxy_router
+
+        application.include_router(proxy_router)
+        LOGGER.info("监控网接口代理服务已启用。")
     application.add_api_route("/health", health_check, methods=["GET"], tags=["system"])
     LOGGER.info("FastAPI 应用创建完成。")
     return application
