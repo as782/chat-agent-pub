@@ -542,7 +542,7 @@ class AnswerNode:
             tool_choice=state.get("tool_choice"),
             scheduled_route=state.get("scheduled_route"),
             enable_thinking=state.get("enable_thinking"),
-            brief_answer=bool(state.get("brief_answer", False)),
+            brief_answer=bool(state.get("brief_answer", True)),
         )
 
     def _generate_identifier(self) -> str:
@@ -1004,7 +1004,7 @@ class AnswerNode:
 
     @staticmethod
     def _should_use_brief_answer_prompt(state: AgentState) -> bool:
-        return bool(state.get("brief_answer", False))
+        return bool(state.get("brief_answer", True))
 
     @staticmethod
     def _resolve_answer_topic(state: AgentState) -> str:

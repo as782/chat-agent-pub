@@ -87,7 +87,7 @@ def test_answer_node_compacts_redundant_executor_result_fields() -> None:
 def test_answer_node_resolves_prompt_name_from_category() -> None:
     assert (
         AnswerNode._resolve_answer_prompt_name({"primary_category": "traffic_status"})
-        == "TRAFFIC_SUMMARY_PROMPT"
+        == "BRIEF_TRAFFIC_SUMMARY_PROMPT"
     )
     assert (
         AnswerNode._resolve_answer_prompt_name({"primary_category": "network_report"})
@@ -98,6 +98,7 @@ def test_answer_node_resolves_prompt_name_from_category() -> None:
 def test_answer_node_uses_composite_prompt_for_route_congestion_questions() -> None:
     state = {
         "primary_category": "route_planning",
+        "brief_answer": False,
         "latest_user_message": "杭州到金华堵不堵",
         "step_results": {
             "route_1": ExecutorResult(
@@ -119,6 +120,7 @@ def test_answer_node_uses_composite_prompt_for_route_congestion_questions() -> N
 def test_answer_node_keeps_traffic_prompt_for_traffic_only_questions() -> None:
     state = {
         "primary_category": "traffic_status",
+        "brief_answer": False,
         "latest_user_message": "杭金衢高速堵不堵",
         "step_results": {
             "traffic_1": ExecutorResult(
@@ -150,6 +152,41 @@ def test_answer_node_uses_brief_prompt_when_requested() -> None:
     assert AnswerNode._resolve_answer_instruction(state) == BRIEF_TRAFFIC_SUMMARY_PROMPT
 
 
+def test_answer_node_uses_brief_prompt_by_default() -> None:
+    state = {
+        "primary_category": "traffic_status",
+        "latest_user_message": "traffic status",
+        "step_results": {
+            "traffic_1": ExecutorResult(
+                step_id="traffic_1",
+                executor="traffic",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "BRIEF_TRAFFIC_SUMMARY_PROMPT"
+    assert AnswerNode._resolve_answer_instruction(state) == BRIEF_TRAFFIC_SUMMARY_PROMPT
+
+
+def test_answer_node_uses_regular_prompt_when_brief_disabled() -> None:
+    state = {
+        "primary_category": "traffic_status",
+        "brief_answer": False,
+        "latest_user_message": "traffic status",
+        "step_results": {
+            "traffic_1": ExecutorResult(
+                step_id="traffic_1",
+                executor="traffic",
+                is_success=True,
+            ),
+        },
+    }
+
+    assert AnswerNode._resolve_answer_prompt_name(state) == "TRAFFIC_SUMMARY_PROMPT"
+    assert AnswerNode._resolve_answer_instruction(state) == TRAFFIC_SUMMARY_PROMPT
+
+
 def test_answer_node_uses_brief_route_prompt_when_requested() -> None:
     state = {
         "primary_category": "route_planning",
@@ -166,7 +203,7 @@ def test_answer_node_uses_brief_route_prompt_when_requested() -> None:
 
     assert AnswerNode._resolve_answer_prompt_name(state) == "BRIEF_ROUTE_SUMMARY_PROMPT"
     instruction = AnswerNode._resolve_answer_instruction(state)
-    assert "回答控制在 1 到 2 句话内" in instruction
+    assert "回答控制在 2 到 3 句话内" in instruction
     assert "{focus}" not in instruction
     assert instruction != BRIEF_ROUTE_SUMMARY_PROMPT
 
@@ -243,6 +280,7 @@ def test_network_report_prompt_requires_strict_table_column_rules() -> None:
 def test_answer_node_keeps_route_prompt_for_route_only_questions() -> None:
     state = {
         "primary_category": "route_planning",
+        "brief_answer": False,
         "latest_user_message": "杭州到金华怎么走",
         "step_results": {
             "route_1": ExecutorResult(
@@ -270,6 +308,7 @@ def test_route_summary_prompt_supports_dual_focus_modes() -> None:
 def test_answer_node_route_instruction_prioritizes_route_for_wayfinding() -> None:
     state = {
         "primary_category": "route_planning",
+        "brief_answer": False,
         "latest_user_message": "杭州到金华怎么走",
         "current_step_id": "answer_1",
         "execution_plan": ExecutionPlan(
@@ -310,6 +349,7 @@ def test_answer_node_route_instruction_prioritizes_route_for_wayfinding() -> Non
 def test_answer_node_route_instruction_defaults_to_traffic_for_generic_od() -> None:
     state = {
         "primary_category": "route_planning",
+        "brief_answer": False,
         "latest_user_message": "杭州到金华",
         "current_step_id": "answer_1",
         "execution_plan": ExecutionPlan(
@@ -349,6 +389,7 @@ def test_answer_node_route_instruction_defaults_to_traffic_for_generic_od() -> N
 def test_answer_node_route_instruction_prioritizes_congestion_for_od_traffic() -> None:
     state = {
         "primary_category": "route_planning",
+        "brief_answer": False,
         "latest_user_message": "北京到上海堵吗",
         "current_step_id": "answer_1",
         "execution_plan": ExecutionPlan(
@@ -394,6 +435,7 @@ def test_answer_node_route_instruction_prioritizes_congestion_for_od_traffic() -
 def test_answer_node_uses_composite_prompt_for_route_and_rag_results() -> None:
     state = {
         "primary_category": "route_planning",
+        "brief_answer": False,
         "latest_user_message": "今天上高速到明天下高速要过路费吗",
         "step_results": {
             "route_1": ExecutorResult(

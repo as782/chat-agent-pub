@@ -194,6 +194,43 @@ def test_build_execution_request_forwards_brief_answer() -> None:
     assert execution_request.brief_answer is True
 
 
+def test_build_execution_request_defaults_brief_answer_to_true() -> None:
+    """Omitted brief_answer should use compact answer mode by default."""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    request = OpenAIChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "traffic status"}],
+    )
+
+    execution_request = service._build_execution_request(
+        chat_request=request,
+        session_id=None,
+    )
+
+    assert execution_request.brief_answer is True
+
+
+def test_build_execution_request_forwards_brief_answer_false() -> None:
+    """Explicit brief_answer=false should disable compact answer mode."""
+
+    db_session = AsyncMock()
+    service = _build_service(db_session)
+    request = OpenAIChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "traffic status"}],
+        brief_answer=False,
+    )
+
+    execution_request = service._build_execution_request(
+        chat_request=request,
+        session_id=None,
+    )
+
+    assert execution_request.brief_answer is False
+
+
 @pytest.mark.asyncio
 async def test_prepare_chat_execution_resolves_session_and_persists_user_message_once() -> None:
     """公共准备流程应解析会话并且只持久化一次用户消息。"""
