@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from app.agent.event_filter import should_filter_live_event
+
 _DIRECTION_HINT_PATTERN = re.compile(
     r"(双向|上行|下行|[东南西北]{1,2}向|[\u4e00-\u9fffA-Za-z0-9]{1,12}方向)"
 )
@@ -75,6 +77,7 @@ def _filter_directional_items(
         if isinstance(raw_items, list)
         else []
     )
+    items = [item for item in items if not should_filter_live_event(item)]
     if not items:
         return []
 

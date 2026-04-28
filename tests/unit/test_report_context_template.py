@@ -95,12 +95,20 @@ class _FilteredReportToolRegistry:
                                 "roadGBCode": "G2",
                                 "roadName": "京沪高速",
                                 "directionName": "北京方向",
-                                "eventType": "07",  # 车辆故障
+                                "eventClass": "07",  # 车辆故障
                                 "des": "货车抛锚占用应急车道",
+                            },
+                            {
+                                "roadGBCode": "G97",
+                                "roadName": "测试高速",
+                                "directionName": "北向",
+                                "eventType": "97",
+                                "des": "eventType车辆故障",
                             },
                             # 正常拥堵事件 - 应该保留
                             {
                                 "roadGBCode": "G15",
+                                "eventType": "07",
                                 "roadName": "沈海高速",
                                 "directionName": "广州方向",
                                 "eventClass": "03",  # 道路缓行
@@ -179,6 +187,7 @@ async def test_report_node_filters_accident_and_vehicle_fault_events() -> None:
     # 验证交通事故、车辆故障和硬路肩开放事件没有出现在report_context中
     assert "多车追尾" not in report_context
     assert "货车抛锚" not in report_context
+    assert "eventType车辆故障" not in report_context
     assert "因交通事故实施单向封道" not in report_context
     assert "开放硬路肩供车辆通行" not in report_context
     
