@@ -123,6 +123,10 @@ class OpenAIChatCompletionRequest(BaseModel):
         default=None,
         description="Optional execution route override for scheduled requests.",
     )
+    brief_answer: bool = Field(
+        default=False,
+        description="Whether answer_node should use compact answer prompts, except reports.",
+    )
     enable_thinking: bool | None = Field(
         default=None,
         description="Top-level thinking toggle for compatible Qwen-style models.",

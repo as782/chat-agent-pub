@@ -558,7 +558,7 @@ class ChatService:
         final_content: str,
         emitted_content: str,
     ) -> str | None:
-        """Handle report summaries whose final_result adds a fixed prefix after streaming raw summary text."""
+        """Handle report summaries whose final_result adds a prefix after streaming text."""
 
         for prefix in (
             "AI播报总结：",
@@ -602,6 +602,7 @@ class ChatService:
             tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
             scheduled_route=chat_request.scheduled_route,
             enable_thinking=chat_request.resolved_enable_thinking,
+            brief_answer=chat_request.brief_answer,
             user_id=chat_request.user,
         )
 

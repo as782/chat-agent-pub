@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolNode as PrebuiltToolNode
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.context_builder import truncate_tool_output_for_context
 from app.agent.nodes.answer_node import AnswerNode
 from app.agent.prompts import UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
@@ -310,7 +311,7 @@ class ToolNode:
                 conversation_messages.append(
                     LlmInputMessage(
                         role="tool",
-                        content=tool_result.output,
+                        content=truncate_tool_output_for_context(tool_result.output),
                         tool_call_id=tool_result.tool_call_id,
                     )
                 )

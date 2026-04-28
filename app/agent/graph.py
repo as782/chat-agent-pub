@@ -193,7 +193,9 @@ class ConversationGraph:
             "requested_tool_names": execution_request.requested_tool_names,
             "tool_choice": execution_request.tool_choice,
             "forced_route": execution_request.scheduled_route,
+            "requested_scheduled_route": execution_request.scheduled_route,
             "enable_thinking": execution_request.enable_thinking,
+            "brief_answer": execution_request.brief_answer,
         }
 
     @staticmethod

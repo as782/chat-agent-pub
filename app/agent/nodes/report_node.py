@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from json import loads
 
+from app.agent.event_filter import should_filter_report_event
 from app.agent.prompts import REPORT_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
@@ -473,27 +474,7 @@ class ReportNode:
         根据需求，需要过滤掉交通事故(04)和车辆故障(07)等事件，
         以及10110硬路肩开放的管制类型。
         """
-        # 获取事件分类字段
-        event_class = ReportNode._string_or_placeholder(item.get("eventClass"))
-        event_type = ReportNode._string_or_placeholder(item.get("eventType"))
-        control_type = ReportNode._string_or_placeholder(item.get("controlType"))
-        
-        # 定义需要过滤的事件分类码值
-        filtered_classes = {"04", "07"}  # 04:交通事故, 07:车辆故障
-        
-        # 检查eventClass是否在过滤列表中
-        if event_class in filtered_classes:
-            return True
-            
-        # 检查eventType是否在过滤列表中
-        if event_type in filtered_classes:
-            return True
-            
-        # 检查controlType是否为10110（硬路肩开放）
-        if control_type == "10110":
-            return True
-            
-        return False
+        return should_filter_report_event(item)
 
     @classmethod
     def _build_compact_report_context(

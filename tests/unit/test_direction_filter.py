@@ -148,3 +148,50 @@ def test_filter_section_events_drops_origin_only_semantic_direction_label() -> N
     )
 
     assert [item["id"] for item in filtered["trafficControls"]] == ["bi"]
+
+
+def test_filter_section_events_drops_documented_event_types() -> None:
+    section = {
+        "roadName": "G60",
+        "trafficCongestions": [
+            {"id": "traffic-event", "eventType": "01", "directionType": "00"},
+            {"id": "vehicle-fault", "eventType": "97", "directionType": "00"},
+            {"id": "roadwork", "eventType": "05", "directionType": "00"},
+        ],
+        "trafficControls": [
+            {"id": "control-traffic-event", "eventType": "01", "directionType": "00"},
+            {"id": "control-roadwork", "eventType": "05", "directionType": "00"},
+        ],
+    }
+
+    filtered = filter_section_events_for_travel_direction(
+        section=section,
+        origin="杭州",
+        destination="金华",
+    )
+
+    assert [item["id"] for item in filtered["trafficCongestions"]] == ["roadwork"]
+    assert [item["id"] for item in filtered["trafficControls"]] == ["control-roadwork"]
+
+
+def test_filter_road_payload_events_drops_documented_event_types() -> None:
+    payload = {
+        "roadName": "G25",
+        "congestionInfoList": [
+            {"id": "vehicle-fault", "eventType": "97", "directionType": "00"},
+            {"id": "congestion", "eventType": "03", "directionType": "00"},
+        ],
+        "trafficControlList": [
+            {"id": "traffic-event", "eventType": "01", "directionType": "00"},
+            {"id": "construction", "eventType": "05", "directionType": "00"},
+        ],
+    }
+
+    filtered = filter_road_payload_events_for_travel_direction(
+        road_payload=payload,
+        origin=None,
+        destination=None,
+    )
+
+    assert [item["id"] for item in filtered["congestionInfoList"]] == ["congestion"]
+    assert [item["id"] for item in filtered["trafficControlList"]] == ["construction"]

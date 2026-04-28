@@ -1,29 +1,64 @@
-"""Context building utilities.
+"""上下文构建工具。
 
-This module assembles the final message list sent to the model and provides a
-safe token estimation helper for logging and monitoring.
+负责组装最终发送给模型的消息列表，并提供安全的 token 估算与上下文截断能力。
 """
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from json import dumps
-import math
-import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tiktoken
 
+from app.agent.history_utils import limit_messages_to_recent_turns
 from app.agent.prompts import (
     CURRENT_DATETIME_CONTEXT_PROMPT_PREFIX,
     MEMORY_SUMMARY_PROMPT_PREFIX,
 )
-from app.agent.history_utils import limit_messages_to_recent_turns
 from app.agent.state import PreparedContext
 from app.clients.llm_client import LlmInputMessage, LlmToolCall
 from app.persistence.models import MessageEntity
+
+# 当前本地 qwen3535ba3b 的 SGLang 服务虽然配置了 262144 上下文窗口，
+# 但业务侧保守控制在 80k 内，给输出、工具轮次、估算误差和并发显存留余量。
+MAX_PROMPT_TOKENS = 80_000
+
+# 路线规划上下文包含路线、服务区、管制、收费站和拥堵明细，高峰期容易膨胀。
+MAX_ROUTE_CONTEXT_TOKENS = 25_000
+
+# 路况上下文可能按多条道路展开，每条道路又包含拥堵、管制、收费站等事件。
+MAX_TRAFFIC_CONTEXT_TOKENS = 25_000
+
+# 普通意图被分类/兜底进入 report 时，先使用较保守的 report_content 预算。
+MAX_REPORT_CONTEXT_TOKENS = 30_000
+
+# 明确 scheduled_route=report 时，用户通常需要全网/全省报表，允许更完整的上下文。
+MAX_SCHEDULED_REPORT_CONTEXT_TOKENS = 80_000
+
+# 工具或 MCP 返回可能是大 JSON；原始结果可持久化，进入模型前必须压缩。
+MAX_TOOL_OUTPUT_TOKENS = 20_000
+
+# 执行节点结果只保留组织最终回答所需的 compact 信息，避免和专用上下文重复。
+MAX_EXECUTOR_RESULTS_TOKENS = 8_000
+
+# MCP、知识库、服务区、会话记忆属于辅助上下文，避免挤占 route/traffic/report 预算。
+MAX_MCP_CONTEXT_TOKENS = 10_000
+MAX_KNOWLEDGE_CONTEXT_TOKENS = 10_000
+MAX_SERVICE_CONTEXT_TOKENS = 10_000
+MAX_MEMORY_SUMMARY_TOKENS = 8_000
+
+# 整体 prompt 兜底压缩时，每条被截断的非 user 消息至少保留这部分上下文。
+MIN_TRUNCATED_MESSAGE_TOKENS = 512
+
+_TRUNCATION_NOTICE_TEMPLATE = (
+    "\n\n[系统提示：{label} 数据量较大，后续明细已省略；"
+    "请基于已保留的统计、重点异常和代表性明细回答，不要编造被省略的数据。]"
+)
 
 
 def message_entity_to_input_message(message_entity: MessageEntity) -> LlmInputMessage:
@@ -164,6 +199,59 @@ def _estimate_text_tokens_locally(text: str) -> int:
     return token_count
 
 
+def _build_truncation_notice(label: str) -> str:
+    return _TRUNCATION_NOTICE_TEMPLATE.format(label=label)
+
+
+def truncate_text_to_token_budget(
+    text: str | None,
+    *,
+    max_tokens: int,
+    label: str,
+) -> str | None:
+    """按近似 token 预算截断大块上下文文本。"""
+
+    if text is None:
+        return None
+
+    normalized_text = text.strip()
+    if not normalized_text:
+        return normalized_text
+
+    if _estimate_text_tokens_locally(normalized_text) <= max_tokens:
+        return normalized_text
+
+    notice = _build_truncation_notice(label)
+    notice_tokens = _estimate_text_tokens_locally(notice)
+    content_budget = max(0, max_tokens - notice_tokens)
+    if content_budget <= 0:
+        return notice.strip()
+
+    low = 0
+    high = len(normalized_text)
+    best = ""
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = normalized_text[:mid].rstrip()
+        if _estimate_text_tokens_locally(candidate) <= content_budget:
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    return f"{best}{notice}"
+
+
+def truncate_tool_output_for_context(output: str) -> str:
+    """在工具或 MCP 输出进入下一轮模型前做截断保护。"""
+
+    return truncate_text_to_token_budget(
+        output,
+        max_tokens=MAX_TOOL_OUTPUT_TOKENS,
+        label="工具返回结果",
+    ) or ""
+
+
 def _estimate_messages_tokens_locally(messages: Sequence[LlmInputMessage]) -> int:
     """Fallback estimator used when tokenizer resolution is unavailable."""
 
@@ -297,6 +385,58 @@ class ContextBuilder:
             system_messages.append(LlmInputMessage(role="system", content=report_context))
         return system_messages
 
+    @staticmethod
+    def _enforce_prompt_token_budget(
+        messages: Sequence[LlmInputMessage],
+        *,
+        model_name: str | None,
+        max_tokens: int = MAX_PROMPT_TOKENS,
+    ) -> list[LlmInputMessage]:
+        """在分块截断之后，对整个 prompt 再做最后一层预算保护。"""
+
+        fitted_messages = list(messages)
+        current_tokens = estimate_messages_tokens(fitted_messages, model_name=model_name)
+        if current_tokens <= max_tokens:
+            return fitted_messages
+
+        for _ in range(len(fitted_messages) * 2):
+            current_tokens = estimate_messages_tokens(fitted_messages, model_name=model_name)
+            if current_tokens <= max_tokens:
+                break
+
+            candidates: list[tuple[int, int]] = []
+            for index, message in enumerate(fitted_messages):
+                if message.role == "user":
+                    continue
+                message_tokens = _estimate_text_tokens_locally(message.content)
+                if message_tokens > MIN_TRUNCATED_MESSAGE_TOKENS:
+                    candidates.append((message_tokens, index))
+
+            if not candidates:
+                break
+
+            message_tokens, index = max(candidates)
+            overflow_tokens = current_tokens - max_tokens
+            next_budget = max(
+                MIN_TRUNCATED_MESSAGE_TOKENS,
+                message_tokens - overflow_tokens - 1_000,
+            )
+            message = fitted_messages[index]
+            fitted_messages[index] = LlmInputMessage(
+                role=message.role,
+                content=truncate_text_to_token_budget(
+                    message.content,
+                    max_tokens=next_budget,
+                    label="整体上下文",
+                )
+                or "",
+                name=message.name,
+                tool_call_id=message.tool_call_id,
+                tool_calls=message.tool_calls,
+            )
+
+        return fitted_messages
+
     def build_context(
         self,
         *,
@@ -314,8 +454,50 @@ class ContextBuilder:
         traffic_context: str | None = None,
         service_context: str | None = None,
         report_context: str | None = None,
+        report_context_max_tokens: int = MAX_REPORT_CONTEXT_TOKENS,
     ) -> PreparedContext:
         """Build the final model input for the current turn."""
+
+        executor_results_context = truncate_text_to_token_budget(
+            executor_results_context,
+            max_tokens=MAX_EXECUTOR_RESULTS_TOKENS,
+            label="执行节点结果",
+        )
+        memory_summary = truncate_text_to_token_budget(
+            memory_summary,
+            max_tokens=MAX_MEMORY_SUMMARY_TOKENS,
+            label="会话记忆",
+        )
+        knowledge_context = truncate_text_to_token_budget(
+            knowledge_context,
+            max_tokens=MAX_KNOWLEDGE_CONTEXT_TOKENS,
+            label="知识库上下文",
+        )
+        route_context = truncate_text_to_token_budget(
+            route_context,
+            max_tokens=MAX_ROUTE_CONTEXT_TOKENS,
+            label="路线规划上下文",
+        )
+        mcp_context = truncate_text_to_token_budget(
+            mcp_context,
+            max_tokens=MAX_MCP_CONTEXT_TOKENS,
+            label="MCP 上下文",
+        )
+        traffic_context = truncate_text_to_token_budget(
+            traffic_context,
+            max_tokens=MAX_TRAFFIC_CONTEXT_TOKENS,
+            label="路况上下文",
+        )
+        service_context = truncate_text_to_token_budget(
+            service_context,
+            max_tokens=MAX_SERVICE_CONTEXT_TOKENS,
+            label="服务区上下文",
+        )
+        report_context = truncate_text_to_token_budget(
+            report_context,
+            max_tokens=report_context_max_tokens,
+            label="report_content",
+        )
 
         internal_system_messages = self._build_internal_system_messages(
             answer_instruction=answer_instruction,
@@ -342,6 +524,10 @@ class ContextBuilder:
             context_messages = limit_messages_to_recent_turns(
                 context_messages,
                 max_turns=max_turns,
+            )
+            context_messages = self._enforce_prompt_token_budget(
+                context_messages,
+                model_name=model_name,
             )
             return PreparedContext(
                 messages=context_messages,
@@ -380,6 +566,10 @@ class ContextBuilder:
         context_messages = limit_messages_to_recent_turns(
             context_messages,
             max_turns=max_turns,
+        )
+        context_messages = self._enforce_prompt_token_budget(
+            context_messages,
+            model_name=model_name,
         )
         return PreparedContext(
             messages=context_messages,

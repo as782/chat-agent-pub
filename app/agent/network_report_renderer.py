@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from logging import Logger
 import re
 
+from app.agent.event_filter import should_filter_report_event
 from app.core.logger import get_logger
 from app.agent.state import ExecutorResult
 
@@ -54,27 +55,7 @@ def _should_filter_event(item: dict[str, object]) -> bool:
     根据需求，需要过滤掉交通事故(04)和车辆故障(07)等事件，
     以及10110硬路肩开放的管制类型。
     """
-    # 获取事件分类字段
-    event_class = _first_non_empty(item.get("eventClass"))
-    event_type = _first_non_empty(item.get("eventType"))
-    control_type = _first_non_empty(item.get("controlType"))
-    
-    # 定义需要过滤的事件分类码值
-    filtered_classes = {"04", "07"}  # 04:交通事故, 07:车辆故障
-    
-    # 检查eventClass是否在过滤列表中
-    if event_class in filtered_classes:
-        return True
-        
-    # 检查eventType是否在过滤列表中
-    if event_type in filtered_classes:
-        return True
-        
-    # 检查controlType是否为10110（硬路肩开放）
-    if control_type == "10110":
-        return True
-        
-    return False
+    return should_filter_report_event(item)
 
 
 def build_network_report_render_result(

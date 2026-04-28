@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
 from langchain_core.messages import AIMessage
+
 from app.clients.llm_client import LlmInputMessage
 from app.mcp.models import McpRuntimeTool
 from app.schemas.knowledge import KnowledgeSearchResult
@@ -89,6 +90,7 @@ class ChatExecutionRequest:
     forced_route: AgentRoute | None = None
     scheduled_route: AgentRoute | None = None
     enable_thinking: bool | None = None
+    brief_answer: bool = False
     user_id: str | None = None
     message_metadata: dict[str, object] = field(default_factory=dict)
 
@@ -140,7 +142,9 @@ class AgentState(TypedDict, total=False):
     requested_tool_names: list[str] | None
     tool_choice: str | dict[str, object] | None
     enable_thinking: bool | None
+    brief_answer: bool
     forced_route: AgentRoute | None
+    requested_scheduled_route: AgentRoute | None
     route: AgentRoute
     scheduled_route: AgentRoute
     current_step_id: str | None
