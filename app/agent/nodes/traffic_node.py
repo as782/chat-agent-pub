@@ -202,20 +202,40 @@ class TrafficNode:
         origin = query_arguments.get("origin")
         destination = query_arguments.get("destination")
         explicit_direction = query_arguments.get("direction")
+        requested_road_name = str(query_arguments.get("road_name") or "").strip()
+        requested_road_code = str(query_arguments.get("road_code") or "").strip().upper()
         for road in normalized_roads:
-            tool_output = await self._tool_registry.execute_named_tool(
-                tool_name="live_road_event_query",
-                arguments={"road": road},
+            api_result = await self._query_single_road(
+                road=road,
+                origin=origin,
+                destination=destination,
+                explicit_direction=explicit_direction,
             )
-            api_result = [
-                filter_road_payload_events_for_travel_direction(
-                    road_payload=item,
+            if self._should_retry_by_requested_road_name(
+                query_road=road,
+                requested_road_name=requested_road_name,
+                requested_road_code=requested_road_code,
+                api_result=api_result,
+            ):
+                LOGGER.warning(
+                    (
+                        "Traffic road code result does not match requested road name; "
+                        "retrying by road name: query_road=%s requested_road_name=%s "
+                        "matched_road_names=%s"
+                    ),
+                    road,
+                    requested_road_name,
+                    self._deduplicate_strings(
+                        str(item.get("roadName") or "").strip() for item in api_result
+                    ),
+                )
+                api_result = await self._query_single_road(
+                    road=requested_road_name,
                     origin=origin,
                     destination=destination,
                     explicit_direction=explicit_direction,
                 )
-                for item in self._parse_tool_output(tool_output)
-            ]
+                road = requested_road_name
             road_results.append(
                 {
                     "query_road": road,
@@ -223,6 +243,66 @@ class TrafficNode:
                 }
             )
         return road_results
+
+    async def _query_single_road(
+        self,
+        *,
+        road: str,
+        origin: object,
+        destination: object,
+        explicit_direction: object,
+    ) -> list[dict[str, object]]:
+        tool_output = await self._tool_registry.execute_named_tool(
+            tool_name="live_road_event_query",
+            arguments={"road": road},
+        )
+        return [
+            filter_road_payload_events_for_travel_direction(
+                road_payload=item,
+                origin=origin,
+                destination=destination,
+                explicit_direction=explicit_direction,
+            )
+            for item in self._parse_tool_output(tool_output)
+        ]
+
+    @staticmethod
+    def _should_retry_by_requested_road_name(
+        *,
+        query_road: str,
+        requested_road_name: str,
+        requested_road_code: str,
+        api_result: list[dict[str, object]],
+    ) -> bool:
+        if not requested_road_name or not requested_road_code:
+            return False
+        if query_road.strip().upper() != requested_road_code:
+            return False
+        if not api_result:
+            return True
+        return not any(
+            TrafficNode._road_name_matches(
+                requested_road_name,
+                str(item.get("roadName") or "").strip(),
+            )
+            for item in api_result
+            if isinstance(item, dict)
+        )
+
+    @staticmethod
+    def _road_name_matches(requested_road_name: str, returned_road_name: str) -> bool:
+        requested = TrafficNode._normalize_road_name_for_match(requested_road_name)
+        returned = TrafficNode._normalize_road_name_for_match(returned_road_name)
+        if not requested or not returned:
+            return False
+        return requested in returned or returned in requested
+
+    @staticmethod
+    def _normalize_road_name_for_match(value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        for token in ("高速公路", "高速", "公路", "（", "）", "(", ")", " ", "\t", "\n"):
+            normalized = normalized.replace(token, "")
+        return normalized
 
     def _resolve_queried_roads(
         self,

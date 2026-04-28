@@ -186,6 +186,34 @@ class _CapturingToolRegistry:
         )
 
 
+class _MismatchedRoadToolRegistry:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+        self.calls.append({"tool_name": tool_name, "arguments": dict(arguments)})
+        road = arguments.get("road")
+        if road == "S32":
+            road_name = "Qianhuang Expressway"
+            road_code = "S32"
+        else:
+            road_name = "Shenjiahu Expressway"
+            road_code = "S12"
+        return dumps(
+            [
+                {
+                    "roadName": road_name,
+                    "roadGbCode": road_code,
+                    "congestionInfoList": [],
+                    "trafficControlList": [],
+                    "serviceAreaList": [],
+                    "exitInfoList": [],
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+
 @pytest.mark.asyncio
 async def test_traffic_node_uses_llm_inferred_canonical_road() -> None:
     tool_registry = _CapturingToolRegistry()
@@ -226,7 +254,7 @@ async def test_traffic_node_uses_llm_inferred_canonical_road() -> None:
 
 
 @pytest.mark.asyncio
-async def test_traffic_node_prefers_road_code_over_road_name_and_raw_query_text() -> None:
+async def test_traffic_node_queries_road_code_before_name_fallback() -> None:
     tool_registry = _CapturingToolRegistry()
     node = TrafficNode(tool_registry=tool_registry)
 
@@ -250,7 +278,7 @@ async def test_traffic_node_prefers_road_code_over_road_name_and_raw_query_text(
         }
     )
 
-    assert tool_registry.calls[-1] == {
+    assert tool_registry.calls[0] == {
         "tool_name": "live_road_event_query",
         "arguments": {"road": "S26"},
     }
@@ -286,3 +314,55 @@ async def test_traffic_node_prefers_single_canonical_road_over_surface_roads_lis
         "tool_name": "live_road_event_query",
         "arguments": {"road": "G60"},
     }
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_retries_by_road_name_when_code_result_mismatches_name() -> None:
+    tool_registry = _MismatchedRoadToolRegistry()
+    node = TrafficNode(tool_registry=tool_registry)
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={
+                    "query": "Is Shenjiahu congested?",
+                    "road": "S32",
+                    "road_name": "Shenjiahu Expressway",
+                    "road_code": "S32",
+                    "target": "Shenjiahu Expressway",
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls == [
+        {"tool_name": "live_road_event_query", "arguments": {"road": "S32"}},
+        {
+            "tool_name": "live_road_event_query",
+            "arguments": {"road": "Shenjiahu Expressway"},
+        },
+    ]
+    query_arguments = result["step_results"]["traffic_1"].raw_result["query_arguments"]
+    per_road_results = result["step_results"]["traffic_1"].raw_result["per_road_results"]
+    assert query_arguments["queried_roads"] == ["S32"]
+    assert per_road_results == [
+        {
+            "query_road": "Shenjiahu Expressway",
+            "api_result": [
+                {
+                    "roadName": "Shenjiahu Expressway",
+                    "roadGbCode": "S12",
+                    "congestionInfoList": [],
+                    "trafficControlList": [],
+                    "serviceAreaList": [],
+                    "exitInfoList": [],
+                }
+            ],
+        }
+    ]
