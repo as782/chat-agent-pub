@@ -31,7 +31,7 @@ def get_proxy_settings() -> ProxySettings:
     """Return proxy settings backed by module constants."""
 
     app_settings = get_settings()
-    if app_settings.enable_monitor_network_proxy and app_settings.is_debug:
+    if app_settings.enable_monitor_network_proxy and app_settings.use_bridge_proxy_in_dev:
         bridge_base_url = MONITOR_NETWORK_BRIDGE_BASE_URL.rstrip("/")
         return ProxySettings(
             upstream_base_url=bridge_base_url,
