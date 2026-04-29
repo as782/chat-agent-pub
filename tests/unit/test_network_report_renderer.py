@@ -166,6 +166,40 @@ def test_network_report_renderer_splits_exit_and_mainline_rows_stably() -> None:
     assert "宁波方向" in report_markdown
 
 
+def test_network_report_renderer_adds_major_topn_rows() -> None:
+    report_markdown = render_network_report_from_step_results(
+        {
+            "report_1": ExecutorResult(
+                step_id="report_1",
+                executor="report",
+                is_success=True,
+                normalized_result={
+                    "congestion_total_mile": 0,
+                    "congestion_top_items": [],
+                    "major_top_items": [
+                        {
+                            "roadGBCode": "G92",
+                            "roadName": "G92杭州湾环线高速",
+                            "directionName": "宁波方向",
+                            "eventClass": "07",
+                            "eventType": "07",
+                            "subEventTypeId": "070701",
+                            "des": "大流量通行缓慢",
+                        }
+                    ],
+                    "control_top_items": [],
+                    "exit_top_items": [],
+                },
+            )
+        }
+    )
+
+    assert report_markdown is not None
+    assert "1处重大事件" in report_markdown
+    assert "| G92 |" in report_markdown
+    assert "重大事件，宁波方向，重大事件 / 小类大流量，大流量通行缓慢" in report_markdown
+
+
 def test_network_report_renderer_accepts_serialized_step_results() -> None:
     render_result = build_network_report_render_result(
         {

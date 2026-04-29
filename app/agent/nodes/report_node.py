@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from json import loads
 
+from app.agent.event_catalog import resolve_event_type_name, resolve_sub_event_type
 from app.agent.event_filter import should_filter_report_event
 from app.agent.prompts import REPORT_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
@@ -106,7 +107,7 @@ class ReportNode:
 
         data = response_payload.get("data")
         if isinstance(data, dict):
-            topn_keys = {"queryTime", "congestionTopN", "controlTopN", "exitTopN"}
+            topn_keys = {"queryTime", "congestionTopN", "majorTopN", "controlTopN", "exitTopN"}
             if any(key in data for key in topn_keys):
                 return data
         return response_payload
@@ -124,10 +125,12 @@ class ReportNode:
                 "query_time": None,
                 "congestion_total_mile": None,
                 "congestion_top_count": 0,
+                "major_top_count": 0,
                 "accident_top_count": 0,
                 "control_top_count": 0,
                 "exit_top_count": 0,
                 "congestion_top_items": [],
+                "major_top_items": [],
                 "accident_top_items": [],
                 "control_top_items": [],
                 "exit_top_items": [],
@@ -136,6 +139,7 @@ class ReportNode:
         query_time = ReportNode._string_or_placeholder(response_payload.get("queryTime"))
         congestion_total_mile = ReportNode._extract_congestion_total_mile(response_payload)
         congestion_top_items = ReportNode._extract_payload_items(response_payload, "congestionTopN")
+        major_top_items = ReportNode._extract_payload_items(response_payload, "majorTopN")
         accident_top_items = ReportNode._extract_payload_items(response_payload, "accidentTopN")
         control_top_items = ReportNode._extract_payload_items(response_payload, "controlTopN")
         exit_top_items = ReportNode._extract_payload_items(response_payload, "exitTopN")
@@ -144,6 +148,10 @@ class ReportNode:
         filtered_congestion_items = [
             item for item in congestion_top_items 
             if not ReportNode._should_filter_event(item)
+        ]
+        filtered_major_items = [
+            item for item in major_top_items
+            if not ReportNode._should_filter_major_event(item)
         ]
         
         # 对主线管制事件进行筛选
@@ -166,10 +174,12 @@ class ReportNode:
             "query_time": query_time,
             "congestion_total_mile": congestion_total_mile,
             "congestion_top_count": len(filtered_congestion_items),
+            "major_top_count": len(filtered_major_items),
             "accident_top_count": len(filtered_accident_items),
             "control_top_count": len(filtered_control_items),
             "exit_top_count": len(filtered_exit_items),
             "congestion_top_items": filtered_congestion_items,
+            "major_top_items": filtered_major_items,
             "accident_top_items": filtered_accident_items,
             "control_top_items": filtered_control_items,
             "exit_top_items": filtered_exit_items,
@@ -263,35 +273,24 @@ class ReportNode:
         cls,
         event_class: object | None,
         event_type: object | None,
+        sub_event_type_id: object | None = None,
     ) -> str:
         """Format the event classification using the provided code mapping."""
 
-        event_category_map = {
-            "01": "交通事件",
-            "02": "交通灾害",
-            "03": "交通气象",
-            "04": "路面状况",
-            "05": "路面施工",
-            "06": "活动",
-            "07": "重大事件",
-            "09": "其他",
-            "97": "车辆故障",
-            "98": "服务区事件",
-            "99": "收费站入口关闭",
-            "100": "收费站入口限流",
-            "101": "收费站出口关闭",
-            "103": "主线管制",
-            "104": "收费站出口分流",
-            "105": "道路缓行",
-        }
         class_label = cls._string_or_placeholder(event_class)
         type_label = cls._string_or_placeholder(event_type)
 
-        resolved_class_label = event_category_map.get(class_label, class_label)
-        resolved_type_label = event_category_map.get(type_label, type_label)
+        resolved_class_label = resolve_event_type_name(class_label) or class_label
+        resolved_type_label = resolve_event_type_name(type_label) or type_label
         if resolved_type_label == "未知" or resolved_type_label == resolved_class_label:
-            return resolved_class_label
-        return f"{resolved_class_label}（{resolved_type_label}）"
+            category = resolved_class_label
+        else:
+            category = f"{resolved_class_label}（{resolved_type_label}）"
+
+        sub_event = resolve_sub_event_type(sub_event_type_id)
+        if sub_event is None or sub_event["name"] == "无":
+            return category
+        return f"{category} / 小类 {sub_event['name']}"
 
     @classmethod
     def _extract_payload_items(
@@ -372,6 +371,11 @@ class ReportNode:
             or item.get("expectedEndTime")
             or item.get("endTime")
         )
+        event_category = cls._format_event_category(
+            item.get("eventClass"),
+            item.get("eventType"),
+            item.get("subEventTypeId"),
+        )
         parts = [
             f"- {road_identity}",
             f"方向 {direction}",
@@ -379,7 +383,7 @@ class ReportNode:
             f"缓行里程 {cls._format_number(item.get('roadAmbleMile'))} 公里",
             f"开始 {cls._string_or_placeholder(item.get('beginTime'))}",
             f"预计结束 {expected_end_time}",
-            f"事件分类 {cls._format_event_category(item.get('eventClass'), item.get('eventType'))}",
+            f"事件分类 {event_category}",
             f"管制措施 {cls._string_or_placeholder(item.get('controlMeasures'))}",
             f"现场情况 {cls._string_or_placeholder(item.get('situationRemark'))}",
             f"占道情况 {cls._string_or_placeholder(item.get('jeeves'))}",
@@ -476,6 +480,14 @@ class ReportNode:
         """
         return should_filter_report_event(item)
 
+    @staticmethod
+    def _should_filter_major_event(item: dict[str, object]) -> bool:
+        """Filter majorTopN without treating eventClass=07 as vehicle fault."""
+
+        event_type = ReportNode._string_or_placeholder(item.get("eventType"))
+        control_type = ReportNode._string_or_placeholder(item.get("controlType"))
+        return event_type in {"01", "97"} or control_type == "10110"
+
     @classmethod
     def _build_compact_report_context(
         cls,
@@ -490,6 +502,9 @@ class ReportNode:
                 "拥堵汇总（0条）：",
                 "- 暂无",
                 "",
+                "重大事件（0条）：",
+                "- 暂无",
+                "",
                 "主线管制（0条）：",
                 "- 暂无",
                 "",
@@ -501,6 +516,7 @@ class ReportNode:
         query_time = cls._string_or_placeholder(response_payload.get("queryTime"))
         congestion_total_mile = cls._extract_congestion_total_mile(response_payload)
         congestion_items = cls._extract_payload_items(response_payload, "congestionTopN")
+        major_items = cls._extract_payload_items(response_payload, "majorTopN")
         control_items = cls._extract_payload_items(response_payload, "controlTopN")
         exit_items = cls._extract_payload_items(response_payload, "exitTopN")
         
@@ -508,6 +524,10 @@ class ReportNode:
         filtered_congestion_items = [
             item for item in congestion_items 
             if not cls._should_filter_event(item)
+        ]
+        filtered_major_items = [
+            item for item in major_items
+            if not cls._should_filter_major_event(item)
         ]
         
         # 对主线管制事件进行筛选
@@ -522,6 +542,11 @@ class ReportNode:
         congestion_section = cls._build_item_section(
             "拥堵汇总",
             filtered_congestion_items,
+            cls._build_congestion_line,
+        )
+        major_section = cls._build_item_section(
+            "重大事件",
+            filtered_major_items,
             cls._build_congestion_line,
         )
         control_section = cls._build_item_section(
@@ -539,6 +564,8 @@ class ReportNode:
         if congestion_total_mile is not None:
             lines.append(f"拥堵总里程：{cls._format_number(congestion_total_mile)} 公里")
         lines.append(congestion_section)
+        lines.append("")
+        lines.append(major_section)
         lines.append("")
         lines.append(control_section)
         lines.append("")

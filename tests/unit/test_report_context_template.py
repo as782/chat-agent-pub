@@ -38,6 +38,21 @@ class _TemplateReportToolRegistry:
                             "des": "金华方向缓行",
                         }
                     ],
+                    "majorTopN": [
+                        {
+                            "roadGBCode": "G92",
+                            "roadName": "杭州湾环线高速",
+                            "directionName": "宁波方向",
+                            "beginMilestone": 20,
+                            "endMilestone": 22,
+                            "beginTime": "2026-03-31 09:10:00",
+                            "expectedTime": "2026-03-31 11:00:00",
+                            "eventClass": "07",
+                            "eventType": "07",
+                            "subEventTypeId": "070701",
+                            "des": "大流量通行缓慢",
+                        }
+                    ],
                     "controlTopN": [
                         {
                             "roadGBCode": "G25",
@@ -251,6 +266,10 @@ async def test_report_node_builds_template_context() -> None:
     assert "区间 K120-K128" in report_context
     assert "事件分类 交通气象（道路缓行）" in report_context
     assert "施工缓行" not in report_context
+    assert "重大事件（1条）：" in report_context
+    assert "G92 / 杭州湾环线高速" in report_context
+    assert "事件分类 重大事件 / 小类 大流量" in report_context
+    assert "大流量通行缓慢" in report_context
     assert "主线管制（1条）：" in report_context
     assert "G25 / 长深高速" in report_context
     assert "收费站 诸暨北收费站" in report_context
@@ -264,5 +283,6 @@ async def test_report_node_builds_template_context() -> None:
     normalized_result = step_results["report_1"].normalized_result
     assert normalized_result["query_time"] == "2026-03-31 09:00:00"
     assert normalized_result["congestion_top_count"] == 1
+    assert normalized_result["major_top_count"] == 1
     assert normalized_result["control_top_count"] == 1
     assert normalized_result["exit_top_count"] == 1

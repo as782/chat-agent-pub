@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from logging import Logger
-import re
 
+from app.agent.event_catalog import resolve_event_type_name, resolve_sub_event_type
 from app.agent.event_filter import should_filter_report_event
-from app.core.logger import get_logger
 from app.agent.state import ExecutorResult
+from app.core.logger import get_logger
 
 _ROAD_CODE_PATTERN = re.compile(r"([GS]\d{1,4})", re.IGNORECASE)
 _ROAD_NAME_PREFIX_PATTERN = re.compile(r"^[GS]\d{1,4}", re.IGNORECASE)
@@ -58,6 +59,12 @@ def _should_filter_event(item: dict[str, object]) -> bool:
     return should_filter_report_event(item)
 
 
+def _should_filter_major_event(item: dict[str, object]) -> bool:
+    event_type = _first_non_empty(item.get("eventType"))
+    control_type = _first_non_empty(item.get("controlType"))
+    return event_type in {"01", "97"} or control_type == "10110"
+
+
 def build_network_report_render_result(
     step_results: dict[str, object],
 ) -> RenderedNetworkReport | None:
@@ -72,6 +79,7 @@ def build_network_report_render_result(
         return None
 
     congestion_items = _coerce_items(normalized_result.get("congestion_top_items"))
+    major_items = _coerce_items(normalized_result.get("major_top_items"))
     control_items = _coerce_items(normalized_result.get("control_top_items"))
     exit_items = _coerce_items(normalized_result.get("exit_top_items"))
 
@@ -79,6 +87,10 @@ def build_network_report_render_result(
     filtered_congestion_items = [
         item for item in congestion_items 
         if not _should_filter_event(item)
+    ]
+    filtered_major_items = [
+        item for item in major_items
+        if not _should_filter_major_event(item)
     ]
     
     # 对主线管制事件进行筛选
@@ -92,21 +104,30 @@ def build_network_report_render_result(
 
     road_profiles = _build_road_profiles(
         congestion_items=filtered_congestion_items,
+        major_items=filtered_major_items,
         control_items=filtered_control_items,
         exit_items=filtered_exit_items,
     )
 
     exit_rows = _build_exit_rows(exit_items=filtered_exit_items, road_profiles=road_profiles)
-    control_rows = _build_control_rows(control_items=filtered_control_items, road_profiles=road_profiles)
+    control_rows = _build_control_rows(
+        control_items=filtered_control_items,
+        road_profiles=road_profiles,
+    )
+    major_rows = _build_major_rows(
+        major_items=filtered_major_items,
+        road_profiles=road_profiles,
+    )
     congestion_rows = _build_congestion_rows(
         congestion_items=filtered_congestion_items,
         road_profiles=road_profiles,
     )
-    rows = [*exit_rows, *control_rows, *congestion_rows]
+    rows = [*exit_rows, *control_rows, *major_rows, *congestion_rows]
 
     summary = _build_summary(
         exit_row_count=len(exit_rows),
         control_row_count=len(control_rows),
+        major_row_count=len(major_rows),
         congestion_row_count=len(congestion_rows),
         congestion_total_mile=normalized_result.get("congestion_total_mile"),
     )
@@ -116,14 +137,13 @@ def build_network_report_render_result(
         table_lines.append("| 无 | 无 | 无 | 无 | 无 |")
     else:
         for row in rows:
+            road_code = _escape_markdown_cell(row.road_code)
+            highway_name = _escape_markdown_cell(row.highway_name)
+            segment = _escape_markdown_cell(row.segment)
+            station_control = _escape_markdown_cell(row.station_control)
+            traffic = _escape_markdown_cell(row.traffic)
             table_lines.append(
-                "| {road_code} | {highway_name} | {segment} | {station_control} | {traffic} |".format(
-                    road_code=_escape_markdown_cell(row.road_code),
-                    highway_name=_escape_markdown_cell(row.highway_name),
-                    segment=_escape_markdown_cell(row.segment),
-                    station_control=_escape_markdown_cell(row.station_control),
-                    traffic=_escape_markdown_cell(row.traffic),
-                )
+                f"| {road_code} | {highway_name} | {segment} | {station_control} | {traffic} |"
             )
 
     rendered_report = RenderedNetworkReport(
@@ -179,7 +199,11 @@ def coerce_executor_result(step_id: str, result: object) -> ExecutorResult | Non
         raw_result=dict(raw_result) if isinstance(raw_result, Mapping) else {},
         normalized_result=dict(normalized_result) if isinstance(normalized_result, Mapping) else {},
         summary=summary if isinstance(summary, str) and summary.strip() else None,
-        sources=[str(item) for item in sources if isinstance(item, str)] if isinstance(sources, list) else [],
+        sources=(
+            [str(item) for item in sources if isinstance(item, str)]
+            if isinstance(sources, list)
+            else []
+        ),
         error=error if isinstance(error, str) and error.strip() else None,
     )
 
@@ -205,11 +229,12 @@ def _coerce_items(value: object) -> list[dict[str, object]]:
 def _build_road_profiles(
     *,
     congestion_items: list[dict[str, object]],
+    major_items: list[dict[str, object]],
     control_items: list[dict[str, object]],
     exit_items: list[dict[str, object]],
 ) -> dict[str, _RoadProfile]:
     profiles: dict[str, _RoadProfile] = {}
-    for item in [*exit_items, *control_items, *congestion_items]:
+    for item in [*exit_items, *control_items, *major_items, *congestion_items]:
         road_key = _build_road_key(item)
         profile = _parse_road_profile(item)
         existing_profile = profiles.get(road_key)
@@ -330,6 +355,48 @@ def _build_control_rows(
     return rows
 
 
+def _build_major_rows(
+    *,
+    major_items: list[dict[str, object]],
+    road_profiles: dict[str, _RoadProfile],
+) -> list[_ReportRow]:
+    rows: list[_ReportRow] = []
+    for item in major_items:
+        road_profile = _resolve_road_profile(item, road_profiles)
+        direction = _format_direction(
+            item.get("directionName"),
+            item.get("directionType"),
+            item.get("direction"),
+        )
+        description = _normalize_congestion_description(
+            _first_non_empty(item.get("des")),
+            road_profile=road_profile,
+            direction=direction,
+        )
+        event_category = _format_event_category(
+            item.get("eventClass"),
+            item.get("eventType"),
+            item.get("subEventTypeId"),
+        )
+        traffic_parts = ["重大事件"]
+        if direction and direction != "未知":
+            traffic_parts.append(direction)
+        if event_category and event_category != "未知":
+            traffic_parts.append(event_category)
+        if description:
+            traffic_parts.append(description)
+        rows.append(
+            _ReportRow(
+                road_code=road_profile.code,
+                highway_name=road_profile.highway_name,
+                segment=road_profile.segment,
+                station_control="无",
+                traffic="，".join(traffic_parts) or "重大事件",
+            )
+        )
+    return rows
+
+
 def _build_congestion_rows(
     *,
     congestion_items: list[dict[str, object]],
@@ -380,17 +447,26 @@ def _build_summary(
     *,
     exit_row_count: int,
     control_row_count: int,
+    major_row_count: int,
     congestion_row_count: int,
     congestion_total_mile: object | None,
 ) -> str:
-    if exit_row_count == 0 and control_row_count == 0 and congestion_row_count == 0:
-        return "当前全路网整体运行平稳，暂未监测到收费站管控、主线管制或缓行事件。"
+    has_no_rows = (
+        exit_row_count == 0
+        and control_row_count == 0
+        and major_row_count == 0
+        and congestion_row_count == 0
+    )
+    if has_no_rows:
+        return "当前全路网整体运行平稳，暂未监测到收费站管控、主线管制、重大事件或缓行事件。"
 
     summary_parts: list[str] = []
     if exit_row_count:
         summary_parts.append(f"{exit_row_count}处收费站管控")
     if control_row_count:
         summary_parts.append(f"{control_row_count}处主线管制")
+    if major_row_count:
+        summary_parts.append(f"{major_row_count}处重大事件")
     if congestion_row_count:
         summary_parts.append(f"{congestion_row_count}处缓行事件")
     if congestion_total_mile is not None:
@@ -646,6 +722,26 @@ def _escape_markdown_cell(value: object | None) -> str:
     if not text:
         return "无"
     return text.replace("|", "｜").replace("\n", " ")
+
+
+def _format_event_category(
+    event_class: object | None,
+    event_type: object | None,
+    sub_event_type_id: object | None,
+) -> str:
+    class_label = _first_non_empty(event_class) or "未知"
+    type_label = _first_non_empty(event_type) or "未知"
+    resolved_class_label = resolve_event_type_name(class_label) or class_label
+    resolved_type_label = resolve_event_type_name(type_label) or type_label
+    if resolved_type_label == "未知" or resolved_type_label == resolved_class_label:
+        category = resolved_class_label
+    else:
+        category = f"{resolved_class_label}（{resolved_type_label}）"
+
+    sub_event = resolve_sub_event_type(sub_event_type_id)
+    if sub_event is None or sub_event["name"] == "无":
+        return category
+    return f"{category} / 小类{sub_event['name']}"
 
 
 def _first_non_empty(*values: object | None) -> str | None:
