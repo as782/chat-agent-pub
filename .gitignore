@@ -8,6 +8,7 @@ build/
 dist/
 *.pyc
 .env
+chat-agent.db
 
 tmp/
 logs/
