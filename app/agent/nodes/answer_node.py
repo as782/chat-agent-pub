@@ -233,7 +233,9 @@ class AnswerNode:
                 prepared_context_state = await self.prepare_context_state(state)
                 prepared_context = prepared_context_state["prepared_context"]
 
-            completion_result = state.get("tool_completion_result")
+            completion_result = self._build_empty_executor_fallback_message(state)
+            if completion_result is None:
+                completion_result = state.get("tool_completion_result")
             executed_tool_calls = self._extract_executed_tool_calls(state)
             existing_tool_completion_result = completion_result
             should_reuse_existing_completion = isinstance(
@@ -1269,3 +1271,74 @@ class AnswerNode:
             "怎么开",
         )
         return any(keyword in message for keyword in route_keywords)
+
+    @staticmethod
+    def _build_empty_executor_fallback_message(state: AgentState) -> AIMessage | None:
+        traffic_fallback = AnswerNode._build_empty_traffic_fallback_message(state)
+        if traffic_fallback is not None:
+            return traffic_fallback
+        return None
+
+    @staticmethod
+    def _build_empty_traffic_fallback_message(state: AgentState) -> AIMessage | None:
+        if AnswerNode._resolve_answer_topic(state) != "traffic_status":
+            return None
+
+        step_results = state.get("step_results", {})
+        if not isinstance(step_results, dict):
+            return None
+
+        traffic_result: ExecutorResult | None = None
+        for result in step_results.values():
+            if isinstance(result, ExecutorResult) and result.executor == "traffic":
+                traffic_result = result
+
+        if traffic_result is None:
+            return None
+
+        normalized_result = (
+            traffic_result.normalized_result
+            if isinstance(traffic_result.normalized_result, dict)
+            else {}
+        )
+        if int(normalized_result.get("result_count") or 0) > 0:
+            return None
+        if int(normalized_result.get("matched_road_count") or 0) > 0:
+            return None
+
+        latest_user_message = str(state.get("latest_user_message") or "").strip()
+        if not latest_user_message:
+            return None
+
+        if AnswerNode._looks_like_road_identity_query(latest_user_message):
+            content = (
+                "暂未查询到该道路的编号或归属信息，无法直接确认。"
+                "请提供更标准的道路名称、收费站名称或明确的道路编号后再查询。"
+            )
+        else:
+            content = (
+                "暂未查询到相关路况信息。"
+                "请提供更标准的道路名称、收费站名称、方向或位置后再查询。"
+            )
+        return AIMessage(
+            content=content,
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        )
+
+    @staticmethod
+    def _looks_like_road_identity_query(message: str) -> bool:
+        return any(
+            keyword in message
+            for keyword in (
+                "编号",
+                "路号",
+                "哪条高速",
+                "哪条路",
+                "属于哪条高速",
+                "在哪条高速",
+                "哪条高速上",
+                "是哪个高速上的",
+                "是在哪条高速上",
+            )
+        )

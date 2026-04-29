@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from re import search
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +47,10 @@ class RagflowNode:
         retrieval_queries = self._resolve_queries(state, step_arguments)
         normalized_query = retrieval_queries[0]
         try:
-            knowledge_results = await self._retrieve_knowledge_results(retrieval_queries)
+            knowledge_results = await self._retrieve_knowledge_results(
+                retrieval_queries,
+                step_arguments=step_arguments,
+            )
         except UpstreamServiceException as exception:
             raise UpstreamServiceException(
                 UPSTREAM_SERVICE_ERROR_REPLY,
@@ -110,7 +114,10 @@ class RagflowNode:
         )
         return {
             "knowledge_results": knowledge_results,
-            "knowledge_context": self._build_knowledge_context(knowledge_results),
+            "knowledge_context": self._build_knowledge_context(
+                knowledge_results,
+                step_arguments=step_arguments,
+            ),
             **merge_step_result(state, result=executor_result),
         }
 
@@ -134,17 +141,28 @@ class RagflowNode:
         step_arguments: ResolvedArguments | None,
     ) -> list[str]:
         queries = [cls._resolve_query(state, step_arguments)]
+        query_type = cls._resolve_query_type(step_arguments)
+        subject = cls._resolve_subject(step_arguments)
+        if query_type == "policy_scope_check" and subject is not None:
+            queries.extend(cls._build_policy_scope_queries(subject=subject))
         queries.extend(cls._resolve_keywords(step_arguments))
         return cls._deduplicate_queries(queries)
 
     async def _retrieve_knowledge_results(
         self,
         retrieval_queries: list[str],
+        *,
+        step_arguments: ResolvedArguments | None,
     ) -> list[KnowledgeSearchResult]:
         merged_results: OrderedDict[tuple[str, str, str], KnowledgeSearchResult] = OrderedDict()
+        query_type = self._resolve_query_type(step_arguments)
+        per_query_top_k = 6 if query_type == "policy_scope_check" else 4
 
         for query in retrieval_queries:
-            current_results = await self._knowledge_service.retrieve_for_agent(query=query)
+            current_results = await self._knowledge_service.retrieve_for_agent(
+                query=query,
+                top_k=per_query_top_k,
+            )
             for result in current_results:
                 result_key = (
                     result.document_id,
@@ -155,7 +173,10 @@ class RagflowNode:
                 if existing_result is None or result.score > existing_result.score:
                     merged_results[result_key] = result
 
-        return list(merged_results.values())
+        return self._rerank_knowledge_results(
+            list(merged_results.values()),
+            step_arguments=step_arguments,
+        )
 
     @staticmethod
     def _serialize_step_arguments(
@@ -191,6 +212,71 @@ class RagflowNode:
         return None
 
     @staticmethod
+    def _resolve_subject(step_arguments: ResolvedArguments | None) -> str | None:
+        if not isinstance(step_arguments, ResolvedArguments):
+            return None
+
+        subject = step_arguments.arguments.get("subject")
+        if isinstance(subject, str):
+            return subject.strip() or None
+        return None
+
+    @staticmethod
+    def _build_policy_scope_queries(*, subject: str) -> list[str]:
+        return [
+            f"{subject} 是否属于鲜活农产品品种目录",
+            f"{subject} 是否属于鲜活农产品范围",
+            f"{subject} 是否适用绿色通道政策",
+            f"{subject} 不属于 鲜活农产品 范围",
+        ]
+
+    @classmethod
+    def _rerank_knowledge_results(
+        cls,
+        knowledge_results: list[KnowledgeSearchResult],
+        *,
+        step_arguments: ResolvedArguments | None,
+    ) -> list[KnowledgeSearchResult]:
+        query_type = cls._resolve_query_type(step_arguments)
+        subject = cls._resolve_subject(step_arguments)
+        if query_type != "policy_scope_check" or subject is None:
+            return sorted(knowledge_results, key=lambda item: item.score, reverse=True)
+
+        reranked_results = sorted(
+            knowledge_results,
+            key=lambda item: cls._score_policy_scope_result(item, subject=subject),
+            reverse=True,
+        )
+        return reranked_results[:8]
+
+    @staticmethod
+    def _score_policy_scope_result(
+        knowledge_result: KnowledgeSearchResult,
+        *,
+        subject: str,
+    ) -> float:
+        content = knowledge_result.content
+        normalized_content = content.replace(" ", "")
+        normalized_subject = subject.replace(" ", "")
+        score = knowledge_result.score * 100
+
+        if normalized_subject and normalized_subject in normalized_content:
+            score += 35
+        if any(token in content for token in ("属于", "不属于", "适用", "不适用", "包含", "不包含", "范围", "目录")):
+            score += 20
+        if any(token in content for token in ("问：", "答：", "是否", "算不算")):
+            score += 10
+        if any(token in content for token in ("不属于", "不适用", "不包含")):
+            score += 12
+        if any(token in content for token in ("目录", "品种目录", "鲜活农产品范围")):
+            score += 8
+        if any(token in content for token in ("预约", "收费站", "投诉电话", "公示牌", "查验", "预约平台")):
+            score -= 10
+        if search(r"花、草、苗木|苗木、粮食|深加工产品", content) is not None:
+            score += 12
+        return score
+
+    @staticmethod
     def _deduplicate_queries(queries: list[str]) -> list[str]:
         deduplicated_queries: list[str] = []
         seen_queries: set[str] = set()
@@ -213,11 +299,32 @@ class RagflowNode:
                 break
         return normalized_query.replace("#knowledge", "").strip()
 
-    @staticmethod
-    def _build_knowledge_context(knowledge_results: list[KnowledgeSearchResult]) -> str:
+    @classmethod
+    def _build_knowledge_context(
+        cls,
+        knowledge_results: list[KnowledgeSearchResult],
+        *,
+        step_arguments: ResolvedArguments | None,
+    ) -> str:
         """把检索结果拼装成适合注入 system 消息的知识上下文。"""
 
         context_lines = [KNOWLEDGE_CONTEXT_PROMPT_PREFIX]
+        query_type = cls._resolve_query_type(step_arguments)
+        subject = cls._resolve_subject(step_arguments)
+        if query_type == "policy_scope_check" and subject is not None:
+            context_lines.append(
+                (
+                    "当前问题属于“对象是否属于政策适用范围”的判断题。"
+                    "请优先依据同时包含主体和“属于/不属于/适用/不适用/目录/范围”等表述的证据作答；"
+                    "若没有检索到主体的明确归属证据，不要直接下确定结论。"
+                )
+            )
+            evidence_summary = cls._build_policy_scope_evidence_summary(
+                knowledge_results,
+                subject=subject,
+            )
+            if evidence_summary is not None:
+                context_lines.append(evidence_summary)
         for index, knowledge_result in enumerate(knowledge_results, start=1):
             context_lines.append(
                 f"[{index}] score={knowledge_result.score:.4f} "
@@ -225,3 +332,26 @@ class RagflowNode:
             )
             context_lines.append(knowledge_result.content)
         return "\n".join(context_lines)
+
+    @staticmethod
+    def _build_policy_scope_evidence_summary(
+        knowledge_results: list[KnowledgeSearchResult],
+        *,
+        subject: str,
+    ) -> str | None:
+        matched_fragments: list[str] = []
+        normalized_subject = subject.replace(" ", "")
+        for knowledge_result in knowledge_results[:5]:
+            content = knowledge_result.content.replace(" ", "")
+            if normalized_subject and normalized_subject not in content:
+                continue
+            if any(token in content for token in ("不属于", "不适用", "不包含", "属于", "适用", "包含")):
+                fragment = knowledge_result.content.strip().replace("\n", " ")
+                matched_fragments.append(fragment[:180])
+            if len(matched_fragments) >= 2:
+                break
+        if not matched_fragments:
+            return None
+        summary_lines = ["证据摘要："]
+        summary_lines.extend(f"- {fragment}" for fragment in matched_fragments)
+        return "\n".join(summary_lines)

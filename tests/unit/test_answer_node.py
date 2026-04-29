@@ -170,6 +170,65 @@ def test_answer_node_uses_brief_prompt_by_default() -> None:
     assert AnswerNode._resolve_answer_instruction(state) == BRIEF_TRAFFIC_SUMMARY_PROMPT
 
 
+def test_answer_node_builds_traffic_identity_fallback_for_empty_results() -> None:
+    fallback = AnswerNode._build_empty_executor_fallback_message(
+        {
+            "primary_category": "traffic_status",
+            "latest_user_message": "江宜高速的编号是多少？",
+            "step_results": {
+                "traffic_1": ExecutorResult(
+                    step_id="traffic_1",
+                    executor="traffic",
+                    is_success=True,
+                    normalized_result={"result_count": 0, "matched_road_count": 0},
+                )
+            },
+        }
+    )
+
+    assert fallback is not None
+    assert "暂未查询到该道路的编号或归属信息" in AnswerNode._extract_message_text(fallback)
+
+
+def test_answer_node_builds_traffic_status_fallback_for_empty_results() -> None:
+    fallback = AnswerNode._build_empty_executor_fallback_message(
+        {
+            "primary_category": "traffic_status",
+            "latest_user_message": "江宜高速现在堵不堵",
+            "step_results": {
+                "traffic_1": ExecutorResult(
+                    step_id="traffic_1",
+                    executor="traffic",
+                    is_success=True,
+                    normalized_result={"result_count": 0, "matched_road_count": 0},
+                )
+            },
+        }
+    )
+
+    assert fallback is not None
+    assert "暂未查询到相关路况信息" in AnswerNode._extract_message_text(fallback)
+
+
+def test_answer_node_does_not_build_traffic_fallback_when_tool_has_matches() -> None:
+    fallback = AnswerNode._build_empty_executor_fallback_message(
+        {
+            "primary_category": "traffic_status",
+            "latest_user_message": "江宜高速的编号是多少？",
+            "step_results": {
+                "traffic_1": ExecutorResult(
+                    step_id="traffic_1",
+                    executor="traffic",
+                    is_success=True,
+                    normalized_result={"result_count": 1, "matched_road_count": 1},
+                )
+            },
+        }
+    )
+
+    assert fallback is None
+
+
 def test_answer_node_uses_regular_prompt_when_brief_disabled() -> None:
     state = {
         "primary_category": "traffic_status",

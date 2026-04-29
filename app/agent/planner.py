@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from json import JSONDecodeError, dumps, loads
-from re import DOTALL, compile as re_compile, search
+from re import DOTALL, compile as re_compile, search, sub as re_sub
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -1108,6 +1108,16 @@ class PlannerService:
         for key, value in inferred_metadata.items():
             if key not in merged_metadata or self._is_empty_metadata_value(merged_metadata[key]):
                 merged_metadata[key] = value
+        if executor == "rag" and inferred_metadata.get("query_type") == "policy_scope_check":
+            merged_metadata["query_type"] = "policy_scope_check"
+            if not self._is_empty_metadata_value(inferred_metadata.get("keywords")):
+                merged_metadata["keywords"] = inferred_metadata["keywords"]
+            if not self._is_empty_metadata_value(inferred_metadata.get("subject")):
+                merged_metadata["subject"] = inferred_metadata["subject"]
+            if self._is_empty_metadata_value(merged_metadata.get("focus")) and not self._is_empty_metadata_value(
+                inferred_metadata.get("focus")
+            ):
+                merged_metadata["focus"] = inferred_metadata["focus"]
         if executor == "traffic":
             merged_metadata = self._normalize_traffic_metadata(
                 metadata=merged_metadata,
@@ -1481,6 +1491,9 @@ class PlannerService:
             keywords = PlannerService._infer_policy_keywords(normalized_message)
             if keywords:
                 metadata["keywords"] = keywords
+            subject = PlannerService._infer_policy_subject(normalized_message)
+            if subject is not None:
+                metadata["subject"] = subject
             focus = PlannerService._infer_policy_focus(normalized_message)
             if focus is not None:
                 metadata["focus"] = focus
@@ -1868,6 +1881,28 @@ class PlannerService:
         knowledge_support_match = PlannerService._match_knowledge_support_query(message)
         if knowledge_support_match is not None:
             return knowledge_support_match.query_type
+        if PlannerService._infer_policy_subject(message) is not None and any(
+            keyword in message
+            for keyword in (
+                "绿通",
+                "绿色通道",
+                "鲜活农产品",
+                "目录",
+                "范围",
+                "属于",
+                "算不算",
+                "能不能",
+                "可不可以",
+                "适不适用",
+            )
+        ):
+            return "policy_scope_check"
+        inferred_policy_subject = PlannerService._infer_policy_subject(message)
+        if inferred_policy_subject is not None and PlannerService._looks_like_green_channel_free_query(
+            message,
+            subject=inferred_policy_subject,
+        ):
+            return "policy_scope_check"
         if PlannerService._looks_like_od_policy_query(message):
             return "policy_interpretation"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费", "节假日", "跨天", "收费规则")):
@@ -1883,6 +1918,23 @@ class PlannerService:
         knowledge_support_match = PlannerService._match_knowledge_support_query(message)
         if knowledge_support_match is not None:
             return list(knowledge_support_match.keywords)
+
+        subject = PlannerService._infer_policy_subject(message)
+        if subject is not None:
+            keyword_candidates = [
+                subject,
+                f"{subject} 绿通",
+                f"{subject} 鲜活农产品",
+                f"{subject} 鲜活农产品目录",
+            ]
+            if any(keyword in message for keyword in ("目录", "范围", "属于", "算不算")):
+                keyword_candidates.extend(
+                    [
+                        f"{subject} 属于 鲜活农产品 范围",
+                        f"{subject} 不属于 鲜活农产品 范围",
+                    ]
+                )
+            return keyword_candidates
 
         keyword_candidates = (
             "高速过路费",
@@ -1913,6 +1965,11 @@ class PlannerService:
         knowledge_support_match = PlannerService._match_knowledge_support_query(message)
         if knowledge_support_match is not None:
             return knowledge_support_match.focus
+        if PlannerService._infer_policy_subject(message) is not None and any(
+            keyword in message
+            for keyword in ("绿通", "绿色通道", "鲜活农产品", "目录", "范围", "属于", "算不算", "适不适用")
+        ):
+            return "政策适用范围判断"
         if PlannerService._looks_like_od_policy_query(message):
             return "路线费用与通行政策规则"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
@@ -1920,6 +1977,121 @@ class PlannerService:
         if any(keyword in message for keyword in ("标准", "规范", "口径", "办法", "规定")):
             return "政策规则"
         return None
+
+    @staticmethod
+    def _infer_policy_subject(message: str) -> str | None:
+        """提取政策范围或资格判断题中的主体对象。"""
+
+        normalized_message = " ".join(message.strip().split())
+        if not normalized_message:
+            return None
+
+        suffix_patterns = (
+            "还能走绿通吗",
+            "还可以走绿通吗",
+            "还可不可以走绿通",
+            "还能不能走绿通",
+            "仍能走绿通吗",
+            "仍可以走绿通吗",
+            "可以走绿通吗",
+            "可不可以走绿通",
+            "能不能走绿通",
+            "能走绿通吗",
+            "还能享受绿色通道吗",
+            "还能享受绿通吗",
+            "还适用绿通吗",
+            "还适不适用绿通",
+            "仍适用绿通吗",
+            "仍能免费吗",
+            "还能免费吗",
+            "还可以免费吗",
+            "能免费吗",
+            "免费吗",
+            "走绿通吗",
+            "算绿通吗",
+            "属于鲜活农产品吗",
+            "算鲜活农产品吗",
+            "属于鲜活农产品范围吗",
+            "在鲜活农产品目录里吗",
+            "在鲜活农产品品种目录里吗",
+            "在绿色通道目录里吗",
+            "适用绿通吗",
+            "适不适用绿通",
+            "能不能免费",
+            "可以免费吗",
+        )
+        for suffix in suffix_patterns:
+            if normalized_message.endswith(suffix):
+                candidate = normalized_message[: -len(suffix)].strip("：:，,。？? ")
+                candidate = PlannerService._normalize_policy_subject(candidate)
+                if candidate:
+                    return candidate
+
+        patterns = (
+            r"(?P<subject>[\u4e00-\u9fffA-Za-z0-9·\-、，,（）()]{1,40})是否属于鲜活农产品(?:品种)?目录",
+            r"(?P<subject>[\u4e00-\u9fffA-Za-z0-9·\-、，,（）()]{1,40})是否属于鲜活农产品范围",
+            r"(?P<subject>[\u4e00-\u9fffA-Za-z0-9·\-、，,（）()]{1,40})属于不属于鲜活农产品",
+            r"(?P<subject>[\u4e00-\u9fffA-Za-z0-9·\-、，,（）()]{1,40})算不算绿通",
+            r"(?P<subject>[\u4e00-\u9fffA-Za-z0-9·\-、，,（）()]{1,40})能不能走绿通",
+            r"(?P<subject>[\u4e00-\u9fffA-Za-z0-9·\-、，,（）()]{1,40})可不可以走绿通",
+        )
+        for pattern in patterns:
+            match = search(pattern, normalized_message)
+            if match is None:
+                continue
+            candidate = PlannerService._normalize_policy_subject(match.group("subject"))
+            if candidate:
+                return candidate
+        return None
+
+    @staticmethod
+    def _normalize_policy_subject(value: str) -> str | None:
+        candidate = value.strip("：:，,。？? ")
+        for prefix in ("请问", "请教", "咨询", "我想问", "我想咨询", "帮我看看", "帮我查下", "帮我查一下", "问下"):
+            if candidate.startswith(prefix):
+                candidate = candidate[len(prefix) :].strip("：:，,。？? ")
+                break
+        candidate = re_sub(r"(还能?|仍能|仍可|还可|还适用|仍适用|还适不适用|是否)$", "", candidate).strip(
+            "：:，,。？? "
+        )
+        if not candidate or len(candidate) > 40:
+            return None
+        if any(keyword in candidate for keyword in ("收费站", "服务区", "路线")):
+            return None
+        return candidate
+
+    @staticmethod
+    def _looks_like_green_channel_free_query(message: str, *, subject: str) -> bool:
+        normalized_message = message.strip()
+        normalized_subject = subject.strip()
+        if not normalized_message or not normalized_subject:
+            return False
+        if not any(
+            keyword in normalized_message
+            for keyword in ("免费吗", "能免费吗", "可以免费吗", "能不能免费", "免收通行费", "免通行费")
+        ):
+            return False
+        if any(
+            keyword in normalized_message
+            for keyword in (
+                "节假日",
+                "春节",
+                "清明",
+                "五一",
+                "端午",
+                "中秋",
+                "国庆",
+                "拖车",
+                "救援",
+                "ETC",
+                "收费站",
+                "服务区",
+            )
+        ):
+            return False
+        if any(keyword in normalized_subject for keyword in ("客车", "货车", "高速", "收费站", "服务区")):
+            return False
+        return True
 
     @staticmethod
     def _infer_report_scope(message: str) -> str | None:
