@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from json import loads
 
 from app.agent.direction_filter import filter_section_events_for_travel_direction
+from app.agent.od import resolve_od, validate_route_arguments
 from app.agent.prompts import ROUTE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
@@ -39,7 +40,32 @@ class RouteNode:
         resolved_arguments = resolve_step_arguments(state, step_id=step_id, executor="route")
         if not isinstance(resolved_arguments, ResolvedArguments):
             return {"route_context": None}
+        resolved_arguments = self._repair_route_arguments(
+            state=state,
+            step_id=step_id,
+            resolved_arguments=resolved_arguments,
+        )
         query_arguments = self._build_tool_arguments(resolved_arguments)
+        is_valid_query, validation_warnings = validate_route_arguments(
+            query_arguments.get("start"),
+            query_arguments.get("end"),
+        )
+        if not is_valid_query:
+            executor_result = ExecutorResult(
+                step_id=step_id,
+                executor="route",
+                is_success=False,
+                raw_result={
+                    "query_arguments": dict(query_arguments),
+                    "validation_warnings": validation_warnings,
+                },
+                normalized_result={
+                    "origin": resolved_arguments.arguments.get("origin"),
+                    "destination": resolved_arguments.arguments.get("destination"),
+                },
+                error="路线起终点参数不完整或包含口语噪声，已阻止调用路线接口。",
+            )
+            return {"route_context": None, **merge_step_result(state, result=executor_result)}
         try:
             tool_output = await self._tool_registry.execute_named_tool(
                 tool_name="live_driving_query",
@@ -83,6 +109,40 @@ class RouteNode:
             "start": str(resolved_arguments.arguments.get("origin") or ""),
             "end": str(resolved_arguments.arguments.get("destination") or ""),
         }
+
+    @staticmethod
+    def _repair_route_arguments(
+        *,
+        state: AgentState,
+        step_id: str,
+        resolved_arguments: ResolvedArguments,
+    ) -> ResolvedArguments:
+        """Repair dirty route endpoints from the original user message before tool calls."""
+
+        is_valid, _ = validate_route_arguments(
+            resolved_arguments.arguments.get("origin"),
+            resolved_arguments.arguments.get("destination"),
+        )
+        if is_valid:
+            return resolved_arguments
+
+        od_resolution = resolve_od(str(state.get("latest_user_message") or ""))
+        if not od_resolution.is_complete:
+            return resolved_arguments
+
+        repaired_arguments = dict(resolved_arguments.arguments)
+        repaired_arguments["origin"] = od_resolution.origin
+        repaired_arguments["destination"] = od_resolution.destination
+        repaired_arguments["od_resolution_source"] = od_resolution.source
+        repaired_arguments["od_confidence"] = od_resolution.confidence
+        repaired_arguments["origin_match_type"] = od_resolution.origin_match_type
+        repaired_arguments["destination_match_type"] = od_resolution.destination_match_type
+        return ResolvedArguments(
+            category=resolved_arguments.category,
+            arguments=repaired_arguments,
+            missing_fields=[],
+            extraction_mode=f"{resolved_arguments.extraction_mode}+route_guard_repair:{step_id}",
+        )
 
     @staticmethod
     def _parse_tool_output(tool_output: str) -> dict[str, object]:

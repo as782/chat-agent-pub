@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from app.agent.facility_catalog import load_default_facility_catalog
+from app.agent.od import resolve_od
 from app.agent.road_inference import infer_traffic_context
 from app.agent.state import AgentState, ExecutorType, ProblemCategory, ResolvedArguments
 from app.clients.llm_client import LlmInputMessage
@@ -120,14 +121,28 @@ class ArgumentResolver:
         """提取路线规划问题中的起终点和出行方式。"""
 
         normalized_query = self._strip_prefix(latest_user_message, prefixes=("mcp:",))
-        match = self._extract_od_pair(normalized_query)
+        od_resolution = resolve_od(normalized_query)
+        match = (
+            {"origin": od_resolution.origin, "destination": od_resolution.destination}
+            if od_resolution.is_complete
+            else self._extract_od_pair(normalized_query)
+        )
 
-        arguments: dict[str, object] = {"query": normalized_query}
+        arguments: dict[str, object] = {
+            "query": normalized_query,
+            "od_resolution_source": od_resolution.source,
+            "od_confidence": od_resolution.confidence,
+        }
         missing_fields: list[str] = []
 
         if match is not None:
             arguments["origin"] = match["origin"]
             arguments["destination"] = match["destination"]
+            if od_resolution.is_complete:
+                arguments["origin_match_type"] = od_resolution.origin_match_type
+                arguments["destination_match_type"] = od_resolution.destination_match_type
+                if od_resolution.warnings:
+                    arguments["od_warnings"] = list(od_resolution.warnings)
         else:
             missing_fields.extend(["origin", "destination"])
 

@@ -134,6 +134,38 @@ uv run uvicorn app.main:app --reload
 http://127.0.0.1:8000/docs
 ```
 
+## 行政区划字典更新
+
+OD 路线参数解析会读取 `app/agent/data/region_catalog.json`，用于识别城市、区县等地点候选。
+该文件由 `scripts/build_region_catalog.py` 从 GB2260 TSV 数据生成，当前范围是县级及以上行政区划。
+
+重新生成：
+
+```bash
+uv run python scripts/build_region_catalog.py
+```
+
+默认数据源：
+
+```text
+https://raw.githubusercontent.com/cn/GB2260/develop/mca/201904.tsv
+```
+
+如果内网环境不能访问 GitHub，可以先把 TSV 文件放到内部 HTTP 地址或本地可访问地址，再指定：
+
+```bash
+uv run python scripts/build_region_catalog.py --source-url https://internal.example/gb2260/mca-201904.tsv
+```
+
+生成后建议运行：
+
+```bash
+uv run python -m pytest tests/unit/test_od_resolver.py tests/unit/test_argument_node.py -q
+uv run ruff check scripts/build_region_catalog.py app/agent/od tests/unit/test_od_resolver.py
+```
+
+注意：`region_catalog.json` 是运行时数据文件，更新后需要重启服务，确保地点候选索引重新加载。
+
 ## 环境变量
 
 最小本地运行通常至少需要：
