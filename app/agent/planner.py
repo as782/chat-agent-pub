@@ -100,6 +100,12 @@ _CALCULATION_KEYWORDS: tuple[str, ...] = (
 )
 _OD_ROUTE_PATTERNS = (
     re_compile(
+        r"(?:[\u4e00-\u9fffA-Za-z0-9·\-\s]{0,20})从"
+        r"(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+        r"(?P<connector>到|至|前往|去往|往|去|回)"
+        r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
+    ),
+    re_compile(
         r"(?:从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
         r"(?P<connector>到|至|前往|去往|往|去|回)"
         r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20})"
@@ -244,6 +250,43 @@ _OD_POLICY_SUBJECT_KEYWORDS: tuple[str, ...] = (
     "畜禽",
     "鲜",
     "新鲜",
+)
+_OD_POLICY_SUBJECT_PREFIXES: tuple[str, ...] = (
+    "请问",
+    "咨询",
+    "想问",
+    "问下",
+    "帮我查",
+    "帮我查下",
+    "帮我查一下",
+    "帮我看",
+    "帮我看看",
+    "帮我确认",
+    "我想问",
+    "我想咨询",
+    "我想知道",
+    "我想了解",
+    "我用",
+    "用",
+    "我开",
+    "开",
+    "我驾驶",
+    "驾驶",
+    "自驾",
+)
+_OD_POLICY_GENERIC_SUBJECTS: tuple[str, ...] = (
+    "我",
+    "我车",
+    "我的车",
+    "开车",
+    "自驾",
+    "车辆",
+    "车",
+    "高速",
+    "高速上",
+    "走高速",
+    "路线",
+    "路上",
 )
 _NON_ROUTE_CONTEXT_KEYWORDS: tuple[str, ...] = (
     "怎么",
@@ -699,6 +742,21 @@ class PlannerService:
     ) -> bool:
         """Ignore route-vs-traffic clarifications for identifiable OD queries."""
 
+        if primary_category == "policy":
+            if PlannerService._looks_like_od_policy_query(latest_user_message):
+                return True
+            inferred_policy_subject = PlannerService._infer_policy_subject(latest_user_message)
+            if inferred_policy_subject is not None and (
+                PlannerService._looks_like_green_channel_free_query(
+                    latest_user_message,
+                    subject=inferred_policy_subject,
+                )
+                or any(
+                    keyword in latest_user_message
+                    for keyword in ("绿通", "绿色通道", "鲜活农产品", "目录", "范围", "属于", "算不算")
+                )
+            ):
+                return True
         if primary_category not in {"route_planning", "traffic_status"}:
             return False
         return PlannerService._looks_like_od_query(latest_user_message)
@@ -716,15 +774,14 @@ class PlannerService:
             return False
 
         planned_executors = {step.executor for step in steps if step.executor != "answer"}
-        if not planned_executors:
-            return False
-
         if primary_category == "policy":
             return "rag" not in planned_executors
         if primary_category == "route_planning":
             if PlannerService._looks_like_od_policy_query(latest_user_message):
                 return planned_executors != {"route", "rag"}
             return planned_executors != {"route"}
+        if not planned_executors:
+            return False
         if primary_category == "traffic_status":
             return "report" in planned_executors or "traffic" not in planned_executors
         if primary_category == "service_area":
@@ -1492,6 +1549,8 @@ class PlannerService:
             if keywords:
                 metadata["keywords"] = keywords
             subject = PlannerService._infer_policy_subject(normalized_message)
+            if subject is None:
+                subject = PlannerService._infer_od_policy_subject(normalized_message)
             if subject is not None:
                 metadata["subject"] = subject
             focus = PlannerService._infer_policy_focus(normalized_message)
@@ -1545,6 +1604,9 @@ class PlannerService:
         """抽取 OD 起终点。"""
 
         normalized_message = message.strip()
+        explicit_from_pair = PlannerService._extract_explicit_from_od_pair(normalized_message)
+        if explicit_from_pair is not None:
+            return explicit_from_pair
         for pattern in _OD_ROUTE_PATTERNS:
             match = pattern.search(normalized_message)
             if match is None:
@@ -1556,6 +1618,34 @@ class PlannerService:
             if PlannerService._contains_non_route_context(origin) or PlannerService._contains_non_route_context(
                 destination
             ):
+                continue
+            if origin == destination:
+                continue
+            return {"origin": origin, "destination": destination}
+        return None
+
+    @staticmethod
+    def _extract_explicit_from_od_pair(message: str) -> dict[str, str] | None:
+        if "从" not in message:
+            return None
+
+        tail = message.rsplit("从", maxsplit=1)[-1].strip()
+        if not tail:
+            return None
+
+        for connector in ("前往", "去往", "到", "至", "往", "去", "回"):
+            connector_index = tail.find(connector)
+            if connector_index <= 0:
+                continue
+            origin = PlannerService._clean_route_place(tail[:connector_index])
+            destination = PlannerService._clean_route_place(
+                tail[connector_index + len(connector) :]
+            )
+            if not origin or not destination:
+                continue
+            if PlannerService._contains_non_route_context(
+                origin
+            ) or PlannerService._contains_non_route_context(destination):
                 continue
             if origin == destination:
                 continue
@@ -1921,20 +2011,17 @@ class PlannerService:
 
         subject = PlannerService._infer_policy_subject(message)
         if subject is not None:
-            keyword_candidates = [
-                subject,
-                f"{subject} 绿通",
-                f"{subject} 鲜活农产品",
-                f"{subject} 鲜活农产品目录",
-            ]
-            if any(keyword in message for keyword in ("目录", "范围", "属于", "算不算")):
-                keyword_candidates.extend(
-                    [
-                        f"{subject} 属于 鲜活农产品 范围",
-                        f"{subject} 不属于 鲜活农产品 范围",
-                    ]
-                )
-            return keyword_candidates
+            return PlannerService._build_policy_subject_keywords(
+                subject=subject,
+                message=message,
+            )
+
+        od_policy_subject = PlannerService._infer_od_policy_subject(message)
+        if od_policy_subject is not None:
+            return PlannerService._build_policy_subject_keywords(
+                subject=od_policy_subject,
+                message=message,
+            )
 
         keyword_candidates = (
             "高速过路费",
@@ -1970,6 +2057,11 @@ class PlannerService:
             for keyword in ("绿通", "绿色通道", "鲜活农产品", "目录", "范围", "属于", "算不算", "适不适用")
         ):
             return "政策适用范围判断"
+        if (
+            PlannerService._infer_od_policy_subject(message) is not None
+            and PlannerService._looks_like_od_fee_or_free_query(message)
+        ):
+            return "政策资格判断与路线收费说明"
         if PlannerService._looks_like_od_policy_query(message):
             return "路线费用与通行政策规则"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
@@ -2059,6 +2151,101 @@ class PlannerService:
         if any(keyword in candidate for keyword in ("收费站", "服务区", "路线")):
             return None
         return candidate
+
+    @staticmethod
+    def _infer_od_policy_subject(message: str) -> str | None:
+        """提取 OD 政策收费问题中的车辆/货物主体。"""
+
+        if not PlannerService._looks_like_od_policy_query(message):
+            return None
+
+        normalized_message = " ".join(message.strip().split())
+        if not normalized_message:
+            return None
+
+        if "从" in normalized_message:
+            candidate = normalized_message.rsplit("从", maxsplit=1)[0].strip("：:，,。？? ")
+            normalized_candidate = PlannerService._normalize_od_policy_subject(candidate)
+            if normalized_candidate:
+                return normalized_candidate
+
+        for pattern in _OD_ROUTE_PATTERNS:
+            match = pattern.search(normalized_message)
+            if match is None or match.start() <= 0:
+                continue
+            candidate = normalized_message[: match.start()].strip("：:，,。？? ")
+            normalized_candidate = PlannerService._normalize_od_policy_subject(candidate)
+            if normalized_candidate:
+                return normalized_candidate
+        return None
+
+    @staticmethod
+    def _normalize_od_policy_subject(value: str) -> str | None:
+        candidate = value.strip("：:，,。？? ")
+        while True:
+            trimmed = candidate
+            for prefix in _OD_POLICY_SUBJECT_PREFIXES:
+                if trimmed.startswith(prefix) and len(trimmed) > len(prefix):
+                    trimmed = trimmed[len(prefix) :].strip("：:，,。？? ")
+                    break
+            if trimmed == candidate:
+                break
+            candidate = trimmed
+
+        candidate = re_sub(r"^(把|将)", "", candidate).strip("：:，,。？? ")
+        candidate = re_sub(r"(上高速|走高速|跑高速|通行|过路)$", "", candidate).strip(
+            "：:，,。？? "
+        )
+        if not candidate or len(candidate) > 40:
+            return None
+        if candidate in _OD_POLICY_GENERIC_SUBJECTS:
+            return None
+        if any(keyword in candidate for keyword in ("收费站", "服务区", "路线", "到宁波", "到杭州")):
+            return None
+        return candidate
+
+    @staticmethod
+    def _build_policy_subject_keywords(*, subject: str, message: str) -> list[str]:
+        keyword_candidates = [
+            subject,
+            f"{subject} 免费通行",
+            f"{subject} 免收通行费",
+            f"{subject} 通行费",
+            f"{subject} 收费标准",
+        ]
+        if any(keyword in message for keyword in ("目录", "范围", "属于", "算不算")):
+            keyword_candidates.extend(
+                [
+                    f"{subject} 属于 鲜活农产品 范围",
+                    f"{subject} 不属于 鲜活农产品 范围",
+                    f"{subject} 鲜活农产品 目录",
+                ]
+            )
+        if any(keyword in message for keyword in ("绿通", "绿色通道", "鲜活农产品")):
+            keyword_candidates.extend(
+                [
+                    f"{subject} 绿通",
+                    f"{subject} 鲜活农产品",
+                    f"{subject} 鲜活农产品目录",
+                ]
+            )
+        if any(keyword in subject for keyword in ("收割机", "插秧机", "农机")):
+            keyword_candidates.extend(
+                [
+                    "联合收割机 跨区作业 免费通行",
+                    "联合收割机 插秧机 跨区作业 通行服务保障",
+                    "运输联合收割机 免交通行费",
+                    "联合收割机 作业证 免费通行",
+                ]
+            )
+        if "集装箱" in subject:
+            keyword_candidates.extend(
+                [
+                    "国际标准集装箱运输车辆 优惠预约通行",
+                    "集装箱运输车辆 通行费 优惠",
+                ]
+            )
+        return PlannerService._deduplicate_strings(keyword_candidates)
 
     @staticmethod
     def _looks_like_green_channel_free_query(message: str, *, subject: str) -> bool:
@@ -2172,12 +2359,26 @@ class PlannerService:
             return "general"
 
         normalized_message = latest_user_message.strip().lower()
+        inferred_policy_subject = PlannerService._infer_policy_subject(latest_user_message)
         if (
             latest_user_message.startswith("知识库:")
             or normalized_message.startswith("knowledge:")
             or normalized_message.startswith("konwledge:")
             or any(keyword in latest_user_message for keyword in ("政策", "制度", "标准", "规范", "口径"))
             or PlannerService._looks_like_knowledge_support_query(latest_user_message)
+            or (
+                inferred_policy_subject is not None
+                and (
+                    PlannerService._looks_like_green_channel_free_query(
+                        latest_user_message,
+                        subject=inferred_policy_subject,
+                    )
+                    or any(
+                        keyword in latest_user_message
+                        for keyword in ("绿通", "绿色通道", "鲜活农产品", "目录", "范围", "属于", "算不算")
+                    )
+                )
+            )
         ):
             return "policy"
         if any(
@@ -2470,6 +2671,29 @@ class PlannerService:
         return any(keyword in latest_user_message for keyword in _OD_TOLL_QUERY_KEYWORDS)
 
     @staticmethod
+    def _looks_like_od_fee_or_free_query(latest_user_message: str) -> bool:
+        if not PlannerService._looks_like_od_query(latest_user_message):
+            return False
+        if any(keyword in latest_user_message for keyword in ("收费站", "收费口")):
+            return False
+        return any(
+            keyword in latest_user_message
+            for keyword in (
+                "收费",
+                "过路费",
+                "通行费",
+                "费用",
+                "多少钱",
+                "花费",
+                "免费",
+                "免收",
+                "免交通行费",
+                "要交",
+                "交多少",
+            )
+        )
+
+    @staticmethod
     def _looks_like_od_policy_query(latest_user_message: str) -> bool:
         if not PlannerService._looks_like_od_query(latest_user_message):
             return False
@@ -2504,12 +2728,26 @@ class PlannerService:
             return "general"
 
         normalized_message = latest_user_message.strip().lower()
+        inferred_policy_subject = PlannerService._infer_policy_subject(latest_user_message)
         if (
             latest_user_message.startswith("知识库:")
             or normalized_message.startswith("knowledge:")
             or normalized_message.startswith("konwledge:")
             or any(keyword in latest_user_message for keyword in ("政策", "制度", "标准", "规范", "口径"))
             or PlannerService._looks_like_knowledge_support_query(latest_user_message)
+            or (
+                inferred_policy_subject is not None
+                and (
+                    PlannerService._looks_like_green_channel_free_query(
+                        latest_user_message,
+                        subject=inferred_policy_subject,
+                    )
+                    or any(
+                        keyword in latest_user_message
+                        for keyword in ("绿通", "绿色通道", "鲜活农产品", "目录", "范围", "属于", "算不算")
+                    )
+                )
+            )
         ):
             return "policy"
         if any(
@@ -2570,6 +2808,11 @@ class PlannerService:
         knowledge_support_match = PlannerService._match_knowledge_support_query(message)
         if knowledge_support_match is not None:
             return knowledge_support_match.focus
+        if (
+            PlannerService._infer_od_policy_subject(message) is not None
+            and PlannerService._looks_like_od_fee_or_free_query(message)
+        ):
+            return "政策资格判断与路线收费说明"
         if PlannerService._looks_like_od_policy_query(message):
             return "路线费用与通行政策规则"
         if PlannerService._looks_like_explicit_route_query(message):
@@ -2761,6 +3004,12 @@ class PlannerService:
         if primary_category == "route_planning":
             if PlannerService._looks_like_od_query(latest_user_message):
                 if PlannerService._looks_like_od_policy_query(latest_user_message):
+                    resolved_answer_metadata = self._enrich_step_metadata(
+                        executor="answer",
+                        metadata=answer_metadata or {},
+                        latest_user_message=latest_user_message,
+                        primary_category=primary_category,
+                    )
                     return [
                         ExecutionStep(
                             step_id="route_1",
@@ -2789,6 +3038,7 @@ class PlannerService:
                             executor="answer",
                             goal="综合路线费用和政策规则回答用户",
                             depends_on=["route_1", "rag_1"],
+                            metadata=resolved_answer_metadata,
                         ),
                     ]
                 goal = "查询起点到终点的推荐路线与收费信息" if PlannerService._looks_like_od_toll_query(

@@ -145,6 +145,8 @@ class RagflowNode:
         subject = cls._resolve_subject(step_arguments)
         if query_type == "policy_scope_check" and subject is not None:
             queries.extend(cls._build_policy_scope_queries(subject=subject))
+        if query_type == "policy_interpretation" and subject is not None:
+            queries.extend(cls._build_policy_interpretation_queries(subject=subject))
         queries.extend(cls._resolve_keywords(step_arguments))
         return cls._deduplicate_queries(queries)
 
@@ -228,6 +230,15 @@ class RagflowNode:
             f"{subject} 是否属于鲜活农产品范围",
             f"{subject} 是否适用绿色通道政策",
             f"{subject} 不属于 鲜活农产品 范围",
+        ]
+
+    @staticmethod
+    def _build_policy_interpretation_queries(*, subject: str) -> list[str]:
+        return [
+            f"{subject} 免费通行",
+            f"{subject} 免收通行费",
+            f"{subject} 通行费政策",
+            f"{subject} 收费标准",
         ]
 
     @classmethod

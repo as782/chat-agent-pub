@@ -174,6 +174,41 @@ async def test_ragflow_node_expands_scope_check_queries_and_uses_higher_top_k() 
     assert result["step_results"]["rag_1"].normalized_result["query_type"] == "policy_scope_check"
 
 
+@pytest.mark.asyncio
+async def test_ragflow_node_expands_policy_interpretation_subject_queries() -> None:
+    fake_knowledge_service = _FakeKnowledgeService()
+    node = RagflowNode(db_session=None, knowledge_service=fake_knowledge_service)
+
+    await node.run(
+        {
+            "latest_user_message": "收割机从杭州到宁波要交多少费用",
+            "step_arguments": {
+                "rag_1": ResolvedArguments(
+                    category="policy",
+                    arguments={
+                        "query": "收割机从杭州到宁波要交多少费用",
+                        "query_type": "policy_interpretation",
+                        "subject": "收割机",
+                        "keywords": [
+                            "收割机 免费通行",
+                            "联合收割机 跨区作业 免费通行",
+                        ],
+                    },
+                )
+            },
+        }
+    )
+
+    assert fake_knowledge_service.queries == [
+        "收割机从杭州到宁波要交多少费用",
+        "收割机 免费通行",
+        "收割机 免收通行费",
+        "收割机 通行费政策",
+        "收割机 收费标准",
+        "联合收割机 跨区作业 免费通行",
+    ]
+
+
 def test_ragflow_node_reranks_explicit_scope_evidence_ahead_of_generic_admin_text() -> None:
     generic_admin = KnowledgeSearchResult(
         document_id="doc-admin",

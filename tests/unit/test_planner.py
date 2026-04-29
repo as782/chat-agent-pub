@@ -1047,6 +1047,10 @@ async def test_planner_routes_od_policy_questions_to_route_and_rag() -> None:
     assert [step.executor for step in vehicle_plan.steps] == ["route", "rag", "answer"]
     assert vehicle_plan.steps[0].metadata["origin"] == "杭州"
     assert vehicle_plan.steps[0].metadata["destination"] == "宁波"
+    assert vehicle_plan.steps[1].metadata["subject"] == "收割机"
+    assert vehicle_plan.steps[1].metadata["focus"] == "政策资格判断与路线收费说明"
+    assert "联合收割机 跨区作业 免费通行" in vehicle_plan.steps[1].metadata["keywords"]
+    assert vehicle_plan.steps[2].metadata["focus"] == "政策资格判断与路线收费说明"
 
     ordinary_route_plan = await planner.build_plan_async(
         AgentState(latest_user_message="我开车从杭州到宁波收费多少")
@@ -1093,3 +1097,37 @@ async def test_planner_rebuilds_llm_route_only_plan_for_od_policy_questions() ->
     assert plan.steps[0].metadata["origin"] == "绍兴"
     assert plan.steps[0].metadata["destination"] == "宁波"
     assert plan.steps[2].depends_on == ["route_1", "rag_1"]
+
+
+async def test_planner_rebuilds_general_plan_for_subject_free_policy_questions() -> None:
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "general",
+              "need_clarification": true,
+              "clarification_question": "请补充具体免费场景",
+              "steps": [
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "直接回复用户",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="甲鱼能免费吗")
+    )
+
+    assert plan.primary_category == "policy"
+    assert plan.need_clarification is False
+    assert [step.executor for step in plan.steps] == ["rag", "answer"]
+    assert plan.steps[0].metadata["subject"] == "甲鱼"
+    assert plan.steps[0].metadata["query_type"] == "policy_scope_check"

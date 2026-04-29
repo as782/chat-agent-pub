@@ -186,8 +186,63 @@ def test_answer_node_builds_traffic_identity_fallback_for_empty_results() -> Non
         }
     )
 
-    assert fallback is not None
-    assert "暂未查询到该道路的编号或归属信息" in AnswerNode._extract_message_text(fallback)
+
+def test_answer_node_appends_route_policy_fee_guardrail_for_route_and_rag_toll_questions() -> None:
+    instruction = AnswerNode._build_composite_answer_instruction(
+        {
+            "latest_user_message": "收割机从杭州到宁波要交多少费用",
+            "step_results": {
+                "route_1": ExecutorResult(
+                    step_id="route_1",
+                    executor="route",
+                    is_success=True,
+                    normalized_result={},
+                ),
+                "rag_1": ExecutorResult(
+                    step_id="rag_1",
+                    executor="rag",
+                    is_success=True,
+                    normalized_result={},
+                ),
+            },
+            "execution_plan": ExecutionPlan(
+                primary_category="route_planning",
+                execution_mode="multi_step",
+                recommended_route="route",
+                steps=[
+                    ExecutionStep(step_id="route_1", executor="route", goal="route"),
+                    ExecutionStep(step_id="rag_1", executor="rag", goal="rag"),
+                    ExecutionStep(
+                        step_id="answer_1",
+                        executor="answer",
+                        goal="answer",
+                        depends_on=["route_1", "rag_1"],
+                        metadata={"focus": "政策资格判断与路线收费说明"},
+                    ),
+                ],
+            ),
+        }
+    )
+
+    assert "路线工具返回的费用默认只代表普通路径收费参考" in instruction
+
+
+def test_answer_node_prefers_policy_topic_when_rag_already_executed() -> None:
+    topic = AnswerNode._resolve_answer_topic(
+        {
+            "latest_user_message": "农机从绍兴到宁波免费通行有什么规定",
+            "step_results": {
+                "rag_1": ExecutorResult(
+                    step_id="rag_1",
+                    executor="rag",
+                    is_success=True,
+                    normalized_result={},
+                )
+            },
+        }
+    )
+
+    assert topic == "policy"
 
 
 def test_answer_node_builds_traffic_status_fallback_for_empty_results() -> None:

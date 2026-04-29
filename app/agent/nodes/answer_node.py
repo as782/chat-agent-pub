@@ -1018,11 +1018,13 @@ class AnswerNode:
 
         if "report" in executed_executors or AnswerNode._looks_like_report_query(normalized_message):
             return "network_report"
+        if "rag" in executed_executors:
+            return "policy"
         if "traffic" in executed_executors or AnswerNode._looks_like_traffic_query(normalized_message):
             return "traffic_status"
         if "service" in executed_executors or AnswerNode._looks_like_service_query(normalized_message):
             return "service_area"
-        if "rag" in executed_executors or AnswerNode._looks_like_policy_query(normalized_message):
+        if AnswerNode._looks_like_policy_query(normalized_message):
             return "policy"
         if "route" in executed_executors or AnswerNode._looks_like_route_query(normalized_message):
             return "route_planning"
@@ -1084,6 +1086,18 @@ class AnswerNode:
                 "本轮已完成能力："
                 + "、".join(executed_executors)
                 + "。请优先综合这些结果，不要只围绕其中一个模块作答。"
+            )
+        if AnswerNode._should_apply_route_policy_fee_guardrail(
+            state,
+            focus=focus,
+            executed_executors=executed_executors,
+        ):
+            instruction_parts.append(
+                "当路线结果和政策资格问题同时出现时，先判断是否满足政策性免费或优惠条件，再使用路线结果。"
+                "路线工具返回的费用默认只代表普通路径收费参考，不能直接当作联合收割机、绿通、集装箱优惠、"
+                "抢险救灾等政策对象的最终应缴费用。若当前证据缺少作业证、预约、车型、装载、任务资格或其他"
+                "关键条件，要明确说明条件尚未核实，并把路线费用表述为“普通收费参考”；只有在知识结果已经明确"
+                "表明适用或不适用相关减免政策时，才能给出确定收费结论。"
             )
         return "\n\n".join(instruction_parts)
 
@@ -1191,6 +1205,41 @@ class AnswerNode:
             if stripped_focus:
                 return stripped_focus
         return None
+
+    @staticmethod
+    def _should_apply_route_policy_fee_guardrail(
+        state: AgentState,
+        *,
+        focus: str | None,
+        executed_executors: list[str],
+    ) -> bool:
+        if not {"route", "rag"}.issubset(set(executed_executors)):
+            execution_plan = state.get("execution_plan")
+            if not (isinstance(execution_plan, object) and hasattr(execution_plan, "steps")):
+                return False
+            planned_executors = {
+                step.executor
+                for step in execution_plan.steps
+                if step.executor != "answer"
+            }
+            if not {"route", "rag"}.issubset(planned_executors):
+                return False
+
+        message = str(state.get("latest_user_message", "")).strip()
+        if not any(
+            keyword in message
+            for keyword in ("收费", "过路费", "通行费", "免费", "多少钱", "多少费用", "费用")
+        ):
+            return False
+
+        normalized_focus = (focus or "").strip()
+        if any(
+            keyword in normalized_focus
+            for keyword in ("政策", "资格", "免费", "收费")
+        ):
+            return True
+
+        return any(keyword in message for keyword in ("政策", "规定", "要求", "绿通", "免费通行"))
 
     @staticmethod
     def _has_route_and_traffic_context(state: AgentState) -> bool:
