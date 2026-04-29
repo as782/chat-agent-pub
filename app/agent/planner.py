@@ -1130,13 +1130,11 @@ class PlannerService:
             normalized_metadata.get("target") or PlannerService._normalize_traffic_target(message) or ""
         ).strip()
         raw_roads = normalized_metadata.get("roads")
-        message_explicit_roads = PlannerService._extract_explicit_road_targets(message)
         explicit_roads = (
             [str(item).strip() for item in raw_roads if str(item).strip()]
             if isinstance(raw_roads, list)
             else []
         )
-        has_explicit_road_hint = bool(message_explicit_roads)
 
         inferred_context = infer_traffic_context(
             message=message,
@@ -1154,7 +1152,6 @@ class PlannerService:
             normalized_metadata["target"] = inferred_context.target
         if inferred_context.direction is not None and not normalized_metadata.get("direction"):
             normalized_metadata["direction"] = inferred_context.direction
-        has_road_hints = has_explicit_road_hint
         toll_station = str(
             normalized_metadata.get("toll_station") or inferred_context.toll_station or ""
         ).strip()
@@ -1165,7 +1162,7 @@ class PlannerService:
                 f"{toll_station} {message}",
                 source="planner",
             )
-            if toll_match is not None and not has_road_hints:
+            if toll_match is not None:
                 normalized_metadata["toll_station"] = toll_match.canonical_name
                 if toll_match.road_code:
                     normalized_metadata["road_code"] = toll_match.road_code
