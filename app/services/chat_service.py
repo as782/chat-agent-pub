@@ -20,6 +20,7 @@ from app.agent.state import (
     ChatTurnResult,
 )
 from app.clients.llm_client import LlmClient
+from app.core.config import get_settings
 from app.core.exceptions import AppException, ResourceNotFoundException
 from app.core.logger import get_logger
 from app.persistence.message_repo import MessageRepository
@@ -597,7 +598,11 @@ class ChatService:
                 chat_request.messages
             ),
             input_messages=self._openai_compat_service.build_input_messages(chat_request.messages),
-            model_name=chat_request.model,
+            model_name=(
+                self._llm_client.default_model_name
+                if get_settings().use_monitor_network_development_upstreams
+                else chat_request.model
+            ),
             requested_tool_names=requested_tool_names,
             tool_choice=self._tool_registry.normalize_tool_choice(chat_request.tool_choice),
             scheduled_route=chat_request.scheduled_route,

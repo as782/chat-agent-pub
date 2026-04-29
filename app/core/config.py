@@ -10,6 +10,18 @@ from urllib.parse import quote_plus
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+MONITOR_NETWORK_BRIDGE_BASE_URL = "http://192.168.26.38:22372"
+MONITOR_NETWORK_LIVE_AGENT_BASE_URL = MONITOR_NETWORK_BRIDGE_BASE_URL
+MONITOR_NETWORK_OPENAI_BASE_URL = f"{MONITOR_NETWORK_BRIDGE_BASE_URL}/v1"
+MONITOR_NETWORK_OPENAI_PROXY_PATH = "/v1/chat/monitor-completions"
+MONITOR_NETWORK_OPENAI_API_KEY = "dKyDeqHfGLEAjSUQA46bFb6d1cBe4aA4822209012a8eF925"
+MONITOR_NETWORK_OPENAI_MODEL = "qwen3535ba3b"
+MONITOR_NETWORK_RAGFLOW_BASE_URL = f"{MONITOR_NETWORK_BRIDGE_BASE_URL}/ragflow"
+MONITOR_NETWORK_RAGFLOW_API_KEY = (
+    "ragflow-He4c0XmA3c52-O5DNg9Jup2XM0TrDO_vO_zKSfDAxzc"
+)
+MONITOR_NETWORK_DEFAULT_KNOWLEDGE_DATASET_ID = "a2e9f8ff324011f198edce511781c013"
+
 
 class Settings(BaseSettings):
     """应用配置对象。"""
@@ -136,6 +148,100 @@ class Settings(BaseSettings):
         if self.log_to_file is not None:
             return self.log_to_file
         return self.app_env.lower() != "test"
+
+    @property
+    def use_monitor_network_development_upstreams(self) -> bool:
+        """Whether local/dev runs should use the bridge-machine proxy endpoints."""
+
+        return self.enable_monitor_network_proxy and self.is_debug
+
+    @property
+    def resolved_live_agent_base_url(self) -> str:
+        """Return the effective live-agent base URL for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_LIVE_AGENT_BASE_URL
+        return self.live_agent_base_url
+
+    @property
+    def resolved_openai_base_url(self) -> str | None:
+        """Return the effective OpenAI-compatible base URL for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_OPENAI_BASE_URL
+        return self.openai_base_url
+
+    @property
+    def resolved_openai_api_key_value(self) -> str | None:
+        """Return the effective OpenAI-compatible API key for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_OPENAI_API_KEY
+        if self.openai_api_key is None:
+            return None
+        return self.openai_api_key.get_secret_value()
+
+    @property
+    def resolved_openai_model(self) -> str:
+        """Return the effective default chat model for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_OPENAI_MODEL
+        return self.openai_model
+
+    @property
+    def resolved_planner_base_url(self) -> str | None:
+        """Return the effective planner base URL for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_OPENAI_BASE_URL
+        return self.planner_base_url or self.openai_base_url
+
+    @property
+    def resolved_planner_api_key_value(self) -> str | None:
+        """Return the effective planner API key for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_OPENAI_API_KEY
+        if self.planner_api_key is not None:
+            planner_api_key = self.planner_api_key.get_secret_value().strip()
+            if planner_api_key:
+                return planner_api_key
+        return self.resolved_openai_api_key_value
+
+    @property
+    def resolved_planner_model(self) -> str:
+        """Return the effective planner model for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_OPENAI_MODEL
+        return self.planner_model or self.resolved_openai_model
+
+    @property
+    def resolved_ragflow_base_url(self) -> str:
+        """Return the effective RAGFlow base URL for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_RAGFLOW_BASE_URL
+        return self.ragflow_base_url
+
+    @property
+    def resolved_ragflow_api_key_value(self) -> str | None:
+        """Return the effective RAGFlow API key for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_RAGFLOW_API_KEY
+        if self.ragflow_api_key is None:
+            return None
+        return self.ragflow_api_key.get_secret_value()
+
+    @property
+    def resolved_default_knowledge_dataset_id(self) -> str | None:
+        """Return the effective default dataset id for the current environment."""
+
+        if self.use_monitor_network_development_upstreams:
+            return MONITOR_NETWORK_DEFAULT_KNOWLEDGE_DATASET_ID
+        return self.default_knowledge_dataset_id
 
     @field_validator("openai_enable_thinking", "planner_enable_thinking", mode="before")
     @classmethod

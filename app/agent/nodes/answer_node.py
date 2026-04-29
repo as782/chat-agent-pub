@@ -250,12 +250,8 @@ class AnswerNode:
                 runnable = self._llm_client.create_runnable(
                     messages=prepared_context.messages,
                     model_name=execution_request.model_name,
-                    api_key=(
-                        self._settings.openai_api_key.get_secret_value()
-                        if self._settings.openai_api_key
-                        else None
-                    ),
-                    base_url=self._settings.openai_base_url,
+                    api_key=self._settings.resolved_openai_api_key_value,
+                    base_url=self._settings.resolved_openai_base_url,
                     timeout_seconds=self._settings.openai_timeout_seconds,
                     enable_thinking=execution_request.enable_thinking,
                     is_stream=True,
@@ -529,7 +525,7 @@ class AnswerNode:
         """
 
         # 优先使用请求中的 model_name，次选 OPENAI_MODEL 配置
-        model_name = state.get("model_name") or self._settings.openai_model
+        model_name = state.get("model_name") or self._settings.resolved_openai_model
 
         return ChatExecutionRequest(
             session_id=state.get("session_id"),
@@ -848,12 +844,8 @@ class AnswerNode:
         return await self._llm_client.create_chat_completion(
             messages=summary_messages,
             model_name=execution_request.model_name,
-            api_key=(
-                self._settings.openai_api_key.get_secret_value()
-                if self._settings.openai_api_key
-                else None
-            ),
-            base_url=self._settings.openai_base_url,
+            api_key=self._settings.resolved_openai_api_key_value,
+            base_url=self._settings.resolved_openai_base_url,
             timeout_seconds=self._settings.openai_timeout_seconds,
             enable_thinking=execution_request.enable_thinking,
         )

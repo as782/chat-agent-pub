@@ -233,8 +233,8 @@ class KnowledgeService:
         """解析本次请求应使用的数据集列表。"""
 
         configured_dataset_id = (
-            self._settings.default_knowledge_dataset_id.strip()
-            if isinstance(self._settings.default_knowledge_dataset_id, str)
+            self._settings.resolved_default_knowledge_dataset_id.strip()
+            if isinstance(self._settings.resolved_default_knowledge_dataset_id, str)
             else ""
         )
         if configured_dataset_id:

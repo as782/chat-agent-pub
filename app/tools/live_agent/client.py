@@ -115,7 +115,7 @@ class LiveAgentClient:
                 )
             else:
                 async with httpx.AsyncClient(
-                    base_url=self._settings.live_agent_base_url.rstrip("/"),
+                    base_url=self._settings.resolved_live_agent_base_url.rstrip("/"),
                     timeout=self._build_http_timeout(connect_timeout_seconds),
                 ) as http_client:
                     response = await http_client.request(
@@ -213,7 +213,7 @@ class LiveAgentClient:
         if self._http_client is not None:
             injected_base_url = str(getattr(self._http_client, "base_url", "")).rstrip("/")
             return injected_base_url or "injected-client"
-        return self._settings.live_agent_base_url.rstrip("/")
+        return self._settings.resolved_live_agent_base_url.rstrip("/")
 
     @staticmethod
     def _build_http_timeout(connect_timeout_seconds: float) -> httpx.Timeout:

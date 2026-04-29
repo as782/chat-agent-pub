@@ -16,6 +16,7 @@ from app.agent.state import (
     resolve_active_execution_step_id,
     resolve_step_arguments,
 )
+from app.core.config import get_settings
 from app.core.exceptions import UpstreamServiceException
 from app.tools.registry import ToolRegistry
 
@@ -24,6 +25,7 @@ class ServiceNode:
     """LangGraph service area node."""
 
     def __init__(self, *, tool_registry: ToolRegistry | None = None) -> None:
+        self._settings = get_settings()
         self._tool_registry = tool_registry or ToolRegistry()
 
     async def run(self, state: AgentState) -> dict[str, object]:
@@ -43,12 +45,14 @@ class ServiceNode:
             step_id=step_id,
             resolved_arguments=resolved_arguments,
         )
-        skipped_result = self._build_skipped_lookup_result(
-            state=state,
-            step_id=step_id,
-            resolved_arguments=resolved_arguments,
-            query_arguments=query_arguments,
-        )
+        skipped_result = None
+        if not self._settings.use_monitor_network_development_upstreams:
+            skipped_result = self._build_skipped_lookup_result(
+                state=state,
+                step_id=step_id,
+                resolved_arguments=resolved_arguments,
+                query_arguments=query_arguments,
+            )
         if skipped_result is not None:
             return skipped_result
         try:
@@ -163,6 +167,11 @@ class ServiceNode:
         """Prefer structured service fields before falling back to raw query text."""
 
         arguments = resolved_arguments.arguments
+        if get_settings().use_monitor_network_development_upstreams:
+            for key in ("service_name", "keyword", "road_name", "facility_type", "query"):
+                value = str(arguments.get(key) or "").strip()
+                if value:
+                    return value
         raw_query_terms = arguments.get("service_query_terms")
         if isinstance(raw_query_terms, list):
             for raw_term in raw_query_terms:
