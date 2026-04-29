@@ -189,6 +189,58 @@ _OD_TOLL_QUERY_KEYWORDS: tuple[str, ...] = (
     "花费多少",
     "收费标准",
 )
+_OD_POLICY_INTENT_KEYWORDS: tuple[str, ...] = (
+    "政策",
+    "规定",
+    "要求",
+    "标准",
+    "免费",
+    "费用",
+    "收费",
+    "交费",
+    "要交",
+    "交多少",
+    "多少钱",
+    "过路费",
+    "通行费",
+    "收费标准",
+    "免不免费",
+    "能不能免费",
+    "是否免费",
+    "绿通",
+    "绿色通道",
+    "免费通行",
+    "整车合法装载",
+    "核定载质量",
+    "载质量",
+    "载重",
+    "拉多少货",
+    "装多少",
+    "能拉多少",
+    "能装多少",
+    "最多一趟",
+    "有什么要求",
+    "装载要求",
+    "通行要求",
+)
+_OD_POLICY_SUBJECT_KEYWORDS: tuple[str, ...] = (
+    "货车",
+    "车辆",
+    "农机",
+    "机械",
+    "收割机",
+    "联合收割机",
+    "货",
+    "货物",
+    "农产品",
+    "鲜活农产品",
+    "蔬菜",
+    "水果",
+    "水产",
+    "畜禽",
+    "鲜",
+    "新鲜",
+)
 _NON_ROUTE_CONTEXT_KEYWORDS: tuple[str, ...] = (
     "怎么",
     "如何",
@@ -402,6 +454,7 @@ class PlannerService:
         should_rebuild_steps = self._should_rebuild_steps_for_primary_category(
             steps=steps,
             primary_category=primary_category,
+            latest_user_message=latest_user_message,
         )
         if should_rebuild_steps:
             steps = []
@@ -656,6 +709,7 @@ class PlannerService:
         *,
         steps: list[ExecutionStep],
         primary_category: ProblemCategory,
+        latest_user_message: str = "",
     ) -> bool:
         """当 LLM steps 与纠偏后的主分类明显冲突时，回退到稳定规则计划。"""
 
@@ -669,6 +723,8 @@ class PlannerService:
         if primary_category == "policy":
             return "rag" not in planned_executors
         if primary_category == "route_planning":
+            if PlannerService._looks_like_od_policy_query(latest_user_message):
+                return planned_executors != {"route", "rag"}
             return planned_executors != {"route"}
         if primary_category == "traffic_status":
             return "report" in planned_executors or "traffic" not in planned_executors
@@ -1813,6 +1869,8 @@ class PlannerService:
     def _infer_policy_query_type(message: str) -> str:
         """推断知识库检索类型。"""
 
+        if PlannerService._looks_like_od_policy_query(message):
+            return "policy_interpretation"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费", "节假日", "跨天", "收费规则")):
             return "policy_interpretation"
         if any(keyword in message for keyword in ("标准", "规范", "口径", "办法", "规定")):
@@ -1827,6 +1885,15 @@ class PlannerService:
             "高速过路费",
             "通行费",
             "过路费",
+            "免费通行",
+            "绿通",
+            "绿色通道",
+            "鲜活农产品",
+            "整车合法装载",
+            "装载要求",
+            "核定载质量",
+            "载重限制",
+            "农机通行",
             "跨天",
             "收费规则",
             "免费时段",
@@ -1840,6 +1907,8 @@ class PlannerService:
     def _infer_policy_focus(message: str) -> str | None:
         """推断政策问题的回答焦点。"""
 
+        if PlannerService._looks_like_od_policy_query(message):
+            return "路线费用与通行政策规则"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
             return "收费判断"
         if any(keyword in message for keyword in ("标准", "规范", "口径", "办法", "规定")):
@@ -2222,6 +2291,19 @@ class PlannerService:
         return any(keyword in latest_user_message for keyword in _OD_TOLL_QUERY_KEYWORDS)
 
     @staticmethod
+    def _looks_like_od_policy_query(latest_user_message: str) -> bool:
+        if not PlannerService._looks_like_od_query(latest_user_message):
+            return False
+        has_policy_intent = any(
+            keyword in latest_user_message for keyword in _OD_POLICY_INTENT_KEYWORDS
+        )
+        if not has_policy_intent:
+            return False
+        if any(keyword in latest_user_message for keyword in _OD_POLICY_SUBJECT_KEYWORDS):
+            return True
+        return any(keyword in latest_user_message for keyword in ("载", "装", "拉", "运", "通行"))
+
+    @staticmethod
     def _infer_primary_category(
         *,
         latest_user_message: str,
@@ -2248,6 +2330,8 @@ class PlannerService:
         if PlannerService._looks_like_explicit_route_query(latest_user_message):
             return "route_planning"
         if PlannerService._looks_like_od_toll_query(latest_user_message):
+            return "route_planning"
+        if PlannerService._looks_like_od_policy_query(latest_user_message):
             return "route_planning"
         if PlannerService._should_force_multi_road_traffic(latest_user_message):
             return "traffic_status"
@@ -2293,6 +2377,8 @@ class PlannerService:
     def _infer_answer_focus(message: str, primary_category: ProblemCategory) -> str | None:
         if PlannerService._looks_like_toll_station_attribution_query(message):
             return "收费站所属高速"
+        if PlannerService._looks_like_od_policy_query(message):
+            return "路线费用与通行政策规则"
         if PlannerService._looks_like_explicit_route_query(message):
             return "路线推荐与关键路况"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
@@ -2337,13 +2423,22 @@ class PlannerService:
         """Extract origin/destination with a fallback regex for colloquial OD questions."""
 
         normalized_message = message.strip()
+        explicit_from_match = search(
+            r"从(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20}?)"
+            r"(?P<connector>到|至|前往|去往)"
+            r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20}?)"
+            r"(?=要|需|会|能|最多|有什么|收费|过路费|通行费|免费|政策|规定|要求|标准|怎么|如何|，|,|。|？|\?|$)",
+            normalized_message,
+        )
         fallback_match = search(
             r"(?:^|[，,\s])(?:我从|从)?(?P<origin>[\u4e00-\u9fffA-Za-z0-9路\-]{2,20})"
             r"(?P<connector>到|至|前往|去往|往|去|回)"
             r"(?P<destination>[\u4e00-\u9fffA-Za-z0-9路\-]{2,20})",
             normalized_message,
         )
-        candidate_matches = [fallback_match] if fallback_match is not None else []
+        candidate_matches = [explicit_from_match] if explicit_from_match is not None else []
+        if fallback_match is not None:
+            candidate_matches.append(fallback_match)
         for pattern in _OD_ROUTE_PATTERNS:
             pattern_match = pattern.search(normalized_message)
             if pattern_match is not None:
@@ -2470,6 +2565,37 @@ class PlannerService:
 
         if primary_category == "route_planning":
             if PlannerService._looks_like_od_query(latest_user_message):
+                if PlannerService._looks_like_od_policy_query(latest_user_message):
+                    return [
+                        ExecutionStep(
+                            step_id="route_1",
+                            executor="route",
+                            goal="查询起点到终点的推荐路线与收费信息",
+                            metadata=self._enrich_step_metadata(
+                                executor="route",
+                                metadata={},
+                                latest_user_message=latest_user_message,
+                                primary_category=primary_category,
+                            ),
+                        ),
+                        ExecutionStep(
+                            step_id="rag_1",
+                            executor="rag",
+                            goal="检索相关免费通行、绿通、装载或通行规则",
+                            metadata=self._enrich_step_metadata(
+                                executor="rag",
+                                metadata={},
+                                latest_user_message=latest_user_message,
+                                primary_category=primary_category,
+                            ),
+                        ),
+                        ExecutionStep(
+                            step_id="answer_1",
+                            executor="answer",
+                            goal="综合路线费用和政策规则回答用户",
+                            depends_on=["route_1", "rag_1"],
+                        ),
+                    ]
                 goal = "查询起点到终点的推荐路线与收费信息" if PlannerService._looks_like_od_toll_query(
                     latest_user_message
                 ) else "查询起点到终点的推荐路线"
@@ -2663,6 +2789,13 @@ class PlannerService:
             "多少费用",
             "多少钱",
             "花费多少",
+            "免费通行有什么规定",
+            "免费通行有什么要求",
+            "免费通行",
+            "有什么规定",
+            "有什么要求",
+            "有什么标准",
+            "有什么政策",
             "怎么走不堵",
             "怎么走最快",
             "怎么走",

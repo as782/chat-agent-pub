@@ -961,3 +961,77 @@ async def test_planner_prefers_llm_route_metadata_for_od_toll_query() -> None:
     assert route_step.metadata["destination"] == "南庄兜站"
     assert route_step.metadata["query"] == "杭州南站到南庄兜站收费多少"
     assert route_step.metadata["query_intent"] == "route_planning"
+
+
+async def test_planner_routes_od_policy_questions_to_route_and_rag() -> None:
+    planner = PlannerService(llm_client=None)
+
+    cargo_plan = await planner.build_plan_async(
+        AgentState(latest_user_message="我用货车拉哈密瓜从杭州到宁波，最多能装多少，有什么要求？")
+    )
+
+    assert cargo_plan.primary_category == "route_planning"
+    assert cargo_plan.execution_mode == "multi_step"
+    assert cargo_plan.recommended_route == "route"
+    assert [step.executor for step in cargo_plan.steps] == ["route", "rag", "answer"]
+    route_step = cargo_plan.steps[0]
+    rag_step = cargo_plan.steps[1]
+    answer_step = cargo_plan.steps[2]
+    assert route_step.metadata["origin"] == "杭州"
+    assert route_step.metadata["destination"] == "宁波"
+    assert rag_step.metadata["query_type"] == "policy_interpretation"
+    assert rag_step.metadata["focus"] == "路线费用与通行政策规则"
+    assert answer_step.depends_on == ["route_1", "rag_1"]
+
+    vehicle_plan = await planner.build_plan_async(
+        AgentState(latest_user_message="收割机从杭州到宁波要交多少费用")
+    )
+    assert [step.executor for step in vehicle_plan.steps] == ["route", "rag", "answer"]
+    assert vehicle_plan.steps[0].metadata["origin"] == "杭州"
+    assert vehicle_plan.steps[0].metadata["destination"] == "宁波"
+
+    ordinary_route_plan = await planner.build_plan_async(
+        AgentState(latest_user_message="我开车从杭州到宁波收费多少")
+    )
+    assert [step.executor for step in ordinary_route_plan.steps] == ["route", "answer"]
+
+
+async def test_planner_rebuilds_llm_route_only_plan_for_od_policy_questions() -> None:
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "route_planning",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "route_1",
+                  "executor": "route",
+                  "goal": "查询路线",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "总结结果",
+                  "depends_on": ["route_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="农机从绍兴到宁波免费通行有什么规定？")
+    )
+
+    assert [step.executor for step in plan.steps] == ["route", "rag", "answer"]
+    assert plan.steps[0].metadata["origin"] == "绍兴"
+    assert plan.steps[0].metadata["destination"] == "宁波"
+    assert plan.steps[2].depends_on == ["route_1", "rag_1"]
