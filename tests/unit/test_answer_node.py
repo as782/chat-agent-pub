@@ -15,6 +15,7 @@ from app.agent.answer_prompts import (
     TRAFFIC_SUMMARY_PROMPT,
 )
 from app.agent.brief_answer_prompts import (
+    BRIEF_POLICY_SUMMARY_PROMPT,
     BRIEF_ROUTE_SUMMARY_PROMPT,
     BRIEF_TRAFFIC_SUMMARY_PROMPT,
 )
@@ -240,6 +241,11 @@ def test_traffic_prompts_require_detailed_event_breakdown() -> None:
 def test_service_prompt_blocks_nearby_service_area_substitution_on_catalog_miss() -> None:
     assert "不在集团管辖范围内" in SERVICE_SUMMARY_PROMPT
     assert "不要推荐附近服务区" in SERVICE_SUMMARY_PROMPT
+
+
+def test_brief_policy_prompt_keeps_green_channel_semantics() -> None:
+    assert "优先按高速通行政策理解" in BRIEF_POLICY_SUMMARY_PROMPT
+    assert "鲜活农产品运输绿色通道免收通行费政策" in BRIEF_POLICY_SUMMARY_PROMPT
 
 
 def test_network_report_prompt_requires_strict_table_column_rules() -> None:
