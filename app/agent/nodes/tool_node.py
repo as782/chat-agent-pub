@@ -183,12 +183,8 @@ class ToolNode:
         runnable = self._llm_client.create_runnable(
             messages=conversation_messages,
             model_name=model_name,
-            api_key=(
-                self._settings.openai_api_key.get_secret_value()
-                if self._settings.openai_api_key
-                else None
-            ),
-            base_url=self._settings.openai_base_url,
+            api_key=self._settings.resolved_openai_api_key_value,
+            base_url=self._settings.resolved_openai_base_url,
             timeout_seconds=self._settings.openai_timeout_seconds,
             tools=available_tools,
             tool_choice=normalized_tool_choice,

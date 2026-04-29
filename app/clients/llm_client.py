@@ -12,7 +12,6 @@ from time import perf_counter
 from typing import Any
 
 import httpx
-from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -25,6 +24,7 @@ from langchain_core.messages import (
 )
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -38,13 +38,59 @@ from openai import (
 )
 
 from app.agent.prompts import BASE_SINGLE_TURN_SYSTEM_PROMPT
-from app.core.config import get_settings
+from app.core.config import MONITOR_NETWORK_OPENAI_PROXY_PATH, get_settings
 from app.core.exceptions import AppException, ConfigurationException, UpstreamServiceException
 from app.core.logger import get_logger
 
 LOGGER = get_logger(__name__)
 
 LlmBindableTool = BaseTool | dict[str, Any]
+
+
+class _PathRewriteTransport(httpx.BaseTransport):
+    """Rewrite non-standard monitor proxy completion paths for sync OpenAI SDK calls."""
+
+    def __init__(self, *, source_paths: tuple[str, ...], target_path: str) -> None:
+        self._source_paths = source_paths
+        self._target_path = target_path
+        self._transport = httpx.HTTPTransport()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path in self._source_paths:
+            request = httpx.Request(
+                method=request.method,
+                url=request.url.copy_with(path=self._target_path),
+                headers=request.headers,
+                stream=request.stream,
+                extensions=request.extensions,
+            )
+        return self._transport.handle_request(request)
+
+    def close(self) -> None:
+        self._transport.close()
+
+
+class _AsyncPathRewriteTransport(httpx.AsyncBaseTransport):
+    """Rewrite non-standard monitor proxy completion paths for async OpenAI SDK calls."""
+
+    def __init__(self, *, source_paths: tuple[str, ...], target_path: str) -> None:
+        self._source_paths = source_paths
+        self._target_path = target_path
+        self._transport = httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path in self._source_paths:
+            request = httpx.Request(
+                method=request.method,
+                url=request.url.copy_with(path=self._target_path),
+                headers=request.headers,
+                stream=request.stream,
+                extensions=request.extensions,
+            )
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
 
 
 def _patch_langchain_openai_reasoning_content_support() -> None:
@@ -133,7 +179,7 @@ class LlmClient:
     def default_model_name(self) -> str:
         """返回默认模型名，供 service 层构造兜底响应使用。"""
 
-        return self._settings.openai_model
+        return self._settings.resolved_openai_model
 
     @staticmethod
     def extract_llm_tool_calls(llm_response: Any) -> list[LlmToolCall]:
@@ -247,7 +293,11 @@ class LlmClient:
     def _resolve_base_url(self, base_url: str | None) -> str | None:
         """解析本次请求最终使用的 base_url。"""
 
-        return base_url if base_url is not None else (self._settings.openai_base_url or None)
+        return (
+            base_url
+            if base_url is not None
+            else (self._settings.resolved_openai_base_url or None)
+        )
 
     def _resolve_timeout_seconds(self, timeout_seconds: float | None) -> float:
         """解析本次请求最终使用的超时时间。"""
@@ -327,19 +377,14 @@ class LlmClient:
 
         resolved_api_key = api_key
         if resolved_api_key is None:
-            configured_api_key = self._settings.openai_api_key
-            resolved_api_key = (
-                configured_api_key.get_secret_value()
-                if configured_api_key is not None
-                else None
-            )
+            resolved_api_key = self._settings.resolved_openai_api_key_value
         if resolved_api_key is None or not resolved_api_key.strip():
             raise ConfigurationException(
                 "未配置 OPENAI_API_KEY，无法调用大模型。",
                 details={"config_key": "OPENAI_API_KEY"},
             )
 
-        resolved_model_name = model_name or self._settings.openai_model
+        resolved_model_name = model_name or self._settings.resolved_openai_model
         resolved_base_url = self._resolve_base_url(base_url)
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         provider_extra_body = self._build_provider_extra_body(
@@ -347,14 +392,46 @@ class LlmClient:
             is_stream=is_stream,
             enable_thinking=enable_thinking,
         )
+        sync_http_client = None
+        async_http_client = None
+        if self._should_use_monitor_network_openai_proxy(resolved_base_url):
+            sync_http_client, async_http_client = self._build_monitor_network_http_clients()
 
-        return init_chat_model(
+        return ChatOpenAI(
             model=resolved_model_name,
-            model_provider="openai",
             api_key=resolved_api_key,
             base_url=resolved_base_url,
             timeout=self._build_httpx_timeout(resolved_timeout_seconds),
             extra_body=provider_extra_body or None,
+            http_client=sync_http_client,
+            http_async_client=async_http_client,
+        )
+
+    def _should_use_monitor_network_openai_proxy(self, resolved_base_url: str | None) -> bool:
+        """Return whether the current call should rewrite /chat/completions to monitor-completions."""
+
+        return (
+            self._settings.use_monitor_network_development_upstreams
+            and resolved_base_url == self._settings.resolved_openai_base_url
+        )
+
+    def _build_monitor_network_http_clients(self) -> tuple[httpx.Client, httpx.AsyncClient]:
+        """Build sync/async httpx clients that rewrite the completion path for the monitor proxy."""
+
+        source_paths = ("/chat/completions", "/v1/chat/completions")
+        return (
+            httpx.Client(
+                transport=_PathRewriteTransport(
+                    source_paths=source_paths,
+                    target_path=MONITOR_NETWORK_OPENAI_PROXY_PATH,
+                )
+            ),
+            httpx.AsyncClient(
+                transport=_AsyncPathRewriteTransport(
+                    source_paths=source_paths,
+                    target_path=MONITOR_NETWORK_OPENAI_PROXY_PATH,
+                )
+            ),
         )
 
     def create_runnable(
@@ -377,7 +454,7 @@ class LlmClient:
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         normalized_messages = self._normalize_outbound_messages(
             messages or [],
-            model_name=model_name or self._settings.openai_model,
+            model_name=model_name or self._settings.resolved_openai_model,
         )
         self._log_chat_request(
             messages=normalized_messages,
@@ -441,7 +518,7 @@ class LlmClient:
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         normalized_messages = self._normalize_outbound_messages(
             messages,
-            model_name=model_name or self._settings.openai_model,
+            model_name=model_name or self._settings.resolved_openai_model,
         )
         runnable = self.create_runnable(
             messages=normalized_messages,
@@ -457,7 +534,7 @@ class LlmClient:
         )
         llm_messages = self._build_langchain_messages(
             normalized_messages,
-            model_name=model_name or self._settings.openai_model,
+            model_name=model_name or self._settings.resolved_openai_model,
         )
 
         try:
@@ -480,7 +557,7 @@ class LlmClient:
                     "LLM 璇锋眰澶辫触锛歮ode=non_stream model=%s duration_ms=%.2f "
                     "base_url=%s connect_timeout_seconds=%.2f error_type=%s"
                 ),
-                model_name or self._settings.openai_model,
+                model_name or self._settings.resolved_openai_model,
                 (perf_counter() - request_start_time) * 1000,
                 resolved_base_url or "default",
                 resolved_timeout_seconds,
@@ -493,7 +570,7 @@ class LlmClient:
                 "LLM 请求完成：mode=non_stream model=%s duration_ms=%.2f "
                 "tool_call_count=%d base_url=%s connect_timeout_seconds=%.2f"
             ),
-            model_name or self._settings.openai_model,
+            model_name or self._settings.resolved_openai_model,
             (perf_counter() - request_start_time) * 1000,
             len(completion_result.tool_calls),
             resolved_base_url or "default",
@@ -519,7 +596,7 @@ class LlmClient:
         final_prompt_tokens = 0
         final_completion_tokens = 0
         final_total_tokens = 0
-        resolved_model_name = requested_model_name or self._settings.openai_model
+        resolved_model_name = requested_model_name or self._settings.resolved_openai_model
 
         try:
             async for llm_chunk in runnable.astream(llm_messages):
@@ -590,7 +667,7 @@ class LlmClient:
         resolved_timeout_seconds = self._resolve_timeout_seconds(timeout_seconds)
         normalized_messages = self._normalize_outbound_messages(
             messages,
-            model_name=model_name or self._settings.openai_model,
+            model_name=model_name or self._settings.resolved_openai_model,
         )
         runnable = self.create_runnable(
             messages=normalized_messages,
@@ -606,7 +683,7 @@ class LlmClient:
         )
         llm_messages = self._build_langchain_messages(
             normalized_messages,
-            model_name=model_name or self._settings.openai_model,
+            model_name=model_name or self._settings.resolved_openai_model,
         )
         return self._iterate_stream_chunks(
             runnable=runnable,
@@ -632,7 +709,7 @@ class LlmClient:
         """记录发往大模型的完整输入，便于后续调试上下文构造。"""
 
         # 构造完整 endpoint 路径：如果 base_url 已经包含 /v1，则只追加 /chat/completions
-        resolved_model_name = model_name or self._settings.openai_model
+        resolved_model_name = model_name or self._settings.resolved_openai_model
         provider_extra_body = self._build_provider_extra_body(
             model_name=resolved_model_name,
             is_stream=is_stream,

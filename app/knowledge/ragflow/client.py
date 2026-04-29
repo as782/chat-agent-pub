@@ -31,8 +31,8 @@ class RagflowClient:
         json_body: dict[str, Any] | None = None,
         expect_envelope: bool = True,
     ) -> Any:
-        api_key = self._settings.ragflow_api_key
-        if api_key is None or not api_key.get_secret_value().strip():
+        api_key = self._settings.resolved_ragflow_api_key_value
+        if api_key is None or not api_key.strip():
             raise ConfigurationException(
                 "RAGFLOW_API_KEY is not configured, so RAGFlow cannot be called.",
                 details={"config_key": "RAGFLOW_API_KEY"},
@@ -40,7 +40,7 @@ class RagflowClient:
 
         connect_timeout_seconds = self._settings.ragflow_timeout_seconds
         request_headers = {
-            "Authorization": f"Bearer {api_key.get_secret_value()}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         normalized_params = self._drop_none_values(params)
@@ -74,7 +74,7 @@ class RagflowClient:
                 )
             else:
                 async with httpx.AsyncClient(
-                    base_url=self._settings.ragflow_base_url.rstrip("/"),
+                    base_url=self._settings.resolved_ragflow_base_url.rstrip("/"),
                     timeout=self._build_http_timeout(connect_timeout_seconds),
                 ) as http_client:
                     response = await http_client.request(
@@ -165,7 +165,7 @@ class RagflowClient:
         if self._http_client is not None:
             injected_base_url = str(getattr(self._http_client, "base_url", "")).rstrip("/")
             return injected_base_url or "injected-client"
-        return self._settings.ragflow_base_url.rstrip("/")
+        return self._settings.resolved_ragflow_base_url.rstrip("/")
 
     @staticmethod
     def _build_http_timeout(connect_timeout_seconds: float) -> httpx.Timeout:
