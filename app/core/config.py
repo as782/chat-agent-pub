@@ -76,6 +76,10 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="ENABLE_MONITOR_NETWORK_PROXY",
     )
+    use_bridge_proxy_in_dev: bool = Field(
+        default=False,
+        validation_alias="USE_BRIDGE_PROXY_IN_DEV",
+    )
     mcp_servers_json: str | None = Field(default=None, validation_alias="MCP_SERVERS_JSON")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
@@ -151,9 +155,9 @@ class Settings(BaseSettings):
 
     @property
     def use_monitor_network_development_upstreams(self) -> bool:
-        """Whether local/dev runs should use the bridge-machine proxy endpoints."""
+        """Whether to force development-time upstreams through the bridge machine."""
 
-        return self.enable_monitor_network_proxy and self.is_debug
+        return self.enable_monitor_network_proxy and self.use_bridge_proxy_in_dev
 
     @property
     def resolved_live_agent_base_url(self) -> str:
