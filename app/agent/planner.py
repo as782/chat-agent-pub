@@ -12,6 +12,10 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from app.agent.facility_catalog import load_default_facility_catalog
+from app.agent.knowledge_support_catalog import (
+    KnowledgeSupportMatch,
+    load_default_knowledge_support_catalog,
+)
 from app.agent.prompts import PLANNER_JSON_OUTPUT_PROMPT, PLANNER_PROMPT
 from app.agent.road_inference import infer_traffic_context
 from app.agent.tool_traffic_intent import looks_like_traffic_query_v1
@@ -1125,13 +1129,11 @@ class PlannerService:
             normalized_metadata.get("target") or PlannerService._normalize_traffic_target(message) or ""
         ).strip()
         raw_roads = normalized_metadata.get("roads")
-        message_explicit_roads = PlannerService._extract_explicit_road_targets(message)
         explicit_roads = (
             [str(item).strip() for item in raw_roads if str(item).strip()]
             if isinstance(raw_roads, list)
             else []
         )
-        has_explicit_road_hint = bool(message_explicit_roads)
 
         inferred_context = infer_traffic_context(
             message=message,
@@ -1149,7 +1151,6 @@ class PlannerService:
             normalized_metadata["target"] = inferred_context.target
         if inferred_context.direction is not None and not normalized_metadata.get("direction"):
             normalized_metadata["direction"] = inferred_context.direction
-        has_road_hints = has_explicit_road_hint
         toll_station = str(
             normalized_metadata.get("toll_station") or inferred_context.toll_station or ""
         ).strip()
@@ -1160,7 +1161,7 @@ class PlannerService:
                 f"{toll_station} {message}",
                 source="planner",
             )
-            if toll_match is not None and not has_road_hints:
+            if toll_match is not None:
                 normalized_metadata["toll_station"] = toll_match.canonical_name
                 if toll_match.road_code:
                     normalized_metadata["road_code"] = toll_match.road_code
@@ -1864,6 +1865,9 @@ class PlannerService:
     def _infer_policy_query_type(message: str) -> str:
         """推断知识库检索类型。"""
 
+        knowledge_support_match = PlannerService._match_knowledge_support_query(message)
+        if knowledge_support_match is not None:
+            return knowledge_support_match.query_type
         if PlannerService._looks_like_od_policy_query(message):
             return "policy_interpretation"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费", "节假日", "跨天", "收费规则")):
@@ -1875,6 +1879,10 @@ class PlannerService:
     @staticmethod
     def _infer_policy_keywords(message: str) -> list[str]:
         """从问题里提取政策检索关键词。"""
+
+        knowledge_support_match = PlannerService._match_knowledge_support_query(message)
+        if knowledge_support_match is not None:
+            return list(knowledge_support_match.keywords)
 
         keyword_candidates = (
             "高速过路费",
@@ -1902,6 +1910,9 @@ class PlannerService:
     def _infer_policy_focus(message: str) -> str | None:
         """推断政策问题的回答焦点。"""
 
+        knowledge_support_match = PlannerService._match_knowledge_support_query(message)
+        if knowledge_support_match is not None:
+            return knowledge_support_match.focus
         if PlannerService._looks_like_od_policy_query(message):
             return "路线费用与通行政策规则"
         if any(keyword in message for keyword in ("收费", "过路费", "通行费", "免费")):
@@ -1994,6 +2005,7 @@ class PlannerService:
             or normalized_message.startswith("knowledge:")
             or normalized_message.startswith("konwledge:")
             or any(keyword in latest_user_message for keyword in ("政策", "制度", "标准", "规范", "口径"))
+            or PlannerService._looks_like_knowledge_support_query(latest_user_message)
         ):
             return "policy"
         if any(
@@ -2299,6 +2311,16 @@ class PlannerService:
         return any(keyword in latest_user_message for keyword in ("载", "装", "拉", "运", "通行"))
 
     @staticmethod
+    def _looks_like_knowledge_support_query(latest_user_message: str) -> bool:
+        return PlannerService._match_knowledge_support_query(latest_user_message) is not None
+
+    @staticmethod
+    def _match_knowledge_support_query(
+        latest_user_message: str,
+    ) -> KnowledgeSupportMatch | None:
+        return load_default_knowledge_support_catalog().match(latest_user_message)
+
+    @staticmethod
     def _infer_primary_category(
         *,
         latest_user_message: str,
@@ -2315,6 +2337,7 @@ class PlannerService:
             or normalized_message.startswith("knowledge:")
             or normalized_message.startswith("konwledge:")
             or any(keyword in latest_user_message for keyword in ("政策", "制度", "标准", "规范", "口径"))
+            or PlannerService._looks_like_knowledge_support_query(latest_user_message)
         ):
             return "policy"
         if any(
@@ -2372,6 +2395,9 @@ class PlannerService:
     def _infer_answer_focus(message: str, primary_category: ProblemCategory) -> str | None:
         if PlannerService._looks_like_toll_station_attribution_query(message):
             return "收费站所属高速"
+        knowledge_support_match = PlannerService._match_knowledge_support_query(message)
+        if knowledge_support_match is not None:
+            return knowledge_support_match.focus
         if PlannerService._looks_like_od_policy_query(message):
             return "路线费用与通行政策规则"
         if PlannerService._looks_like_explicit_route_query(message):
@@ -2418,6 +2444,8 @@ class PlannerService:
         """Extract origin/destination with a fallback regex for colloquial OD questions."""
 
         normalized_message = message.strip()
+        if PlannerService._looks_like_knowledge_support_query(normalized_message):
+            return None
         explicit_from_match = search(
             r"从(?P<origin>[\u4e00-\u9fffA-Za-z0-9·\-]{2,20}?)"
             r"(?P<connector>到|至|前往|去往)"
