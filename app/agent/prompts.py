@@ -83,8 +83,9 @@ PLANNER_PROMPT = """你是对话系统的任务编排器，不是最终回答器
 - 单个收费站/收费口/枢纽/互通/方向的状态：traffic -> answer
 - 单个收费站属于哪条高速/在哪条高速上：traffic -> answer
 - 单纯政策：rag -> answer
+- 高速业务办理/处置咨询（如 ETC、发票、扣费、通行记录、黑名单等）：rag -> answer
 - 单纯报表：report -> answer
-- 显式工具问题：tool -> answer 或 mcp -> answer
+- 显式工具问题：tool -> answer 或 mcp -> answer；不要虚构系统未提供的业务工具，无法确认有工具时优先 rag 或 answer。
 
 输出要求：
 1. 优先给出主分类，而不是实现细节。

@@ -697,6 +697,64 @@ async def test_planner_fallback_routes_policy_question_to_rag() -> None:
     assert [step.executor for step in plan.steps] == ["rag", "answer"]
 
 
+async def test_planner_routes_etc_support_question_to_rag() -> None:
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "general",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "step_1",
+                  "executor": "tool",
+                  "goal": "调用ETC挂失或补办相关的工具服务",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {
+                    "service_type": "etc_loss",
+                    "action": "loss_report"
+                  }
+                },
+                {
+                  "step_id": "step_2",
+                  "executor": "answer",
+                  "goal": "告知用户ETC卡挂失或补办的流程和结果",
+                  "depends_on": ["step_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(AgentState(latest_user_message="我的etc卡找不到了"))
+
+    assert plan.primary_category == "policy"
+    assert plan.recommended_route == "ragflow"
+    assert [step.executor for step in plan.steps] == ["rag", "answer"]
+    rag_step = plan.steps[0]
+    assert rag_step.metadata["query"] == "我的etc卡找不到了"
+    assert rag_step.metadata["query_type"] == "service_process"
+    assert rag_step.metadata["focus"] == "业务办理与处置流程"
+
+    invoice_plan = await planner.build_plan_async(AgentState(latest_user_message="高速发票怎么开"))
+    assert invoice_plan.primary_category == "policy"
+    assert invoice_plan.recommended_route == "ragflow"
+    assert [step.executor for step in invoice_plan.steps] == ["rag", "answer"]
+    assert invoice_plan.steps[0].metadata["query_type"] == "service_process"
+
+    record_plan = await planner.build_plan_async(
+        AgentState(latest_user_message="通行记录查不到怎么办")
+    )
+    assert record_plan.primary_category == "policy"
+    assert record_plan.recommended_route == "ragflow"
+    assert [step.executor for step in record_plan.steps] == ["rag", "answer"]
+
+
 async def test_planner_fallback_routes_network_report_question_to_report() -> None:
     """全省路况对比报表问题应直接走 report -> answer。"""
 

@@ -92,6 +92,33 @@ def test_planner_uses_toll_catalog_when_no_road_hint_is_available() -> None:
     assert metadata["toll_station"] == "宁波东收费站"
 
 
+def test_planner_treats_enter_highway_as_status_action_not_road_hint() -> None:
+    planner = PlannerService()
+    message = "\u676d\u5dde\u6536\u8d39\u7ad9\u73b0\u5728\u80fd\u4e0a\u9ad8\u901f\u5417"
+    toll_station = "\u676d\u5dde\u6536\u8d39\u7ad9"
+
+    metadata = planner._enrich_step_metadata(
+        executor="traffic",
+        metadata={
+            "query": message,
+            "road": "G60",
+            "road_name": "\u6caa\u6606\u9ad8\u901f",
+            "road_code": "G60",
+            "toll_station": toll_station,
+            "target": f"{toll_station}\u5165\u53e3",
+            "direction": "\u4e0a\u9ad8\u901f",
+            "query_intent": "traffic_status",
+        },
+        latest_user_message=message,
+        primary_category="traffic_status",
+    )
+
+    assert metadata["road"] == "S2"
+    assert metadata["road_name"] == "\u676d\u752c\u9ad8\u901f"
+    assert metadata["road_code"] == "S2"
+    assert metadata["toll_station"] == toll_station
+
+
 def test_planner_keeps_direct_road_identifier_without_toll_override() -> None:
     planner = PlannerService()
 
