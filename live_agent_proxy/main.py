@@ -18,6 +18,7 @@ PROXIED_PATHS = (
     "/agent/service",
     "/agent/topN",
 )
+RAGFLOW_PROXY_PREFIX = "/ragflow"
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -44,11 +45,11 @@ def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
     }
 
 
-def _build_upstream_url(settings: ProxySettings, path: str, raw_query: bytes) -> str:
-    base_url = settings.upstream_base_url.rstrip("/")
+def _build_upstream_url(base_url: str, path: str, raw_query: bytes) -> str:
+    normalized_base_url = base_url.rstrip("/")
     if raw_query:
-        return f"{base_url}{path}?{raw_query.decode('utf-8')}"
-    return f"{base_url}{path}"
+        return f"{normalized_base_url}{path}?{raw_query.decode('utf-8')}"
+    return f"{normalized_base_url}{path}"
 
 
 def build_proxy_http_client() -> httpx.AsyncClient:
@@ -65,51 +66,38 @@ def _resolve_http_client(request: Request) -> httpx.AsyncClient:
     raise HTTPException(status_code=503, detail="Monitor-network proxy is not initialized.")
 
 
-async def _proxy_get(request: Request, path: str) -> Response:
-    settings = get_proxy_settings()
-    http_client = _resolve_http_client(request)
-    upstream_url = _build_upstream_url(settings, path, request.url.query.encode("utf-8"))
-
-    try:
-        upstream_response = await http_client.get(
-            upstream_url,
-            headers={"Accept": request.headers.get("accept", "*/*")},
-        )
-    except httpx.TimeoutException as exception:
-        raise HTTPException(status_code=504, detail="Upstream request timed out.") from exception
-    except httpx.HTTPError as exception:
-        raise HTTPException(
-            status_code=502,
-            detail="Failed to reach upstream service.",
-        ) from exception
-
-    return Response(
-        content=upstream_response.content,
-        status_code=upstream_response.status_code,
-        headers=_filter_response_headers(upstream_response.headers),
-    )
-
-
-def _build_forwarded_headers(request: Request) -> dict[str, str]:
+def _build_request_headers(
+    request: Request,
+    *,
+    default_authorization: str | None = None,
+) -> dict[str, str]:
     forwarded_headers: dict[str, str] = {}
     for header_name in ("accept", "authorization", "content-type"):
         header_value = request.headers.get(header_name)
         if header_value:
             forwarded_headers[header_name] = header_value
+    if "authorization" not in forwarded_headers and default_authorization is not None:
+        forwarded_headers["authorization"] = default_authorization
     return forwarded_headers
 
 
-async def _proxy_chat_completions(request: Request) -> Response:
-    settings = get_proxy_settings()
+async def _proxy_request(
+    request: Request,
+    *,
+    upstream_url: str,
+    default_authorization: str | None = None,
+) -> Response:
     http_client = _resolve_http_client(request)
     request_body = await request.body()
-    upstream_url = f"{settings.llm_upstream_base_url.rstrip('/')}{LLM_UPSTREAM_PATH}"
 
     try:
         upstream_request = http_client.build_request(
-            method="POST",
+            method=request.method,
             url=upstream_url,
-            headers=_build_forwarded_headers(request),
+            headers=_build_request_headers(
+                request,
+                default_authorization=default_authorization,
+            ),
             content=request_body,
         )
         upstream_response = await http_client.send(upstream_request, stream=True)
@@ -145,6 +133,40 @@ async def _proxy_chat_completions(request: Request) -> Response:
     )
 
 
+async def _proxy_get(request: Request, path: str) -> Response:
+    settings = get_proxy_settings()
+    upstream_url = _build_upstream_url(
+        settings.upstream_base_url,
+        path,
+        request.url.query.encode("utf-8"),
+    )
+    return await _proxy_request(request, upstream_url=upstream_url)
+
+
+async def _proxy_chat_completions(request: Request) -> Response:
+    settings = get_proxy_settings()
+    upstream_url = f"{settings.llm_upstream_base_url.rstrip('/')}{LLM_UPSTREAM_PATH}"
+    return await _proxy_request(request, upstream_url=upstream_url)
+
+
+async def _proxy_ragflow_request(request: Request, path: str = "") -> Response:
+    settings = get_proxy_settings()
+    normalized_path = f"/{path.lstrip('/')}" if path else ""
+    upstream_url = _build_upstream_url(
+        settings.ragflow_upstream_base_url,
+        normalized_path,
+        request.url.query.encode("utf-8"),
+    )
+    default_authorization = (
+        f"Bearer {settings.ragflow_api_key}" if settings.ragflow_api_key else None
+    )
+    return await _proxy_request(
+        request,
+        upstream_url=upstream_url,
+        default_authorization=default_authorization,
+    )
+
+
 def _register_proxy_routes(router: APIRouter, paths: Iterable[str]) -> None:
     for path in paths:
         async def handler(request: Request, proxied_path: str = path) -> Response:
@@ -158,6 +180,16 @@ proxy_router.add_api_route(
     LLM_PROXY_PATH,
     _proxy_chat_completions,
     methods=["POST"],
+)
+proxy_router.add_api_route(
+    RAGFLOW_PROXY_PREFIX,
+    _proxy_ragflow_request,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+)
+proxy_router.add_api_route(
+    f"{RAGFLOW_PROXY_PREFIX}/{{path:path}}",
+    _proxy_ragflow_request,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 
 
@@ -173,7 +205,7 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title=settings.proxy_app_name,
         version="0.1.0",
-        description="Transparent proxy for live-agent endpoints.",
+        description="Transparent proxy for monitor-network dependencies.",
         lifespan=lifespan,
     )
 
