@@ -124,7 +124,7 @@ class OpenAIChatCompletionRequest(BaseModel):
         description="Optional execution route override for scheduled requests.",
     )
     brief_answer: bool = Field(
-        default=False,
+        default=True,
         description="Whether answer_node should use compact answer prompts, except reports.",
     )
     enable_thinking: bool | None = Field(
