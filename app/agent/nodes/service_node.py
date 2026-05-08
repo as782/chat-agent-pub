@@ -275,11 +275,9 @@ class ServiceNode:
             return []
 
         blocks = [f"服务区摘要：共 {len(service_items)} 条"]
-        for index, service in enumerate(service_items[:3], start=1):
+        for index, service in enumerate(service_items, start=1):
             blocks.append(ServiceNode._build_service_block(service, index=index))
 
-        if len(service_items) > 3:
-            blocks.append(f"其余 {len(service_items) - 3} 条服务区信息已省略")
         return blocks
 
     @classmethod
@@ -355,7 +353,7 @@ class ServiceNode:
             return []
 
         lines: list[str] = []
-        for charge_item in charge_items[:2]:
+        for charge_item in charge_items:
             prefix = ""
             if len(charge_items) > 1:
                 prefix = f"第{charge_item.get('index')}组："
@@ -454,8 +452,6 @@ class ServiceNode:
             start_time = cls._string_or_placeholder(item.get("businessStartTime"), "未知")
             end_time = cls._string_or_placeholder(item.get("businessEndTime"), "未知")
             commercial_lines.append(f"{name}（{start_time}-{end_time}）")
-            if len(commercial_lines) >= 5:
-                break
         return commercial_lines
 
     @classmethod
@@ -475,7 +471,7 @@ class ServiceNode:
         normalized_tags = cls._deduplicate_strings(tags)
         if not normalized_tags:
             return None
-        return "、".join(normalized_tags[:8])
+        return "、".join(normalized_tags)
 
     @classmethod
     def _format_service_direction(cls, service: dict[str, object]) -> str:

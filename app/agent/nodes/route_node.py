@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from json import loads
 
 from app.agent.direction_filter import filter_section_events_for_travel_direction
+from app.agent.event_filter import should_filter_live_event
 from app.agent.od import resolve_od, validate_route_arguments
 from app.agent.prompts import ROUTE_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
@@ -297,6 +298,8 @@ class RouteNode:
             for control in raw_controls:
                 if not isinstance(control, dict):
                     continue
+                if should_filter_live_event(control):
+                    continue
                 traffic_controls.append(
                     {
                         "road_name": road_name,
@@ -376,6 +379,8 @@ class RouteNode:
                 continue
             for congestion in raw_congestions:
                 if not isinstance(congestion, dict):
+                    continue
+                if should_filter_live_event(congestion):
                     continue
                 begin_milestone = congestion.get("beginMilestone")
                 end_milestone = congestion.get("endMilestone")
@@ -534,6 +539,8 @@ class RouteNode:
                 continue
             for control in raw_controls:
                 if not isinstance(control, dict):
+                    continue
+                if should_filter_live_event(control):
                     continue
                 control_items.append(
                     {

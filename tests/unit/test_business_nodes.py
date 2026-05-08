@@ -961,3 +961,27 @@ async def test_traffic_node_filters_opposite_direction_events_for_od_queries() -
         in control_descriptions
     )
     assert "G60沪昆高速（杭金衢）-双向，在次坞收费站和直埠枢纽之间发生道路施工" in control_descriptions
+
+
+def test_route_extractors_filter_vehicle_fault_events() -> None:
+    sections = [
+        {
+            "roadName": "S26诸永高速",
+            "trafficControls": [
+                {"id": "vehicle-fault-control", "eventType": "97", "des": "车辆故障"},
+                {"id": "construction", "eventType": "05", "des": "道路施工"},
+            ],
+            "trafficCongestions": [
+                {"id": "vehicle-fault-congestion", "eventType": "97", "des": "车辆故障"},
+                {"id": "slow", "eventType": "105", "des": "道路缓行"},
+            ],
+        }
+    ]
+
+    traffic_controls = RouteNode._extract_traffic_controls(sections)
+    route_control_items = RouteNode._extract_route_control_items(sections)
+    congestion_items = RouteNode._extract_congestion_items(sections)
+
+    assert [item["control_id"] for item in traffic_controls] == ["construction"]
+    assert [item["description"] for item in route_control_items] == ["道路施工"]
+    assert [item["congestion_id"] for item in congestion_items] == ["slow"]
