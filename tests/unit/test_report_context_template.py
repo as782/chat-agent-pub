@@ -25,7 +25,9 @@ class _TemplateReportToolRegistry:
                             "roadName": "沪昆高速",
                             "directionType": "1",
                             "beginMilestone": 120,
+                            "beginMilestoneStr": "K120+0",
                             "endMilestone": 128,
+                            "endMilestoneStr": "K128+0",
                             "roadAmbleMile": 8.0,
                             "controlMeasures": "借道通行",
                             "situationRemark": "主线缓行",
@@ -263,7 +265,7 @@ async def test_report_node_builds_template_context() -> None:
     assert "拥堵汇总（1条）：" in report_context
     assert "G60 / 沪昆高速" in report_context
     assert "方向 上行" in report_context
-    assert "区间 K120-K128" in report_context
+    assert "区间 K120+0-K128+0" in report_context
     assert "事件分类 交通气象（道路缓行）" in report_context
     assert "施工缓行" not in report_context
     assert "重大事件（1条）：" in report_context

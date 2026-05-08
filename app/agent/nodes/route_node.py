@@ -382,8 +382,8 @@ class RouteNode:
                     continue
                 if should_filter_live_event(congestion):
                     continue
-                begin_milestone = congestion.get("beginMilestone")
-                end_milestone = congestion.get("endMilestone")
+                begin_milestone = congestion.get("beginMilestoneStr") or congestion.get("beginMilestone")
+                end_milestone = congestion.get("endMilestoneStr") or congestion.get("endMilestone")
                 congestion_items.append(
                     {
                         "road_name": road_name,
@@ -504,7 +504,8 @@ class RouteNode:
 
     @staticmethod
     def _format_milestone(value: object) -> str:
-        return RouteNode._string_or_placeholder(value, "未知")
+        text = RouteNode._string_or_placeholder(value, "未知")
+        return text[1:] if text.startswith("K") else text
 
     @staticmethod
     def _extract_route_service_items(sections: list[dict[str, object]]) -> list[dict[str, str]]:
@@ -545,11 +546,11 @@ class RouteNode:
                 control_items.append(
                     {
                         "begin_milestone": RouteNode._string_or_placeholder(
-                            control.get("beginMilestone"),
+                            control.get("beginMilestoneStr") or control.get("beginMilestone"),
                             "未知",
                         ),
                         "end_milestone": RouteNode._string_or_placeholder(
-                            control.get("endMilestone"),
+                            control.get("endMilestoneStr") or control.get("endMilestone"),
                             "未知",
                         ),
                         "direction": RouteNode._normalize_route_direction(
@@ -621,7 +622,8 @@ class RouteNode:
             for item in control_items:
                 lines.append(
                     "  - "
-                    f"K{item['begin_milestone']}-K{item['end_milestone']}"
+                    f"K{RouteNode._format_milestone(item['begin_milestone'])}"
+                    f"-K{RouteNode._format_milestone(item['end_milestone'])}"
                     f"（{item['direction']}）：{item['description']} | "
                     f"{item['begin_time']}-{item['expected_end_time']} | "
                     f"管制措施：{item['control_measures']}"

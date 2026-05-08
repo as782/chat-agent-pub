@@ -248,6 +248,8 @@ class ReportNode:
             return "未知"
         if isinstance(value, str):
             text = value.strip()
+            if text.startswith("K"):
+                text = text[1:]
             return text if text else "未知"
         return str(value)
 
@@ -363,8 +365,8 @@ class ReportNode:
             item.get("direction"),
         )
         location = (
-            f"K{cls._format_milestone(item.get('beginMilestone'))}"
-            f"-K{cls._format_milestone(item.get('endMilestone'))}"
+            f"K{cls._format_milestone(item.get('beginMilestoneStr') or item.get('beginMilestone'))}"
+            f"-K{cls._format_milestone(item.get('endMilestoneStr') or item.get('endMilestone'))}"
         )
         expected_end_time = cls._string_or_placeholder(
             item.get("expectedTime")

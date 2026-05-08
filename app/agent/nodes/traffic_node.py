@@ -735,8 +735,8 @@ class TrafficNode:
                     continue
                 if should_filter_live_event(item):
                     continue
-                begin_milestone = item.get("beginMilestone")
-                end_milestone = item.get("endMilestone")
+                begin_milestone = item.get("beginMilestoneStr") or item.get("beginMilestone")
+                end_milestone = item.get("endMilestoneStr") or item.get("endMilestone")
                 congestion_items.append(
                     {
                         "road_name": road_name,
@@ -780,8 +780,8 @@ class TrafficNode:
                     continue
                 if should_filter_live_event(item):
                     continue
-                begin_milestone = item.get("beginMilestone")
-                end_milestone = item.get("endMilestone")
+                begin_milestone = item.get("beginMilestoneStr") or item.get("beginMilestone")
+                end_milestone = item.get("endMilestoneStr") or item.get("endMilestone")
                 traffic_control_items.append(
                     {
                         "road_name": road_name,
@@ -881,7 +881,11 @@ class TrafficNode:
         elif direction_type not in (None, ""):
             parts.append(f"方向:{direction_type}")
         if begin_milestone not in (None, "") or end_milestone not in (None, ""):
-            parts.append(f"桩号:{begin_milestone}-{end_milestone}")
+            parts.append(
+                "桩号:"
+                f"{TrafficNode._format_milestone(begin_milestone)}-"
+                f"{TrafficNode._format_milestone(end_milestone)}"
+            )
         return " ".join(parts) or None
 
     @staticmethod
@@ -1264,7 +1268,8 @@ class TrafficNode:
 
     @staticmethod
     def _format_milestone(value: object) -> str:
-        return TrafficNode._string_or_placeholder(value, "未知")
+        text = TrafficNode._string_or_placeholder(value, "未知")
+        return text[1:] if text.startswith("K") else text
 
     @staticmethod
     def _format_number(value: object) -> str:

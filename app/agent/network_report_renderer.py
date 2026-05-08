@@ -605,6 +605,10 @@ def _normalize_congestion_description(
 def _format_location(begin_milestone: object | None, end_milestone: object | None) -> str:
     begin_text = _first_non_empty(begin_milestone)
     end_text = _first_non_empty(end_milestone)
+    if begin_text.startswith("K"):
+        begin_text = begin_text[1:]
+    if end_text.startswith("K"):
+        end_text = end_text[1:]
     if not begin_text and not end_text:
         return "未知"
     if begin_text and end_text:

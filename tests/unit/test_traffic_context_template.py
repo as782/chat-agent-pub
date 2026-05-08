@@ -22,7 +22,9 @@ class _TemplateTrafficRegistry:
                         {
                             "des": "金华方向缓行",
                             "beginMilestone": 120,
+                            "beginMilestoneStr": "K120+0",
                             "endMilestone": 128,
+                            "endMilestoneStr": "K128+0",
                             "directionType": "1",
                             "beginTime": "2026-04-15 08:00:00",
                             "expectedEndTime": "2026-04-15 10:30:00",
@@ -33,7 +35,9 @@ class _TemplateTrafficRegistry:
                         {
                             "des": "施工占道",
                             "beginMilestone": 122,
+                            "beginMilestoneStr": "K122+0",
                             "endMilestone": 124,
+                            "endMilestoneStr": "K124+0",
                             "directionType": "1",
                             "beginTime": "2026-04-15 07:30:00",
                             "expectedEndTime": "2026-04-15 18:00:00",
@@ -83,9 +87,9 @@ async def test_traffic_node_builds_template_style_traffic_context() -> None:
     assert "道路名称：杭金衢高速 编号：G60，路况如下：" in traffic_context
     assert "整体统计：拥堵/缓行事件：1条 ,交通管制事件：1条 , 异常收费站：1个 ,状态异常服务区 ：1个" in traffic_context
     assert "拥堵/缓行列表：" in traffic_context
-    assert "K120-K128（上行）：金华方向缓行 | 缓行8公里 | 2026-04-15 08:00:00-2026-04-15 10:30:00" in traffic_context
+    assert "K120+0-K128+0（上行）：金华方向缓行 | 缓行8公里 | 2026-04-15 08:00:00-2026-04-15 10:30:00" in traffic_context
     assert "交通管制列表：" in traffic_context
-    assert "K122-K124（上行）：施工占道 | 2026-04-15 07:30:00-2026-04-15 18:00:00 | 管制措施：封闭第一车道" in traffic_context
+    assert "K122+0-K124+0（上行）：施工占道 | 2026-04-15 07:30:00-2026-04-15 18:00:00 | 管制措施：封闭第一车道" in traffic_context
     assert "收费站列表：" in traffic_context
     assert "杭州北：入口关闭 / 出口限流" in traffic_context
     assert "服务区列表：" in traffic_context
