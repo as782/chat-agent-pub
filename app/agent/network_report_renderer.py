@@ -17,7 +17,7 @@ _ROAD_NAME_PREFIX_PATTERN = re.compile(r"^[GS]\d{1,4}", re.IGNORECASE)
 _PAREN_SEGMENT_PATTERN = re.compile(r"[（(](.*?)[）)]")
 _SUFFIX_SEGMENT_PATTERN = re.compile(r"^(.*?)([\u4e00-\u9fffA-Za-z0-9\[\]]{1,12}段?)$")
 
-_TABLE_HEADER = "| roadCode | highwayName | roadSection | controls | traffic |"
+_TABLE_HEADER = "| 道路编号 | 高速名称 | 高速路段 | 收费站管控情况 | 路况 |"
 _TABLE_SEPARATOR = "| --- | --- | --- | --- | --- |"
 LOGGER: Logger = get_logger(__name__)
 

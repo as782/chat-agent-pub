@@ -104,6 +104,116 @@ def test_station_status_label_normalizes_int_and_string_codes() -> None:
     assert TrafficNode._is_abnormal_station_status("10202") is True
 
 
+def test_traffic_control_items_filter_vehicle_fault_events() -> None:
+    traffic_control_items = TrafficNode._extract_traffic_control_items(
+        [
+            {
+                "roadName": "S26诸永高速",
+                "roadGbCode": "S26",
+                "trafficControlList": [
+                    {
+                        "id": "vehicle-fault",
+                        "eventType": "97",
+                        "subEventType": "970100",
+                        "des": "车辆故障，占据二车道、硬路肩",
+                    },
+                    {
+                        "id": "construction",
+                        "eventType": "05",
+                        "subEventType": "050101",
+                        "des": "道路施工，占据硬路肩",
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert [item["control_id"] for item in traffic_control_items] == ["construction"]
+
+
+def test_congestion_items_filter_vehicle_fault_events() -> None:
+    congestion_items = TrafficNode._extract_congestion_items(
+        [
+            {
+                "roadName": "S26诸永高速",
+                "roadGbCode": "S26",
+                "congestionInfoList": [
+                    {
+                        "id": "vehicle-fault",
+                        "eventType": "97",
+                        "subEventType": "970100",
+                        "des": "车辆故障，占据二车道、硬路肩",
+                    },
+                    {
+                        "id": "slow",
+                        "eventType": "105",
+                        "des": "道路缓行",
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert [item["congestion_id"] for item in congestion_items] == ["slow"]
+
+
+def test_traffic_context_lists_all_items_without_local_truncation() -> None:
+    road = {
+        "roadName": "S26诸永高速",
+        "roadGbCode": "S26",
+        "trafficControlList": [
+            {
+                "id": f"construction-{index}",
+                "eventType": "05",
+                "subEventType": "050101",
+                "directionType": "00",
+                "beginMilestone": index,
+                "endMilestone": index + 1,
+                "des": f"道路施工{index}",
+            }
+            for index in range(4)
+        ],
+        "congestionInfoList": [
+            {
+                "id": f"slow-{index}",
+                "eventType": "105",
+                "directionType": "00",
+                "beginMilestone": index,
+                "endMilestone": index + 1,
+                "des": f"道路缓行{index}",
+            }
+            for index in range(4)
+        ],
+        "serviceAreaList": [
+            {
+                "serviceName": f"服务区{index}",
+                "directionType": "00",
+                "statusTag": "正常",
+            }
+            for index in range(4)
+        ],
+        "exitInfoList": [
+            {
+                "tollName": f"收费站{index}",
+                "entranceStatus": 0,
+                "exportStatus": 0,
+            }
+            for index in range(4)
+        ],
+    }
+
+    context = TrafficNode._build_compact_traffic_road_block(
+        road=road,
+        query_arguments={"query": "S26路况怎么样"},
+    )
+
+    for index in range(4):
+        assert f"道路施工{index}" in context
+        assert f"道路缓行{index}" in context
+        assert f"服务区{index}" in context
+        assert f"收费站{index}" in context
+
+
 def test_focus_query_block_includes_matched_toll_station_status_and_related_controls() -> None:
     response_payload = [
         {

@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from json import dumps, loads
 
 from app.agent.direction_filter import filter_road_payload_events_for_travel_direction
+from app.agent.event_filter import should_filter_live_event
 from app.agent.prompts import TRAFFIC_CONTEXT_PROMPT_PREFIX, UPSTREAM_SERVICE_ERROR_REPLY
 from app.agent.state import (
     AgentState,
@@ -732,6 +733,8 @@ class TrafficNode:
             for item in congestion_list:
                 if not isinstance(item, dict):
                     continue
+                if should_filter_live_event(item):
+                    continue
                 begin_milestone = item.get("beginMilestone")
                 end_milestone = item.get("endMilestone")
                 congestion_items.append(
@@ -774,6 +777,8 @@ class TrafficNode:
                 continue
             for item in control_list:
                 if not isinstance(item, dict):
+                    continue
+                if should_filter_live_event(item):
                     continue
                 begin_milestone = item.get("beginMilestone")
                 end_milestone = item.get("endMilestone")
@@ -1044,7 +1049,7 @@ class TrafficNode:
 
         if congestion_items:
             lines.append("拥堵/缓行列表：")
-            for item in congestion_items[:3]:
+            for item in congestion_items:
                 lines.append(
                     "  - "
                     f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
@@ -1057,10 +1062,11 @@ class TrafficNode:
 
         if traffic_control_items:
             lines.append("交通管制列表：")
-            for item in TrafficNode._prioritize_traffic_control_items(
+            prioritized_control_items = TrafficNode._prioritize_traffic_control_items(
                 traffic_control_items,
                 query_arguments=query_arguments,
-            )[:3]:
+            )
+            for item in prioritized_control_items:
                 lines.append(
                     "  - "
                     f"K{TrafficNode._format_milestone(item.get('begin_milestone'))}"
@@ -1076,7 +1082,7 @@ class TrafficNode:
             for item in TrafficNode._prioritize_exit_items(
                 exit_items,
                 query_arguments=query_arguments,
-            )[:3]:
+            ):
                 lines.append(
                     "  - "
                     f"{TrafficNode._string_or_placeholder(item.get('toll_name'), '未知收费站')}："
@@ -1086,7 +1092,7 @@ class TrafficNode:
 
         if service_area_items:
             lines.append("服务区列表：")
-            for item in service_area_items[:3]:
+            for item in service_area_items:
                 lines.append(
                     "  - "
                     f"{TrafficNode._string_or_placeholder(item.get('service_name'), '未知服务区')}"
@@ -1131,7 +1137,7 @@ class TrafficNode:
 
         if matched_exit_items:
             lines.append("- 命中收费站状态：")
-            for item in matched_exit_items[:3]:
+            for item in matched_exit_items:
                 lines.append(
                     "  - "
                     f"{TrafficNode._string_or_placeholder(item.get('toll_name'), toll_station)}"
@@ -1142,7 +1148,7 @@ class TrafficNode:
 
         if matched_control_items:
             lines.append("- 与该收费站直接相关的管制/事件：")
-            for item in matched_control_items[:3]:
+            for item in matched_control_items:
                 lines.append(
                     "  - "
                     f"{TrafficNode._string_or_placeholder(item.get('description'), '暂无描述')}"

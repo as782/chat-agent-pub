@@ -259,5 +259,5 @@ def test_network_report_renderer_logs_generated_table(caplog) -> None:
 
     assert render_result is not None
     assert "Network report table generated" in caplog.text
-    assert "| roadCode | highwayName | roadSection | controls | traffic |" in caplog.text
+    assert "| 道路编号 | 高速名称 | 高速路段 | 收费站管控情况 | 路况 |" in caplog.text
     assert "| G60 |" in caplog.text
