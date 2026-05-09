@@ -241,6 +241,66 @@ class _MismatchedRoadToolRegistry:
         )
 
 
+class _EmptyNameRetryToolRegistry:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+        self.calls.append({"tool_name": tool_name, "arguments": dict(arguments)})
+        road = arguments.get("road")
+        if road == "S9":
+            return dumps(
+                [
+                    {
+                        "roadName": "S9苏台高速（钱江通道）",
+                        "roadGbCode": "S9",
+                        "congestionInfoList": [],
+                        "trafficControlList": [],
+                        "serviceAreaList": [],
+                        "exitInfoList": [{"tollName": "周王庙收费站"}],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        return dumps([], ensure_ascii=False)
+
+
+class _UnrelatedNameRetryToolRegistry:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+        self.calls.append({"tool_name": tool_name, "arguments": dict(arguments)})
+        road = arguments.get("road")
+        if road == "S9":
+            return dumps(
+                [
+                    {
+                        "roadName": "S9苏台高速（钱江通道）",
+                        "roadGbCode": "S9",
+                        "congestionInfoList": [],
+                        "trafficControlList": [],
+                        "serviceAreaList": [],
+                        "exitInfoList": [{"tollName": "周王庙收费站"}],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        return dumps(
+            [
+                {
+                    "roadName": "苏绍高速",
+                    "roadGbCode": "S9",
+                    "congestionInfoList": [],
+                    "trafficControlList": [],
+                    "serviceAreaList": [],
+                    "exitInfoList": [{"tollName": "前进收费站"}],
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+
 @pytest.mark.asyncio
 async def test_traffic_node_uses_llm_inferred_canonical_road() -> None:
     tool_registry = _CapturingToolRegistry()
@@ -391,5 +451,102 @@ async def test_traffic_node_retries_by_road_name_when_code_result_mismatches_nam
                     "exitInfoList": [],
                 }
             ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_keeps_code_result_when_name_retry_is_empty() -> None:
+    tool_registry = _EmptyNameRetryToolRegistry()
+    node = TrafficNode(tool_registry=tool_registry)
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={
+                    "query": "周王庙收费站在哪",
+                    "road": "S9",
+                    "road_name": "苏绍高速",
+                    "road_code": "S9",
+                    "target": "周王庙收费站",
+                    "toll_station": "周王庙收费站",
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls == [
+        {"tool_name": "live_road_event_query", "arguments": {"road": "S9"}},
+        {"tool_name": "live_road_event_query", "arguments": {"road": "苏绍高速"}},
+    ]
+    traffic_result = result["step_results"]["traffic_1"]
+    assert traffic_result.normalized_result["result_count"] == 1
+    assert traffic_result.normalized_result["matched_road_names"] == ["S9苏台高速（钱江通道）"]
+    assert traffic_result.normalized_result["exit_items"] == [
+        {
+            "road_name": "S9苏台高速（钱江通道）",
+            "road_code": "S9",
+            "toll_name": "周王庙收费站",
+            "toll_id": None,
+            "exit_name": None,
+            "entrance_status": None,
+            "entrance_status_label": None,
+            "export_status": None,
+            "export_status_label": None,
+            "description": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traffic_node_keeps_toll_match_when_name_retry_returns_unrelated_result() -> None:
+    tool_registry = _UnrelatedNameRetryToolRegistry()
+    node = TrafficNode(tool_registry=tool_registry)
+
+    result = await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="traffic_status",
+                execution_mode="single_step",
+                recommended_route="traffic",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="traffic_status",
+                arguments={
+                    "query": "周王庙收费站在哪",
+                    "road": "S9",
+                    "road_name": "苏绍高速",
+                    "road_code": "S9",
+                    "target": "周王庙收费站",
+                    "toll_station": "周王庙收费站",
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls == [
+        {"tool_name": "live_road_event_query", "arguments": {"road": "S9"}},
+        {"tool_name": "live_road_event_query", "arguments": {"road": "苏绍高速"}},
+    ]
+    traffic_result = result["step_results"]["traffic_1"]
+    assert traffic_result.normalized_result["matched_road_names"] == ["S9苏台高速（钱江通道）"]
+    assert traffic_result.normalized_result["exit_items"] == [
+        {
+            "road_name": "S9苏台高速（钱江通道）",
+            "road_code": "S9",
+            "toll_name": "周王庙收费站",
+            "toll_id": None,
+            "exit_name": None,
+            "entrance_status": None,
+            "entrance_status_label": None,
+            "export_status": None,
+            "export_status_label": None,
+            "description": None,
         }
     ]

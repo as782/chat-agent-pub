@@ -230,13 +230,39 @@ class TrafficNode:
                         str(item.get("roadName") or "").strip() for item in api_result
                     ),
                 )
-                api_result = await self._query_single_road(
+                retry_api_result = await self._query_single_road(
                     road=requested_road_name,
                     origin=origin,
                     destination=destination,
                     explicit_direction=explicit_direction,
                 )
-                road = requested_road_name
+                if self._should_keep_original_toll_station_result(
+                    query_arguments=query_arguments,
+                    original_api_result=api_result,
+                    retry_api_result=retry_api_result,
+                ):
+                    LOGGER.warning(
+                        (
+                            "Traffic road name retry did not include requested toll station; "
+                            "keeping road code result: query_road=%s requested_road_name=%s "
+                            "toll_station=%s"
+                        ),
+                        road,
+                        requested_road_name,
+                        query_arguments.get("toll_station"),
+                    )
+                elif retry_api_result:
+                    api_result = retry_api_result
+                    road = requested_road_name
+                else:
+                    LOGGER.warning(
+                        (
+                            "Traffic road name retry returned no results; "
+                            "keeping road code result: query_road=%s requested_road_name=%s"
+                        ),
+                        road,
+                        requested_road_name,
+                    )
             road_results.append(
                 {
                     "query_road": road,
@@ -244,6 +270,49 @@ class TrafficNode:
                 }
             )
         return road_results
+
+    @staticmethod
+    def _should_keep_original_toll_station_result(
+        *,
+        query_arguments: dict[str, object],
+        original_api_result: list[dict[str, object]],
+        retry_api_result: list[dict[str, object]],
+    ) -> bool:
+        toll_station = TrafficNode._resolve_requested_toll_station(query_arguments)
+        if not toll_station:
+            return False
+        if not TrafficNode._contains_toll_station(
+            response_payload=original_api_result,
+            toll_station=toll_station,
+        ):
+            return False
+        return not TrafficNode._contains_toll_station(
+            response_payload=retry_api_result,
+            toll_station=toll_station,
+        )
+
+    @staticmethod
+    def _resolve_requested_toll_station(query_arguments: dict[str, object]) -> str:
+        toll_station = str(query_arguments.get("toll_station") or "").strip()
+        if toll_station:
+            return toll_station
+        target = str(query_arguments.get("target") or "").strip()
+        return target if "收费站" in target else ""
+
+    @staticmethod
+    def _contains_toll_station(
+        *,
+        response_payload: list[dict[str, object]],
+        toll_station: str,
+    ) -> bool:
+        normalized_station = TrafficNode._normalize_station_name(toll_station)
+        if not normalized_station:
+            return False
+        return any(
+            TrafficNode._normalize_station_name(str(item.get("toll_name") or "").strip())
+            == normalized_station
+            for item in TrafficNode._extract_exit_items(response_payload)
+        )
 
     async def _query_single_road(
         self,
