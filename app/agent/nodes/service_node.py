@@ -167,8 +167,12 @@ class ServiceNode:
         """Prefer structured service fields before falling back to raw query text."""
 
         arguments = resolved_arguments.arguments
+        service_name = str(arguments.get("service_name") or "").strip()
+        if service_name:
+            return service_name
+
         if get_settings().use_monitor_network_development_upstreams:
-            for key in ("service_name", "keyword", "road_name", "facility_type", "query"):
+            for key in ("keyword", "road_name", "facility_type", "query"):
                 value = str(arguments.get(key) or "").strip()
                 if value:
                     return value

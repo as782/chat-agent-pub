@@ -360,6 +360,51 @@ async def test_service_node_prefers_structured_service_name_over_raw_query() -> 
 
 
 @pytest.mark.asyncio
+async def test_service_node_prefers_named_service_area_over_direction_query_terms() -> None:
+    class _CapturingServiceToolRegistry(_FakeToolRegistry):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def execute_named_tool(self, *, tool_name: str, arguments: dict[str, object]) -> str:
+            self.calls.append({"tool_name": tool_name, "arguments": dict(arguments)})
+            return await super().execute_named_tool(tool_name=tool_name, arguments=arguments)
+
+    tool_registry = _CapturingServiceToolRegistry()
+    node = ServiceNode(tool_registry=tool_registry)
+
+    await node.run(
+        {
+            "execution_plan": ExecutionPlan(
+                primary_category="service_area",
+                execution_mode="single_step",
+                recommended_route="service",
+            ),
+            "resolved_arguments": ResolvedArguments(
+                category="service_area",
+                arguments={
+                    "query": "\u957f\u5b89\u670d\u52a1\u533a",
+                    "keyword": "\u957f\u5b89\u670d\u52a1\u533a",
+                    "service_name": "\u957f\u5b89\u670d\u52a1\u533a",
+                    "catalog_service_match": True,
+                    "service_query_terms": [
+                        "\u957f\u5b89\u670d\u52a1\u533a\u5317\u533a",
+                        "\u957f\u5b89\u670d\u52a1\u533a\u676d\u5dde\u65b9\u5411",
+                        "\u957f\u5b89\u670d\u52a1\u533a",
+                    ],
+                },
+            ),
+        }
+    )
+
+    assert tool_registry.calls == [
+        {
+            "tool_name": "live_service_query",
+            "arguments": {"keyword": "\u957f\u5b89\u670d\u52a1\u533a"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_service_node_skips_tool_for_unknown_named_service_area() -> None:
     class _CapturingServiceToolRegistry(_FakeToolRegistry):
         def __init__(self) -> None:
