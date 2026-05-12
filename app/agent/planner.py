@@ -2419,6 +2419,8 @@ class PlannerService:
 
         if PlannerService._should_force_network_report(latest_user_message):
             return "network_report"
+        if PlannerService._looks_like_knowledge_support_query(latest_user_message):
+            return "policy"
         if primary_category == "route_planning" and PlannerService._looks_like_od_toll_query(
             latest_user_message
         ):

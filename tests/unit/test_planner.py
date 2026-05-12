@@ -1131,3 +1131,57 @@ async def test_planner_rebuilds_general_plan_for_subject_free_policy_questions()
     assert [step.executor for step in plan.steps] == ["rag", "answer"]
     assert plan.steps[0].metadata["subject"] == "甲鱼"
     assert plan.steps[0].metadata["query_type"] == "policy_scope_check"
+
+
+async def test_planner_routes_motorcycle_highway_access_to_policy_with_zhejiang_keywords() -> None:
+    planner = PlannerService(llm_client=None)
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="摩托车能上吗")
+    )
+
+    assert plan.primary_category == "policy"
+    assert [step.executor for step in plan.steps] == ["rag", "answer"]
+    assert plan.steps[0].metadata["query_type"] == "policy_interpretation"
+    assert plan.steps[0].metadata["focus"] == "浙江省高速公路摩托车通行规定"
+    assert "浙江省 摩托车 高速公路 禁止进入" in plan.steps[0].metadata["keywords"]
+
+
+async def test_planner_rebuilds_llm_traffic_plan_for_motorcycle_highway_access() -> None:
+    planner = PlannerService(
+        llm_client=_FakePlannerLlmClient(
+            """
+            {
+              "primary_category": "traffic_status",
+              "need_clarification": false,
+              "clarification_question": null,
+              "steps": [
+                {
+                  "step_id": "traffic_1",
+                  "executor": "traffic",
+                  "goal": "查询实时路况",
+                  "depends_on": [],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                },
+                {
+                  "step_id": "answer_1",
+                  "executor": "answer",
+                  "goal": "总结路况",
+                  "depends_on": ["traffic_1"],
+                  "can_run_in_parallel": false,
+                  "metadata": {}
+                }
+              ]
+            }
+            """
+        )
+    )
+
+    plan = await planner.build_plan_async(
+        AgentState(latest_user_message="摩托车能上高速吗")
+    )
+
+    assert plan.primary_category == "policy"
+    assert [step.executor for step in plan.steps] == ["rag", "answer"]
+    assert "浙江省高速公路运行管理办法 摩托车" in plan.steps[0].metadata["keywords"]
